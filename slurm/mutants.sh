@@ -17,3 +17,4 @@ mutate app/server.py 's/Image.fromarray(rgba\[::-1\])/Image.fromarray(rgba)/' "t
 mutate app/server.py 's/    x0, y1 = -WORLD \/ 2 + x \* size, WORLD \/ 2 - y \* size/    x0, y1 = -WORLD \/ 2 + x * size, WORLD \/ 2 - (y + 1) * size/' "tiles one row off"
 mutate app/server.py 's/per_day = over.cycle.to_series().groupby(over.time.to_index().floor("D"))/per_day = index.cycle.to_series().groupby(index.time.to_index().floor("D"))/' "timeline ignores the box"
 mutate app/server.py 's/    lon = np.unwrap(lon, period=360, axis=1)/    pass/' "swaths torn at 180"
+mutate app/server.py 's/                rows = slice(a, b)/                rows = usable/' "lines across land joined into one mesh"

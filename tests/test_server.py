@@ -47,3 +47,22 @@ def test_swath_across_180_stays_one_piece(client):  # client: server imported on
     out = server.continuous(lon, center=-170)
     np.testing.assert_allclose(np.diff(out, axis=1), 1)  # no jump of 360 within a line
     assert -200 < out.mean() < -170  # placed next to the requested center
+
+
+def test_nothing_drawn_across_a_gap(client):
+    """Lines without data (land) between two runs of ocean stay empty: the runs are not bridged by quads."""
+    import server
+    import xarray as xr
+
+    lat = np.repeat(np.linspace(-5, 5, 21)[:, None], 3, axis=1)[None]  # one passage, 21 lines, 3 pixels
+    lon = np.broadcast_to([29.9, 30.0, 30.1], lat.shape).copy()
+    values = np.ones(lat.shape)
+    values[0, 8:13] = np.nan  # land from -1 to 1
+    dims = ("time", "along", "cross")
+    sub = xr.Dataset({"ssha_unfiltered": (dims, values)}, coords={"latitude": (dims, lat), "longitude": (dims, lon)})
+    data = server.Loaded(sub, ["ssha_unfiltered"], 29, 31)
+
+    # a view from -2 to 2, as a tile would see it: ocean lines on both sides of the land
+    (x0, x1), (y0, y1) = server.mercator(np.array([29.95, 30.05]), np.array([-2, 2]))
+    drawn = np.isfinite(data.mean_on("none", (x0, x1), (y0, y1), 4, 8)).all(axis=1)  # rows south to north, 0.5 deg
+    np.testing.assert_array_equal(drawn, [True, False, False, False, False, False, False, True])
