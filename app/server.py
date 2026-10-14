@@ -73,13 +73,20 @@ class Loaded:
         with warnings.catch_warnings(action="ignore"):  # all-NaN passages give NaN means
             self.values = {"none": values, "box": values - np.nanmean(inside),
                            "passage": values - np.nanmean(inside, axis=(1, 2), keepdims=True)}
-        self.meshes = []  # per passage: the lines with all corners (a mesh needs them), and the extent
+        # meshes: each run of consecutive lines with all corners (a mesh needs them) and some data. Joining
+        # runs across the lines between them (land, missing lines) would draw long thin quads over the gap.
+        self.meshes = []
+        lat = sub.latitude.values
         for i in range(len(values)):
-            lines = np.isfinite(lon[i]).all(1) & np.isfinite(sub.latitude.values[i]).all(1) & np.isfinite(values[i]).any(1)
-            if lines.any():
-                xi, yi = mercator(continuous(lon[i][lines], center), sub.latitude.values[i][lines])
+            usable = np.isfinite(lon[i]).all(1) & np.isfinite(lat[i]).all(1) & np.isfinite(values[i]).any(1)
+            edges = np.flatnonzero(np.diff(np.r_[0, usable.astype(int), 0]))
+            for a, b in zip(edges[::2], edges[1::2]):
+                if b - a < 2:  # one line has no cells
+                    continue
+                rows = slice(a, b)
+                xi, yi = mercator(continuous(lon[i][rows], center), lat[i][rows])
                 # lines run south to north: a view needs only the block of lines across its latitudes
-                self.meshes.append((i, lines, xi, yi, yi.min(1), yi.max(1), (xi.min(), xi.max(), yi.min(), yi.max())))
+                self.meshes.append((i, rows, xi, yi, yi.min(1), yi.max(1), (xi.min(), xi.max(), yi.min(), yi.max())))
         self.quantiles = {}
         for mode, v in self.values.items():
             v = v[np.isfinite(v)]
@@ -89,12 +96,12 @@ class Loaded:
         """Mean of the passages on a width x height grid, NaN where none."""
         canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
         total, count = np.zeros((height, width)), np.zeros((height, width))
-        for i, lines, x, y, line_y0, line_y1, (x0, x1, y0, y1) in self.meshes:
-            rows = np.flatnonzero((line_y1 >= y_range[0]) & (line_y0 <= y_range[1]))
-            if len(rows) == 0:
+        for i, rows, x, y, line_y0, line_y1, (x0, x1, y0, y1) in self.meshes:
+            seen = np.flatnonzero((line_y1 >= y_range[0]) & (line_y0 <= y_range[1]))
+            if len(seen) == 0:
                 continue
-            block = slice(max(rows[0] - 1, 0), rows[-1] + 2)  # one more line each side: whole cells
-            v = self.values[mode][i][lines][block]
+            block = slice(max(seen[0] - 1, 0), seen[-1] + 2)  # one more line each side: whole cells
+            v = self.values[mode][i][rows][block]
             for shift in (-WORLD, 0, WORLD):  # the map repeats the world east and west
                 if x1 + shift < x_range[0] or x0 + shift > x_range[1]:
                     continue
