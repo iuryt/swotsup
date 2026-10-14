@@ -15,6 +15,7 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import xarray as xr
+import zarr
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +24,9 @@ from PIL import Image
 import swot_view
 
 matplotlib.use("agg")
+# zarr fetches 10 chunks at once by default; S3 answers each in tens of ms, so more at once is faster
+# (whole globe, 1 day: 15 s -> 5 s with 8 CPUs; scripts/bench_server.py)
+zarr.config.set({"async.concurrency": 64})
 MAX_DAYS = 21
 MAX_PIXELS = 60e6  # ~2 days of the whole globe; keeps a load under ~1 GB of memory
 VARIABLES = {"ssha_unfiltered": ("SSHA, unfiltered", ["ssha_unfiltered"]),
