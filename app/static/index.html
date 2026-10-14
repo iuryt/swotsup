@@ -8,6 +8,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
   <link href="static/style.css" rel="stylesheet">
 </head>
 <body>
@@ -91,7 +92,7 @@
   <dialog id="code-dialog" class="panel">
     <header><h2>The same data in your own Python</h2><button class="ghost close"><i data-lucide="x"></i></button></header>
     <p class="hint">Only <code>pip install icechunk xarray</code>. This is the region and dates on the map.</p>
-    <pre><code id="code"></code></pre>
+    <pre><code id="code" class="language-python"></code></pre>
     <button id="copy" class="accent"><i data-lucide="copy"></i>Copy</button>
   </dialog>
 
@@ -109,8 +110,18 @@
       <tr><td>Across 180°, 20°×10°, 3 weeks</td><td>3.9 s</td><td>103 s</td></tr>
       <tr><td>Gulf Stream 2°×2°, whole mission</td><td>7.4 s</td><td>654 s</td></tr>
     </table>
-    <p class="hint">Data: SWOT L3 LR SSH v3.0, AVISO/DUACS with CNES support (see AVISO's terms of use).
-      Bathymetry: GEBCO Compilation Group, served by NOAA NCEI. Code:
+    <h3>Data and credits</h3>
+    <p class="hint">"The SWOT L3_LR_SSH product, derived from the L2 SWOT KaRIn low rate ocean data products (NASA/JPL
+      and CNES), is produced and made freely available by AVISO and DUACS teams as part of the DESMOS Science Team
+      project." AVISO/DUACS, 2024. SWOT Level-3 KaRIn Low Rate SSH Basic (v3.0) [Data set]. CNES.
+      <a href="https://doi.org/10.24400/527896/A01-2023.017" target="_blank">doi:10.24400/527896/A01-2023.017</a>.
+      Licensed by CNES under the <a href="https://www.aviso.altimetry.fr/fileadmin/documents/data/License_Aviso.pdf"
+      target="_blank">AVISO License</a>.</p>
+    <p class="hint">Changes made here: the files are combined into one store, descending passes are turned to run
+      south to north, and along/cross-track distances and per-pass geometry are added. The map shows averages of the
+      passages on screen pixels, by default minus the mean over the region; time series are means within a radius.
+      This tool is not endorsed by CNES, AVISO or DUACS.</p>
+    <p class="hint">Bathymetry: GEBCO Compilation Group, served by NOAA NCEI. Code:
       <a href="https://github.com/iuryt/swot_icechunk" target="_blank">github.com/iuryt/swot_icechunk</a>.</p>
   </dialog>
 
@@ -119,6 +130,8 @@
   <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.453.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
   <script src="static/app.js"></script>
 </body>
 </html>
