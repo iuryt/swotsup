@@ -89,8 +89,10 @@ function setColors() {
 function setBox(box, reload = true) {
   state.box = box;
   const globe = isGlobe(box);
+  $("#globe").classList.toggle("hidden", globe);  // a way back, once a box is chosen
   $("#region-text").textContent = globe ? "Whole globe" :
     `${lonText(box.west)} to ${lonText(box.east)}, ${latText(box.south)} to ${latText(box.north)}`;
+  $("#region-button").title = `${$("#region-text").textContent} (click to type it)`;
   for (const k of ["west", "east", "south", "north"]) $("#" + k).value = box[k];
   let { west, east } = box;
   if (east <= west) east += 360;  // continuous across 180
