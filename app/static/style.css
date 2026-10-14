@@ -101,6 +101,7 @@ h1 { font-size: 16px; margin: 0; color: var(--title); font-weight: 600; }
 .card header .tools { display: flex; align-items: center; gap: 4px; }
 .card select { padding: 2px 6px; font-size: 12px; }
 .card .chart { margin-top: 4px; }
+.card .u-over { cursor: pointer; }
 .card.compact { width: 300px; height: auto; min-height: 0; resize: none; }
 .card.compact .chart { display: none; }
 .card .expand { margin-top: 6px; padding: 3px 10px; font-size: 12px; font-weight: 500; background: transparent;

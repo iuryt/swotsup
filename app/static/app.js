@@ -89,6 +89,14 @@ function setColors() {
   }
 }
 
+// --- the dates: from the timeline, or a click on a time series
+function setDates(start, days) {
+  Object.assign(state, { start, days });
+  timeline.setBand(start, days);
+  pin?.getElement().querySelector(".card").plot?.redraw();  // its shaded band
+  loadData();
+}
+
 // --- the region
 function setBox(box, reload = true) {
   state.box = box;
@@ -358,7 +366,7 @@ async function fillSeries(card, lngLat, radius) {
   hint.textContent = `mean within ${radius} km`;
   try {
     const s = await api("/api/series", { lon: wrap(lngLat.lng), lat: lngLat.lat, variable: state.variable, radius });
-    hint.textContent = `mean within ${radius} km · ${s.time.length} passages · the shaded band is the selected dates`;
+    hint.textContent = `mean within ${radius} km · ${s.time.length} passages · click one to see that date on the map`;
     chart.innerHTML = "";
     if (!s.time.length) { chart.innerHTML = `<div class="loading">No passage here (outside the swaths, or in the nadir gap).</div>`; return; }
     const band = { hooks: { drawClear: [(u) => {  // the selected dates
@@ -369,7 +377,16 @@ async function fillSeries(card, lngLat, radius) {
     const axis = { stroke: "#94a3b8", grid: { stroke: "rgba(148,163,184,0.12)" }, ticks: { stroke: "rgba(148,163,184,0.25)" } };
     const tip = document.createElement("div");  // date and value of the point under the mouse
     tip.className = "tip";
-    const hover = { hooks: { init: [(u) => u.over.appendChild(tip)], setCursor: [(u) => {
+    const hover = { hooks: { init: [(u) => {
+      u.over.appendChild(tip);
+      u.over.addEventListener("click", () => {  // that passage's date on the map, keeping the number of days
+        if (u.cursor.idx == null) return;
+        const day = Math.floor(u.data[0][u.cursor.idx] * 1000 / DAY) * DAY;
+        const start = Math.min(Math.max(day - Math.floor((state.days - 1) / 2) * DAY, timeline.full[0]),
+                               timeline.full[1] - state.days * DAY);
+        setDates(start, state.days);
+      });
+    }], setCursor: [(u) => {
       const i = u.cursor.idx;
       tip.style.display = i == null ? "none" : "block";
       if (i == null) return;
@@ -469,10 +486,7 @@ async function main() {
                         paint: { "raster-brightness-max": brightness, "raster-fade-duration": 0 } }] },
   });
   map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
-  timeline = new Timeline($("#timeline"), Date.parse(info.first), Date.parse(info.last), (start, days) => {
-    Object.assign(state, { start, days });
-    loadData();
-  });
+  timeline = new Timeline($("#timeline"), Date.parse(info.first), Date.parse(info.last), setDates);
   timeline.setBand(state.start, state.days);
   overview.image.onload = drawOverview;
   overview.image.src = "/api/world.png";
