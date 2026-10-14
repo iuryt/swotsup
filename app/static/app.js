@@ -15,7 +15,7 @@ let info, map, timeline;
 
 // --- small helpers
 async function api(path, params = {}) {
-  const r = await fetch(path + "?" + new URLSearchParams(params));
+  const r = await fetch(path + (path.includes("?") ? "&" : "?") + new URLSearchParams(params));
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
   return r.json();
 }
@@ -37,12 +37,15 @@ function toast(text) {
 async function loadData() {
   $("#busy").classList.remove("hidden");
   try {
-    const d = await api("/api/load", { ...state.box, start: isoDay(state.start), days: state.days, variable: state.variable });
+    // every later request (tiles, values, download) names this view, so the server can read it again
+    const view = new URLSearchParams({ ...state.box, start: isoDay(state.start), days: state.days, variable: state.variable });
+    const d = await api("/api/load", view);
     state.data = d;
+    state.view = view.toString();
     $("#stats").innerHTML = `<b>${d.passages}</b> passages · <b>${(d.pixels / 1e6).toFixed(1)} M</b> pixels · ` +
       (d.seconds ? `read from the cloud in <b>${d.seconds.toFixed(1)} s</b>` : "from the server's memory");
     $("#code").textContent = d.code;
-    $("#download").href = `/api/netcdf/${d.id}`;
+    $("#download").href = `/api/netcdf?${state.view}`;
     setColors();
   } catch (e) {
     toast(e.message);
@@ -76,7 +79,7 @@ function setColors() {
   document.querySelectorAll("#mode button").forEach((b) => b.classList.toggle("active", b.dataset.value === state.mode));
   $("#symmetric").checked = state.symmetric;
   if (!state.data) return;
-  const url = `/api/tile/${state.data.id}/{z}/{x}/{y}.png?mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}`;
+  const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}`;
   const source = map.getSource("swot");
   if (source) source.setTiles([url]);
   else {
@@ -336,7 +339,7 @@ function setupCoords() {
     if (!state.data || pending) return;
     pending = setTimeout(async () => {  // at most a few value requests per second
       pending = null;
-      const v = await api("/api/value", { id: state.data.id, lon: wrap(e.lngLat.lng), lat: e.lngLat.lat, mode: state.mode }).catch(() => ({}));
+      const v = await api(`/api/value?${state.view}`, { lon: wrap(e.lngLat.lng), lat: e.lngLat.lat, mode: state.mode }).catch(() => ({}));
       if (v.value != null && $("#coords").textContent.startsWith(where)) $("#coords").textContent = `${where} · ${v.value.toFixed(3)} m`;
     }, 150);
   });
