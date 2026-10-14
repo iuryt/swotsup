@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
@@ -142,7 +142,11 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 @app.get("/")
 def page():
-    return FileResponse(STATIC / "index.html")
+    """The page, with each of our files versioned by its modification time, so browsers never keep an old one."""
+    html = (STATIC / "index.html").read_text()
+    for name in ("style.css", "app.js"):
+        html = html.replace(f"static/{name}", f"static/{name}?v={int((STATIC / name).stat().st_mtime)}")
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/info")
