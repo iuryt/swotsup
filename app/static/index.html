@@ -25,7 +25,8 @@
     <div class="row">
       <select id="variable" title="Variable"></select>
       <button id="draw" class="outline" title="Drag on the map to choose a region"><i data-lucide="square-dashed"></i>Draw a box</button>
-      <button id="region-button" class="ghost"><i data-lucide="map-pin"></i><span id="region-text"></span></button>
+      <button id="region-button" class="ghost" title="Type the region"><i data-lucide="map-pin"></i><span id="region-text"></span></button>
+      <button id="globe" class="ghost hidden" title="Back to the whole globe"><i data-lucide="globe"></i>Whole globe</button>
     </div>
     <div class="row">
       <button id="display-button" class="ghost"><i data-lucide="sliders-horizontal"></i>Display</button>
@@ -44,7 +45,6 @@
     </div>
     <p class="hint">Degrees, −180 to 180 or 0 to 360; west &gt; east crosses 180.</p>
     <div class="row">
-      <button id="globe" class="ghost"><i data-lucide="globe"></i>Whole globe</button>
       <button id="region-apply" class="primary">Apply</button>
     </div>
   </section>
