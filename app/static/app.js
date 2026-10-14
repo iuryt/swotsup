@@ -45,6 +45,7 @@ async function loadData() {
     $("#stats").innerHTML = `<b>${d.passages}</b> passages · <b>${(d.pixels / 1e6).toFixed(1)} M</b> pixels · ` +
       (d.seconds ? `read from the cloud in <b>${d.seconds.toFixed(1)} s</b>` : "from the server's memory");
     $("#code").textContent = d.code;
+    Prism.highlightElement($("#code"));
     $("#download").href = `/api/netcdf?${state.view}`;
     setColors();
   } catch (e) {
@@ -285,7 +286,7 @@ async function openSeries(lngLat) {
   const dx = right ? 40 : -40 - cw, dy = below ? 40 : -40 - ch;
   const el = document.createElement("div");
   el.className = "pin";
-  el.innerHTML = `<svg><line x1="0" y1="0" x2="${right ? dx : dx + cw}" y2="${below ? dy : dy + ch}"/></svg>
+  el.innerHTML = `<svg><line x1="0" y1="0"/></svg>
     <div class="dot"></div>
     <div class="card" style="left:${dx}px; top:${dy}px">
       <header><div><h3>${latText(lngLat.lat)} ${lonText(lngLat.lng)} · ${info.variables[state.variable]}</h3>
@@ -299,13 +300,38 @@ async function openSeries(lngLat) {
   card.querySelector(".close").onclick = () => { pin.remove(); pin = null; };
   const radius = card.querySelector("select");
   radius.onchange = () => fillSeries(card, lngLat, Number(radius.value));
+  // the line goes from the point to the card's nearest corner; the card can be moved (by its header) and resized
+  const line = el.querySelector("line");
+  const link = () => {
+    const [l, t, w, h] = [card.offsetLeft, card.offsetTop, card.offsetWidth, card.offsetHeight];
+    line.setAttribute("x2", Math.min(Math.max(0, l), l + w));
+    line.setAttribute("y2", Math.min(Math.max(0, t), t + h));
+  };
+  card.querySelector("header").addEventListener("pointerdown", (e) => {
+    if (e.target.closest("select, button")) return;
+    const [x0, y0, l0, t0] = [e.clientX, e.clientY, card.offsetLeft, card.offsetTop];
+    const move = (m) => { card.style.left = `${l0 + m.clientX - x0}px`; card.style.top = `${t0 + m.clientY - y0}px`; link(); };
+    const stop = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", stop); };
+    addEventListener("pointermove", move);
+    addEventListener("pointerup", stop);
+  });
+  new ResizeObserver(() => {
+    link();
+    card.plot?.setSize(chartSize(card));
+  }).observe(card);
   pin = new maplibregl.Marker({ element: el, anchor: "top-left" }).setLngLat(lngLat).addTo(map);
   lucide.createIcons();
   fillSeries(card, lngLat, 5);
 }
 
+function chartSize(card) {  // the chart fills the card below its header
+  return { width: card.clientWidth - 24, height: card.clientHeight - card.querySelector("header").offsetHeight - 26 };
+}
+
 async function fillSeries(card, lngLat, radius) {
   const chart = card.querySelector(".chart"), hint = card.querySelector(".hint");
+  card.plot?.destroy();
+  card.plot = null;
   chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the whole mission from the cloud…</div>`;
   hint.textContent = `mean within ${radius} km`;
   try {
@@ -319,8 +345,8 @@ async function fillSeries(card, lngLat, radius) {
       u.ctx.fillRect(a, u.bbox.top, Math.max(b - a, 2), u.bbox.height);
     }] } };
     const axis = { stroke: "#94a3b8", grid: { stroke: "rgba(148,163,184,0.12)" }, ticks: { stroke: "rgba(148,163,184,0.25)" } };
-    new uPlot({
-      width: 416, height: 190, plugins: [band], legend: { show: false }, cursor: { points: { size: 7 } },
+    card.plot = new uPlot({
+      ...chartSize(card), plugins: [band], legend: { show: false }, cursor: { points: { size: 7 } },
       scales: { x: { time: true } },
       axes: [axis, { ...axis, label: "m", size: 45 }],
       series: [{}, { stroke: "#3b82f6", width: 1, points: { show: true, size: 4, fill: "#3b82f6" } }],
