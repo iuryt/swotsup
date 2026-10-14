@@ -19,3 +19,4 @@ mutate app/server.py 's/per_day = over.cycle.to_series().groupby(over.time.to_in
 mutate app/server.py 's/    lon = np.unwrap(lon, period=360, axis=1)/    pass/' "swaths torn at 180"
 mutate app/server.py 's/                rows = slice(a, b)/                rows = usable/' "lines across land joined into one mesh"
 mutate app/server.py 's/    return load(west, east, south, north, start, int(np.clip(days, 1, MAX_DAYS)), variable)\[0\]/    return next(reversed(loaded.values()))/' "tiles drawn from whatever view is in memory"
+mutate app/swot_view.py 's/    lons = "" if (east - west) % 360 == 0 else/    lons = "" if False else/' "global code keeps the longitude filter"
