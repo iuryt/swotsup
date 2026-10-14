@@ -1,0 +1,37 @@
+[project]
+name = "swot_explorer"
+version = "0.1.0"
+description = "SWOT Sea Surface Height Explorer: a web map over the SWOT L3 IceChunk store"
+authors = [{name = "Iury Simoes-Sousa", email = "iuryt@pm.me"}]
+requires-python = ">= 3.13"
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64"]
+
+[tool.pixi.dependencies]
+icechunk = ">=1.1.21,<2"
+xarray = ">=2026.2.0,<2027"
+zarr = ">=3,<4"
+numpy = ">=2"
+pandas = "*"
+h5netcdf = ">=1.8.1,<2"
+datashader = "*"
+matplotlib = "*"
+cartopy = ">=0.25.0,<0.26"
+pillow = "*"
+fastapi = "*"
+uvicorn = "*"
+httpx = "*"  # fastapi's TestClient
+pytest = "*"
+
+[tool.pixi.pypi-dependencies]
+playwright = "*"  # screenshots of the app in a headless browser (scripts/screenshot.py)
+swot_icechunk = { path = "../swot_icechunk", editable = true }  # tests build small stores with it
+
+[tool.pixi.tasks]
+test = "pytest -q tests"
+serve = "uvicorn server:app --app-dir app --port 5006"
+
+[tool.pytest.ini_options]
+pythonpath = ["app"]
