@@ -34,3 +34,16 @@ def test_snippet_gives_the_app_subset(store_path, monkeypatch):
 def test_whole_globe(store_path):
     path, _ = store_path
     np.testing.assert_array_equal(swot_view.passes_over(swot_view.open_store(path), -180, 180, -1, 1), [7, 20, 150])
+
+
+def test_snippet_for_the_whole_globe(store_path, monkeypatch):
+    """No longitude filter and no latitude cut when they would keep everything; same passages as the app."""
+    path, _ = store_path
+    box = (-180, 180, -90, 90, "2024-01-01", "2024-01-05")
+    code = swot_view.snippet(*box, target="s3://bucket/prefix")
+    assert "lon_min" not in code and "lat=" not in code
+    monkeypatch.setattr(icechunk, "s3_storage", lambda **kw: icechunk.local_filesystem_storage(path))
+    scope = {}
+    exec(code, scope)
+    np.testing.assert_array_equal(scope["sub"].pass_id, swot_view.subset(swot_view.open_store(path), *box).pass_id)
+    np.testing.assert_array_equal(scope["sub"].pass_id, [7, 20, 150])
