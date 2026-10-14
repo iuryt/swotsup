@@ -279,26 +279,25 @@ function drawOverview() {
 
 // --- the time series at a clicked point: a card tied to the point by a line
 let pin = null;
-async function openSeries(lngLat) {
+async function openPoint(lngLat) {  // a small card: where, and the value there; the time series on request
   pin?.remove();
   const p = map.project(lngLat), size = map.getContainer().getBoundingClientRect();
-  const [cw, ch] = [440, 250], right = p.x < size.width * 0.55, below = p.y < size.height * 0.45;
-  const dx = right ? 40 : -40 - cw, dy = below ? 40 : -40 - ch;
+  const right = p.x < size.width * 0.55, below = p.y < size.height * 0.45;
   const el = document.createElement("div");
   el.className = "pin";
   el.innerHTML = `<svg><line x1="0" y1="0"/></svg>
     <div class="dot"></div>
-    <div class="card" style="left:${dx}px; top:${dy}px">
-      <header><div><h3>${latText(lngLat.lat)} ${lonText(lngLat.lng)} · ${info.variables[state.variable]}</h3>
-        <p class="hint"></p></div>
-        <div class="tools"><select title="Mean of the pixels within this distance">
+    <div class="card compact">
+      <header><div><h3>${latText(lngLat.lat)} ${lonText(lngLat.lng)}</h3>
+        <p class="hint"><span class="spinner"></span></p></div>
+        <div class="tools"><select class="hidden" title="Mean of the pixels within this distance">
           ${[2, 5, 10, 20].map((r) => `<option value="${r}" ${r === 5 ? "selected" : ""}>${r} km</option>`).join("")}</select>
           <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
+      <button class="accent expand"><i data-lucide="chart-line"></i>Time series, whole mission</button>
       <div class="chart"></div></div>`;
-  const card = el.querySelector(".card");
+  const card = el.querySelector(".card"), radius = card.querySelector("select");
   for (const ev of ["mousedown", "mouseup", "click", "dblclick", "wheel", "pointerdown"]) card.addEventListener(ev, (e) => e.stopPropagation());
   card.querySelector(".close").onclick = () => { pin.remove(); pin = null; };
-  const radius = card.querySelector("select");
   radius.onchange = () => fillSeries(card, lngLat, Number(radius.value));
   // the line goes from the point to the card's nearest corner; the card can be moved (by its header) and resized
   const line = el.querySelector("line");
@@ -306,6 +305,12 @@ async function openSeries(lngLat) {
     const [l, t, w, h] = [card.offsetLeft, card.offsetTop, card.offsetWidth, card.offsetHeight];
     line.setAttribute("x2", Math.min(Math.max(0, l), l + w));
     line.setAttribute("y2", Math.min(Math.max(0, t), t + h));
+  };
+  const place = (w, h, first = false) => {  // on the side with room; when it grows, the corner near the point stays
+    const x = first ? (right ? 40 : -40) : card.offsetLeft + (right ? 0 : card.offsetWidth);
+    const y = first ? (below ? 40 : -40) : card.offsetTop + (below ? 0 : card.offsetHeight);
+    card.style.left = `${right ? x : x - w}px`;
+    card.style.top = `${below ? y : y - h}px`;
   };
   card.querySelector("header").addEventListener("pointerdown", (e) => {
     if (e.target.closest("select, button")) return;
@@ -315,13 +320,30 @@ async function openSeries(lngLat) {
     addEventListener("pointermove", move);
     addEventListener("pointerup", stop);
   });
+  card.querySelector(".expand").onclick = () => {
+    const [w, h] = [440, 250];
+    place(w, h);
+    card.classList.remove("compact");
+    Object.assign(card.style, { width: `${w}px`, height: `${h}px` });
+    card.querySelector("h3").textContent += ` · ${info.variables[state.variable]}`;
+    radius.classList.remove("hidden");
+    fillSeries(card, lngLat, 5);
+  };
   new ResizeObserver(() => {
     link();
     card.plot?.setSize(chartSize(card));
   }).observe(card);
   pin = new maplibregl.Marker({ element: el, anchor: "top-left" }).setLngLat(lngLat).addTo(map);
   lucide.createIcons();
-  fillSeries(card, lngLat, 5);
+  place(card.offsetWidth, card.offsetHeight, true);
+  link();
+  const v = state.data ? await api(`/api/value?${state.view}`, { lon: wrap(lngLat.lng), lat: lngLat.lat, mode: state.mode })
+    .catch(() => ({})) : {};
+  const bottom = card.offsetTop + card.offsetHeight;  // the text may take more lines: keep the edge near the point
+  card.querySelector(".hint").textContent = v.value == null ? "No data here on the selected dates"
+    : `${v.value.toFixed(3)} m · ${$("#legend-variable").textContent}, ${$("#selection").textContent}`;
+  if (!below) card.style.top = `${bottom - card.offsetHeight}px`;
+  link();
 }
 
 function chartSize(card) {  // the chart fills the card below its header
@@ -345,8 +367,19 @@ async function fillSeries(card, lngLat, radius) {
       u.ctx.fillRect(a, u.bbox.top, Math.max(b - a, 2), u.bbox.height);
     }] } };
     const axis = { stroke: "#94a3b8", grid: { stroke: "rgba(148,163,184,0.12)" }, ticks: { stroke: "rgba(148,163,184,0.25)" } };
+    const tip = document.createElement("div");  // date and value of the point under the mouse
+    tip.className = "tip";
+    const hover = { hooks: { init: [(u) => u.over.appendChild(tip)], setCursor: [(u) => {
+      const i = u.cursor.idx;
+      tip.style.display = i == null ? "none" : "block";
+      if (i == null) return;
+      const x = u.valToPos(u.data[0][i], "x"), y = u.valToPos(u.data[1][i], "y");
+      Object.assign(tip.style, { left: `${x}px`, top: `${y}px`,
+                                 transform: `translate(${x > u.over.clientWidth * 0.75 ? "-100%" : "-50%"}, -140%)` });
+      tip.textContent = `${dayText(u.data[0][i] * 1000)} · ${u.data[1][i].toFixed(3)} m`;
+    }] } };
     card.plot = new uPlot({
-      ...chartSize(card), plugins: [band], legend: { show: false }, cursor: { points: { size: 7 } },
+      ...chartSize(card), plugins: [band, hover], legend: { show: false }, cursor: { points: { size: 7 } },
       scales: { x: { time: true } },
       axes: [axis, { ...axis, label: "m", size: 45 }],
       series: [{}, { stroke: "#3b82f6", width: 1, points: { show: true, size: 4, fill: "#3b82f6" } }],
@@ -458,7 +491,7 @@ async function main() {
   });
   map.on("move", drawOverview);
   map.on("click", (e) => {
-    if (!state.drawing && !state.justDrew) openSeries(e.lngLat);
+    if (!state.drawing && !state.justDrew) openPoint(e.lngLat);
     state.justDrew = false;
   });
   setupMenus();
