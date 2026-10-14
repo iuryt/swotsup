@@ -101,6 +101,13 @@ h1 { font-size: 16px; margin: 0; color: var(--title); font-weight: 600; }
 .card header .tools { display: flex; align-items: center; gap: 4px; }
 .card select { padding: 2px 6px; font-size: 12px; }
 .card .chart { margin-top: 4px; }
+.card.compact { width: 300px; height: auto; min-height: 0; resize: none; }
+.card.compact .chart { display: none; }
+.card .expand { margin-top: 8px; width: 100%; justify-content: center; }
+.card:not(.compact) .expand { display: none; }
+.card .hint .spinner { display: inline-block; vertical-align: middle; }
+.tip { position: absolute; pointer-events: none; white-space: nowrap; padding: 3px 7px; border-radius: 6px; z-index: 5;
+  background: rgba(2, 6, 23, 0.9); border: 1px solid var(--orange); color: var(--fg); font-size: 11px; }
 .card .loading { height: 180px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .uplot { font-family: Inter, system-ui, sans-serif; }
 
