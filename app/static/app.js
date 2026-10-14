@@ -293,7 +293,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
         <div class="tools"><select class="hidden" title="Mean of the pixels within this distance">
           ${[2, 5, 10, 20].map((r) => `<option value="${r}" ${r === 5 ? "selected" : ""}>${r} km</option>`).join("")}</select>
           <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
-      <button class="accent expand"><i data-lucide="chart-line"></i>Time series, whole mission</button>
+      <button class="expand" title="Mean around this point, every passage of the mission"><i data-lucide="chart-line"></i>Time series</button>
       <div class="chart"></div></div>`;
   const card = el.querySelector(".card"), radius = card.querySelector("select");
   for (const ev of ["mousedown", "mouseup", "click", "dblclick", "wheel", "pointerdown"]) card.addEventListener(ev, (e) => e.stopPropagation());
