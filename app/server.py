@@ -4,6 +4,7 @@ so only images of the screen's size go to the browser.
 Run: uvicorn server:app --app-dir app --port 5006   (SWOT_STORE, credentials from AWS_* in the environment)"""
 import io
 import os
+import threading
 import time
 import warnings
 from collections import OrderedDict
@@ -16,7 +17,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import zarr
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -29,6 +30,7 @@ matplotlib.use("agg")
 zarr.config.set({"async.concurrency": 64})
 MAX_DAYS = 21
 MAX_PIXELS = 60e6  # ~2 days of the whole globe; keeps a load under ~1 GB of memory
+MAX_BYTES = float(os.environ.get("SWOT_CACHE_GB", 4)) * 1e9  # loaded views kept in memory, beyond the newest
 VARIABLES = {"ssha_unfiltered": ("SSHA, unfiltered", ["ssha_unfiltered"]),
              "ssha_filtered": ("SSHA, filtered", ["ssha_filtered"]),
              "adt": ("ADT = SSHA + MDT", ["ssha_filtered", "mdt"])}
@@ -91,6 +93,8 @@ class Loaded:
                 xi, yi = mercator(continuous(lon[i][rows], center), lat[i][rows])
                 # lines run south to north: a view needs only the block of lines across its latitudes
                 self.meshes.append((i, rows, xi, yi, yi.min(1), yi.max(1), (xi.min(), xi.max(), yi.min(), yi.max())))
+        self.nbytes = (sub.nbytes + sum(v.nbytes for v in self.values.values())
+                       + sum(m[2].nbytes + m[3].nbytes for m in self.meshes))
         self.quantiles = {}
         for mode, v in self.values.items():
             v = v[np.isfinite(v)]
@@ -118,25 +122,43 @@ class Loaded:
             return total / count
 
 
-loaded = OrderedDict()  # recent subsets by key; the opening view stays
+loaded = OrderedDict()  # views in memory, least recently used first; the opening view stays
+cache_lock = threading.Lock()  # guards `loaded` and `loading` (requests run in threads)
+loading = {}  # one lock per view being read: a second request for it waits instead of reading it again
 
 
 def load(west, east, south, north, start, days, variable):
+    """The view's data and the seconds spent reading it (0 if it was in memory)."""
     key = (west, east, south, north, start, days, variable)
-    if key in loaded:
-        loaded.move_to_end(key)
-        return key, loaded[key], 0.0
-    t0 = time.perf_counter()
-    end = pd.Timestamp(start) + pd.Timedelta(days=days) - pd.Timedelta(seconds=1)
-    names = VARIABLES[variable][1]
-    sub = swot_view.subset(ds, west, east, south, north, start, end)
-    if sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > MAX_PIXELS:
-        raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
-    loaded[key] = Loaded(sub[names].load(), names, west, east)
-    while len(loaded) > 6:
-        oldest = next(k for k in loaded if k != tuple(DEFAULT.values()))
-        del loaded[oldest]
-    return key, loaded[key], time.perf_counter() - t0
+    with cache_lock:
+        if key in loaded:
+            loaded.move_to_end(key)
+            return loaded[key], 0.0
+        lock = loading.setdefault(key, threading.Lock())
+    with lock:
+        with cache_lock:
+            if key in loaded:  # read meanwhile by another request
+                return loaded[key], 0.0
+        t0 = time.perf_counter()
+        end = pd.Timestamp(start) + pd.Timedelta(days=days) - pd.Timedelta(seconds=1)
+        names = VARIABLES[variable][1]
+        sub = swot_view.subset(ds, west, east, south, north, start, end)
+        if sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > MAX_PIXELS:
+            raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
+        data = Loaded(sub[names].load(), names, west, east)
+        with cache_lock:
+            loaded[key] = data
+            loading.pop(key, None)
+            keep = {key, tuple(DEFAULT.values())}
+            while sum(d.nbytes for d in loaded.values()) > MAX_BYTES and len(loaded) > len(keep & loaded.keys()):
+                del loaded[next(k for k in loaded if k not in keep)]
+    return data, time.perf_counter() - t0
+
+
+def view(west: float, east: float, south: float, north: float, start: str, days: int, variable: str):
+    """The data of the view a request names, read again if it left memory: every request (tiles, values,
+    downloads) carries the view itself, so many visitors cannot push each other's views out from under them."""
+    return load(west, east, south, north, start, int(np.clip(days, 1, MAX_DAYS)), variable)[0]
 
 
 app = FastAPI()
@@ -173,29 +195,22 @@ def timeline(west: float, east: float, south: float, north: float):
 @app.get("/api/load")
 def load_view(west: float, east: float, south: float, north: float, start: str, days: int, variable: str):
     days = int(np.clip(days, 1, MAX_DAYS))
-    key, data, seconds = load(west, east, south, north, start, days, variable)
+    data, seconds = load(west, east, south, north, start, days, variable)
     end = pd.Timestamp(start) + pd.Timedelta(days=days - 1)
-    return dict(id=hash(key) & 0xFFFFFFFF, passages=data.sub.sizes["time"], seconds=round(seconds, 2),
+    return dict(passages=data.sub.sizes["time"], seconds=round(seconds, 2),
                 pixels=int(np.isfinite(data.values["none"]).sum()), quantiles=data.quantiles,
                 code=swot_view.snippet(west, east, south, north, start, str(end.date()), data.names[0]))
-
-
-def by_id(id):
-    for key, data in loaded.items():
-        if hash(key) & 0xFFFFFFFF == id:
-            return data
-    raise HTTPException(404, "not loaded")
 
 
 EMPTY = io.BytesIO()
 Image.new("RGBA", (256, 256)).save(EMPTY, format="png")
 
 
-@app.get("/api/tile/{id}/{z}/{x}/{y}.png")
-def tile(id: int, z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2):
+@app.get("/api/tile/{z}/{x}/{y}.png")
+def tile(z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2, data=Depends(view)):
     size = WORLD / 2**z
     x0, y1 = -WORLD / 2 + x * size, WORLD / 2 - y * size
-    mean = by_id(id).mean_on(mode, (x0, x0 + size), (y1 - size, y1), 256, 256)
+    mean = data.mean_on(mode, (x0, x0 + size), (y1 - size, y1), 256, 256)
     if not np.isfinite(mean).any():
         return Response(EMPTY.getvalue(), media_type="image/png")
     rgba = (CMAP(np.clip((mean - vmin) / (vmax - vmin), 0, 1)) * 255).astype(np.uint8)
@@ -206,10 +221,10 @@ def tile(id: int, z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2,
 
 
 @app.get("/api/value")
-def value(id: int, lon: float, lat: float, mode: str = "box"):
+def value(lon: float, lat: float, mode: str = "box", data=Depends(view)):
     """The value under the mouse: the mean of the passages on a ~1 km cell there."""
     x, y = mercator(lon, lat)
-    v = by_id(id).mean_on(mode, (x - 500, x + 500), (y - 500, y + 500), 1, 1)[0, 0]
+    v = data.mean_on(mode, (x - 500, x + 500), (y - 500, y + 500), 1, 1)[0, 0]
     return dict(value=None if np.isnan(v) else round(float(v), 4))
 
 
@@ -220,10 +235,10 @@ def series(lon: float, lat: float, variable: str, radius: float = 5):
     return dict(time=(s.time.to_index().astype("int64") // 10**6).tolist(), value=s.values.round(4).tolist())
 
 
-@app.get("/api/netcdf/{id}")
-def netcdf(id: int):
+@app.get("/api/netcdf")
+def netcdf(data=Depends(view)):
     buf = io.BytesIO()
-    by_id(id).sub.to_netcdf(buf, engine="h5netcdf")
+    data.sub.to_netcdf(buf, engine="h5netcdf")
     return Response(buf.getvalue(), media_type="application/x-netcdf",
                     headers={"Content-Disposition": 'attachment; filename="swot_subset.nc"'})
 

@@ -15,23 +15,36 @@ def client(store_path, monkeypatch):
     return TestClient(server.app)
 
 
+PASS_7 = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
+
+
+def alpha(client, view, lon, lat, z=6):
+    """Opacity of the map tile pixel at (lon, lat) for a view."""
+    fx = (lon + 180) / 360 * 2**z
+    fy = (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+    png = client.get(f"/api/tile/{z}/{int(fx)}/{int(fy)}.png", params=view | dict(mode="none")).content
+    return np.asarray(Image.open(io.BytesIO(png)).convert("RGBA"))[int(fy % 1 * 256), int(fx % 1 * 256), 3]
+
+
 def test_tile_is_where_the_swath_is(client):
     """Pass 7 spans lon 29.5-30.5, lat -10-10 on 2024-01-03: its pixels must land there on the map tiles."""
-    d = client.get("/api/load", params=dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1,
-                                            variable="ssha_unfiltered")).json()
-    assert d["passages"] == 1
-    z = 6
+    assert client.get("/api/load", params=PASS_7).json()["passages"] == 1
+    assert alpha(client, PASS_7, 30.0, 5.0) == 255  # on the swath
+    assert alpha(client, PASS_7, 31.0, 5.0) == 0  # east of it
+    assert alpha(client, PASS_7, 30.0, 10.5) == 0  # north of its end
+    assert alpha(client, PASS_7, 30.0, -9.5) == 255
 
-    def alpha(lon, lat):
-        fx = (lon + 180) / 360 * 2**z
-        fy = (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
-        png = client.get(f"/api/tile/{d['id']}/{z}/{int(fx)}/{int(fy)}.png", params=dict(mode="none")).content
-        return np.asarray(Image.open(io.BytesIO(png)).convert("RGBA"))[int(fy % 1 * 256), int(fx % 1 * 256), 3]
 
-    assert alpha(30.0, 5.0) == 255  # on the swath
-    assert alpha(31.0, 5.0) == 0  # east of it
-    assert alpha(30.0, 10.5) == 0  # north of its end
-    assert alpha(30.0, -9.5) == 255
+def test_tiles_of_a_view_that_left_memory(client, monkeypatch):
+    """Other visitors' views push a view out of memory; its tiles must still be drawn, from the data."""
+    import server
+
+    monkeypatch.setattr(server, "MAX_BYTES", 0)  # keep only the newest view
+    pass_150 = PASS_7 | dict(west=199, east=201, start="2024-01-05")
+    client.get("/api/load", params=PASS_7)
+    client.get("/api/load", params=pass_150)
+    assert tuple(PASS_7.values()) not in server.loaded
+    assert alpha(client, PASS_7, 30.0, 5.0) == 255
 
 
 def test_timeline_days_over_the_box(client):
