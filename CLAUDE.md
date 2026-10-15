@@ -23,7 +23,9 @@ conversation that built the app can be resumed here (`claude --resume`).
 
 ## Layout
 
-- `app/` is the Space root (`Dockerfile`, `requirements.txt`, `README.md` with the Space front matter).
+- `app/` holds the server and the page; `app/Dockerfile` builds them with the pixi environment `serve` (the server's
+  dependencies, solved together with the default environment, so the image runs the versions we test), from a
+  context with `pyproject.toml`, `pixi.lock` and `app/`. `app/README.md` has the Space front matter.
 - `app/swot_view.py`: the data recipes (open the store, passes over a box, subset, point series, code
   snippet) with **icechunk + xarray only**, so the snippet users copy is the code the app runs
   (`tests/test_view.py` executes it). Moving to Earthmover's storage should only touch `open_store`.

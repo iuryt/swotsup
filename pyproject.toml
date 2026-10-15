@@ -27,10 +27,13 @@ cartopy = ">=0.25.0,<0.26"
 pillow = "*"
 fastapi = "*"
 uvicorn = "*"
+
+# tests and screenshots; the server alone is the environment `serve` (what the Docker image installs)
+[tool.pixi.feature.dev.dependencies]
 httpx = "*"  # fastapi's TestClient
 pytest = "*"
 
-[tool.pixi.pypi-dependencies]
+[tool.pixi.feature.dev.pypi-dependencies]
 playwright = "*"  # screenshots of the app in a headless browser (scripts/screenshot.py)
 swot_icechunk = { path = "../swot_icechunk", editable = true }  # tests build small stores with it
 
@@ -55,6 +58,8 @@ pyproj = ">=3.6.1,<4"
 start = "python app.py"
 
 [tool.pixi.environments]
+default = { features = ["dev"], solve-group = "app" }
+serve = { features = [], solve-group = "app" }  # same versions as default, so the server runs what we test
 legacy = { features = ["legacy"], no-default-feature = true }
 
 [tool.pytest.ini_options]

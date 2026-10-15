@@ -1,13 +1,20 @@
-# Hugging Face Space (Docker SDK). Set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY as Space secrets
-# (a read-only key), and SWOT_STORE / AWS_REGION as variables if they differ from the defaults.
-FROM python:3.13-slim
-RUN useradd -m -u 1000 user
-USER user
-WORKDIR /home/user/app
-COPY --chown=user requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
-COPY --chown=user server.py swot_view.py ./
-COPY --chown=user static ./static
-ENV PATH=/home/user/.local/bin:$PATH AWS_REGION=us-east-1
+# The explorer's server, with the pixi environment `serve` from the lockfile: the same versions as the tests.
+# Build context: pyproject.toml, pixi.lock and app/ (slurm/ec2.sh packs them). The store is read with the
+# AWS credentials of the environment (an instance role, or AWS_* as secrets).
+FROM ghcr.io/prefix-dev/pixi:0.78.0 AS build
+WORKDIR /srv
+COPY pyproject.toml pixi.lock ./
+# --frozen: the lockfile as is (the dev environment's path dependency is not in the image)
+RUN pixi install --frozen -e serve && pixi shell-hook --frozen -e serve -s bash > /shell-hook.sh
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /srv/.pixi/envs/serve /srv/.pixi/envs/serve
+COPY --from=build /shell-hook.sh /shell-hook.sh
+COPY app /srv/app
+WORKDIR /srv
+USER 1000
+ENV AWS_REGION=us-east-1
 EXPOSE 7860
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7860"]
+ENTRYPOINT ["/bin/bash", "-c", "source /shell-hook.sh && exec \"$@\"", "--"]
+CMD ["uvicorn", "server:app", "--app-dir", "app", "--host", "0.0.0.0", "--port", "7860"]

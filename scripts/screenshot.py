@@ -1,5 +1,5 @@
 """Screenshot a page in headless chromium. Usage (app env): screenshot.py URL PREFIX [--app]
-Writes PREFIX-0.png. With --app it waits for the data, then clicks the map (PREFIX-1.png, the time series card).
+Writes PREFIX-0.png. With --app it waits for the data, then clicks the map (PREFIX-1.png, the card of that point).
 Browser console errors are printed."""
 import sys
 
@@ -19,7 +19,7 @@ with sync_playwright() as p:
     page.screenshot(path=f"{prefix}-0.png")
     if app:
         page.mouse.click(*CLICK)
-        page.wait_for_selector(".card .uplot, .card .loading:not(:has(.spinner))", timeout=120_000)
-        page.wait_for_timeout(1500)
+        page.wait_for_selector(".card", timeout=120_000)
+        page.wait_for_timeout(3000)  # the value on the selected dates
         page.screenshot(path=f"{prefix}-1.png")
 print("done")
