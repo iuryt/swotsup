@@ -2,6 +2,7 @@
 The swaths are drawn here, as map tiles: each passage is a curvilinear mesh rasterized with datashader,
 so only images of the screen's size go to the browser.
 Run: uvicorn server:app --app-dir app --port 5006   (SWOT_STORE, credentials from AWS_* in the environment)"""
+import hashlib
 import io
 import os
 import threading
@@ -167,6 +168,8 @@ NETCDF = os.environ.get("SWOT_NETCDF", "1") != "0"
 
 app = FastAPI()
 STATIC = Path(__file__).parent / "static"
+# in the tile URLs: browsers keep tiles an hour, so a new server must not get the old ones
+VERSION = hashlib.sha1(b"".join((Path(__file__).parent / f).read_bytes() for f in ("server.py", "swot_view.py"))).hexdigest()[:8]
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -185,7 +188,7 @@ def page():
 def info():
     return dict(first=str(pd.Timestamp(ds.time.values[0])), last=str(pd.Timestamp(ds.time.values[-1])),
                 passages=ds.sizes["time"], passes=ds.sizes["pass_number"], max_days=MAX_DAYS, default=DEFAULT,
-                variables={k: v[0] for k, v in VARIABLES.items()}, world=world()[1:])
+                variables={k: v[0] for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION)
 
 
 @app.get("/api/timeline")
