@@ -1,7 +1,8 @@
 #!/bin/bash
 # The explorer on one EC2 instance in us-east-1 (next to the store), behind Caddy with HTTPS at
 # https://<ip>.sslip.io. The instance reads the store and the app (packed into the bucket) through its own
-# read-only role, so no key goes to the machine; there is no SSH, an update reboots it and it rebuilds.
+# read-only role, so no key goes to the machine; the image installs the pixi environment `serve` (pixi.lock);
+# there is no SSH, an update reboots it and it rebuilds.
 #   sbatch -o logs/ec2-%j.out slurm/ec2.sh up       create the role, the security group and the instance
 #   sbatch -o logs/ec2-%j.out slurm/ec2.sh update   send app/ again and reboot
 #   sbatch -o logs/ec2-%j.out slurm/ec2.sh status   address and the end of the boot log
@@ -21,7 +22,7 @@ instance() {
     --filters Name=tag:Name,Values=$NAME Name=instance-state-name,Values=pending,running,stopping,stopped
 }
 send_code() {
-  tar -czf logs/app.tar.gz --exclude __pycache__ -C app .
+  tar -czf logs/app.tar.gz --exclude __pycache__ pyproject.toml pixi.lock app -C app Dockerfile  # build context
   aws --profile "${UPLOAD_PROFILE:-swot-deploy}" s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
 
