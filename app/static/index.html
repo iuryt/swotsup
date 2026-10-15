@@ -6,7 +6,7 @@
   <title>SWOT Sea Surface Height Explorer</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
   <link href="static/style.css" rel="stylesheet">
@@ -79,6 +79,7 @@
   </section>
 
   <canvas id="overview" width="170" height="83" title="Click to go there"></canvas>
+  <button id="projection" title="Switch between the globe and a flat map"></button>
   <div id="coords"></div>
 
   <!-- bottom: time -->
@@ -127,7 +128,7 @@
 
   <div id="toast" class="panel hidden"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.453.0/dist/umd/lucide.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
