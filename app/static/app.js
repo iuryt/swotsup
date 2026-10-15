@@ -80,7 +80,7 @@ function setColors() {
   document.querySelectorAll("#mode button").forEach((b) => b.classList.toggle("active", b.dataset.value === state.mode));
   $("#symmetric").checked = state.symmetric;
   if (!state.data) return;
-  const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}`;
+  const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}`;
   const source = map.getSource("swot");
   if (source) source.setTiles([url]);
   else {

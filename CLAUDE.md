@@ -63,7 +63,10 @@ sbatch -p batch -c 2 --mem 8G -t 60 -o logs/mutants-%j.out slurm/mutants.sh   # 
                                    # it edits app/ in place: run nothing else on the repo meanwhile
 sbatch slurm/pixi_install.sbatch   # after changing dependencies (also installs chromium for playwright)
 sbatch -o logs/ec2-%j.out slurm/ec2.sh up|status|update|down   # test server on EC2 (c7i.2xlarge, us-east-1),
-                                   # https://<ip>.sslip.io, profile swot-deploy; NetCDF off there (SWOT_NETCDF=0)
+                                   # profile swot-deploy; NetCDF off there (SWOT_NETCDF=0). It stops after 30 idle
+                                   # minutes (deploy/boot.sh); the link to share is a Lambda URL (deploy/wake.py)
+                                   # that starts it with a waiting page. Ask the user before update/up/down:
+                                   # people may be using it.
 ```
 
 Look at the app through screenshots after every visible change (`scripts/screenshot.py` waits for the data
