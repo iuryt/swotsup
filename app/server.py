@@ -161,6 +161,10 @@ def view(west: float, east: float, south: float, north: float, start: str, days:
     return load(west, east, south, north, start, int(np.clip(days, 1, MAX_DAYS)), variable)[0]
 
 
+# SWOT_NETCDF=0 leaves out the download of the subset (the original product, which the AVISO License does not
+# let us redistribute through a public site without CNES's authorization)
+NETCDF = os.environ.get("SWOT_NETCDF", "1") != "0"
+
 app = FastAPI()
 STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -172,6 +176,8 @@ def page():
     html = (STATIC / "index.html").read_text()
     for name in ("style.css", "app.js"):
         html = html.replace(f"static/{name}", f"static/{name}?v={int((STATIC / name).stat().st_mtime)}")
+    if not NETCDF:
+        html = "\n".join(line for line in html.splitlines() if 'id="download"' not in line)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
@@ -237,6 +243,8 @@ def series(lon: float, lat: float, variable: str, radius: float = 5):
 
 @app.get("/api/netcdf")
 def netcdf(data=Depends(view)):
+    if not NETCDF:
+        raise HTTPException(404)
     buf = io.BytesIO()
     data.sub.to_netcdf(buf, engine="h5netcdf")
     return Response(buf.getvalue(), media_type="application/x-netcdf",

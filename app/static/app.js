@@ -46,7 +46,7 @@ async function loadData() {
       (d.seconds ? `read from the cloud in <b>${d.seconds.toFixed(1)} s</b>` : "from the server's memory");
     $("#code").textContent = d.code;
     Prism.highlightElement($("#code"));
-    $("#download").href = `/api/netcdf?${state.view}`;
+    if ($("#download")) $("#download").href = `/api/netcdf?${state.view}`;  // absent where SWOT_NETCDF=0
     setColors();
   } catch (e) {
     toast(e.message);
