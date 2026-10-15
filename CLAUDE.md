@@ -36,8 +36,8 @@ conversation that built the app can be resumed here (`claude --resume`).
     `/api/load`, `/api/value` (under the mouse), `/api/series`, `/api/netcdf`, `/api/world.png`.
   Loaded subsets are kept in memory (a few, LRU); the opening view (whole globe, 2 Nov 2024, 1 day,
   `DEFAULT`) is loaded when the server starts.
-- `app/static/`: the page, no build step (MapLibre GL, uPlot, lucide from jsDelivr, pinned):
-  map full screen without axes, floating panels, a canvas timeline (orange band of up to 21 days; the
+- `app/static/`: the page, no build step (MapLibre GL 5, uPlot, lucide from jsDelivr, pinned):
+  map full screen without axes, globe by default with a button for the flat map (remembered per browser), floating panels, a canvas timeline (orange band of up to 21 days; the
   dragged edge stops at the limit, moving keeps the length), an Equal Earth overview (projected in JS),
   the mouse position and value, and a card tied to a clicked point by a line, with its series.
 

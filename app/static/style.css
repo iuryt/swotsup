@@ -80,11 +80,14 @@ h1 { font-size: 16px; margin: 0; color: var(--title); font-weight: 600; }
 #timeline { width: 100%; height: 46px; display: block; cursor: crosshair; touch-action: none; }
 #time .hint { margin: 2px 0 0; font-size: 11px; }
 
-#overview { position: absolute; left: var(--gap); bottom: 128px; width: 170px; height: 83px; cursor: pointer;
+#overview { position: absolute; left: var(--gap); bottom: 170px; width: 170px; height: 83px; cursor: pointer;
   filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .5)); }
 #coords { position: absolute; right: var(--gap); bottom: 128px; padding: 4px 8px; border-radius: 6px;
   background: var(--panel); color: var(--fg); font-size: 12px; font-variant-numeric: tabular-nums; }
 #coords:empty { display: none; }
+body.globe #overview { display: none; }
+#projection { position: absolute; left: var(--gap); bottom: 128px; background: var(--panel); color: var(--fg);
+  border: 1px solid var(--border); box-shadow: 0 4px 10px rgba(0, 0, 0, .4); }
 .maplibregl-ctrl-bottom-right { bottom: 160px; }
 
 /* the time series at a point: a card tied to the point by a line */

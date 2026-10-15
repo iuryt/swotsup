@@ -257,6 +257,7 @@ function drawOverview() {
   [c.width, c.height] = [W * dpr, H * dpr];
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, W, H);
+  if (document.body.classList.contains("globe")) return;
   if (overview.image.complete) ctx.drawImage(overview.image, 0, 0, W, H);
   const [X, Y] = info.world, A1 = 1.340264, A2 = -0.081106, A3 = 0.000893, A4 = 0.003796, M = Math.sqrt(3) / 2;
   const ee = (lon, lat) => {  // Equal Earth (Šavrič et al. 2018) on the unit sphere, to pixels
@@ -467,6 +468,19 @@ function setupMenus() {
   $("#copy").onclick = async () => { await navigator.clipboard.writeText($("#code").textContent); $("#copy").lastChild.textContent = "Copied"; };
 }
 
+// --- globe or flat map (Web Mercator); the choice is remembered in this browser
+function setProjection(globe) {
+  // the same zoom shows the globe about a third as wide as the flat world: keep the world's size on screen
+  const was = document.body.classList.contains("globe");
+  if (was !== globe && map.getZoom() < 4) map.setZoom(map.getZoom() + (globe ? 0.7 : -0.7));
+  map.setProjection({ type: globe ? "globe" : "mercator" });
+  document.body.classList.toggle("globe", globe);  // the overview is for the flat map
+  $("#projection").innerHTML = globe ? '<i data-lucide="map"></i>Flat map' : '<i data-lucide="earth"></i>Globe';
+  lucide.createIcons();
+  try { localStorage.setItem("projection", globe ? "globe" : "mercator"); } catch (e) {}
+  drawOverview();
+}
+
 // --- start
 async function main() {
   info = await api("/api/info");
@@ -496,6 +510,10 @@ async function main() {
     map.flyTo({ center: [Math.max(-180, Math.min(180, lon)), lat] });
   };
   map.on("load", () => {
+    let saved = null;
+    try { saved = localStorage.getItem("projection"); } catch (e) {}
+    setProjection(saved !== "mercator");
+    $("#projection").onclick = () => setProjection(!document.body.classList.contains("globe"));
     map.addSource("box", { type: "geojson", data: { type: "Feature", geometry: { type: "Point", coordinates: [0, 0] } } });
     map.addLayer({ id: "box", type: "line", source: "box", paint: { "line-color": "#3b82f6", "line-width": 2 } });
     setupDrawing();
