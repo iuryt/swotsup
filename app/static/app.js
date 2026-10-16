@@ -445,7 +445,7 @@ function drawLine() {  // the next clicks on the map are its vertices; a double 
   $("#line").classList.toggle("active", state.lining);
   map.getCanvas().style.cursor = state.lining ? "crosshair" : "";
   state.lining ? map.doubleClickZoom.disable() : map.doubleClickZoom.enable();
-  if (!state.lining) showLine(transect?.points ?? []);
+  if (!state.lining) showLine(transect?.path ?? transect?.points ?? []);
 }
 
 function showLine(points, mouse) {  // on the map, with the segment to the mouse while drawing
@@ -514,6 +514,11 @@ async function fillTransect() {
   try {
     const t = await api(`/api/transect?${state.view}`, { mode: state.mode, step,
       points: points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";") });
+    // the line through the points read (great circles), with longitudes continuous from the first vertex,
+    // so it and the marker are on the same copy of the world as the drawing
+    let prev = points[0][0];
+    transect.path = t.lon.map((x, i) => { prev = x + 360 * Math.round((prev - x) / 360); return [prev, t.lat[i]]; });
+    showLine(transect.path);
     card.querySelector("h3").textContent = `Along the line · ${t.distance.at(-1).toFixed(0)} km · ${$("#legend-variable").textContent}`;
     hint.textContent = `${t.passages.length} passages · nearest pixel of each, every ${t.step} km`;
     chart.innerHTML = "";
@@ -530,7 +535,7 @@ async function fillTransect() {
     const hover = { hooks: { setCursor: [(u) => {
       const i = u.cursor.idx;
       tip.style.display = i == null ? "none" : "block";
-      showProbe(i == null ? null : [t.lon[i], t.lat[i]]);
+      showProbe(i == null ? null : transect.path[i]);
       if (i == null) return;
       // a table: the column names in orange, then one row per passage with data here
       const here = t.passages.map((q, k) => ({ q, k, v: q.value[i], at: new Date(q.line_time[i]) })).filter((h) => h.v != null);
