@@ -534,10 +534,13 @@ async function fillTransect() {
       if (i == null) return;
       // a table: the column names in orange, then one row per passage with data here
       const here = t.passages.map((q, k) => ({ q, k, v: q.value[i], at: new Date(q.line_time[i]) })).filter((h) => h.v != null);
+      // the curve under the mouse (within 20 px) stands out in the table: colors repeat, rows don't
+      const near = here.map((h) => Math.abs(u.valToPos(h.v, "y") - u.cursor.top));
+      const on = near.length && Math.min(...near) < 20 ? near.indexOf(Math.min(...near)) : -1;
       const date = (d) => d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
-      tip.innerHTML = `<b>${t.distance[i].toFixed(0)} km</b>` + (here.length ? `<table>
+      tip.innerHTML = `<b>${t.distance[i].toFixed(0)} km</b>` + (here.length ? `<table class="${on < 0 ? "" : "picked"}">
         <tr><th></th><th>value</th><th>dd/mm/yyyy</th><th>hh:mm UTC</th><th>pass</th><th>cycle</th></tr>` +
-        here.map((h) => `<tr><td><i style="background:${color(h.k)}"></i></td><td>${h.v.toFixed(3)} m</td>
+        here.map((h, n) => `<tr class="${n === on ? "on" : ""}"><td><i style="background:${color(h.k)}"></i></td><td>${h.v.toFixed(3)} m</td>
           <td>${date(h.at)}</td><td>${h.at.toISOString().slice(11, 16)}</td><td>${h.q.pass_id}</td><td>${h.q.cycle}</td></tr>`).join("") +
         "</table>" : "<div>no data</div>");
       const r = u.over.getBoundingClientRect(), x = r.left + u.valToPos(t.distance[i], "x");  // right of the cursor, if it fits
@@ -545,8 +548,7 @@ async function fillTransect() {
       tip.style.top = `${r.top + 4}px`;
     }] } };
     card.plot = new uPlot({
-      ...transectSize(card), plugins: [hover], legend: { show: false }, focus: { alpha: 0.3 },
-      cursor: { points: { size: 6 }, focus: { prox: 20 } },  // the curve nearest the mouse stands out
+      ...transectSize(card), plugins: [hover], legend: { show: false }, cursor: { points: { size: 6 } },
       scales: { x: { time: false } },
       axes: [{ ...axis, values: (u, ticks) => ticks.map((v) => `${v} km`) }, { ...axis, label: "m", size: 45 }],
       series: [{}, ...t.passages.map((q, k) => ({ stroke: color(k), width: 1.5 }))],
