@@ -123,6 +123,9 @@ body.globe #overview { display: none; }
 .tip th { color: var(--orange); font-weight: 500; text-align: right; padding: 0 0 1px 10px; }
 .tip td { text-align: right; padding: 0 0 0 10px; font-variant-numeric: tabular-nums; }
 .tip td:first-child, .tip th:first-child { padding: 0; }
+.tip .picked tr:not(:first-child):not(.on) { opacity: 0.45; }
+.tip tr.on td { color: #fff; font-weight: 600; background: rgba(255, 255, 255, 0.08); }
+.tip tr.on i { height: 5px; }
 .tip i { display: inline-block; width: 10px; height: 3px; margin-right: 5px; vertical-align: middle; }
 
 dialog.panel { position: fixed; color: var(--fg); padding: 16px 20px; max-width: 720px; width: calc(100% - 40px); }
