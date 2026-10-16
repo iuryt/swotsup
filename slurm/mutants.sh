@@ -27,3 +27,4 @@ mutate app/server.py 's/    angles = np.arccos(np.clip((v\[:-1\] \* v\[1:\]).sum
 mutate app/server.py 's/d, j = tree.query(pts, distance_upper_bound=radius \/ swot_view.EARTH_RADIUS)/d, j = tree.query(pts)/' "transect fills the nadir gap and beyond the swath"
 mutate app/server.py 's/        t = pd.Timestamp(data.line_time\[i, seen\[len(seen) \/\/ 2\]\]).round("s")/        t = pd.Timestamp(data.sub.time.values[i]).round("s")/' "transect gives the passage's mean time"
 mutate app/server.py 's/    dist = np.r_\[np.arange(0, length, step), length\]  # and the last vertex/    dist = np.arange(0, length, step)/' "transect stops short of its last vertex"
+mutate app/server.py 's/        times = data.line_time\[i, rows\[i\].clip(0)\]/        times = data.line_time[i, np.full_like(rows[i], seen[len(seen) \/\/ 2])]/' "transect gives every point the time of the middle line"

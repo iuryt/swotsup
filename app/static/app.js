@@ -533,7 +533,8 @@ async function fillTransect() {
       if (i == null) return;
       const x = u.valToPos(t.distance[i], "x");
       Object.assign(tip.style, { left: `${x}px`, top: "4px", transform: `translateX(${x > u.over.clientWidth * 0.6 ? "-105%" : "5%"})` });
-      const here = t.passages.map((q, k) => q.value[i] == null ? "" : `<div><i style="background:${color(k)}"></i>${q.value[i].toFixed(3)} m</div>`);
+      const here = t.passages.map((q, k) => q.value[i] == null ? "" : `<div><i style="background:${color(k)}"></i>` +
+        `${q.value[i].toFixed(3)} m · ${dayText(q.line_time[i])} ${new Date(q.line_time[i]).toISOString().slice(11, 19)} UTC</div>`);
       tip.innerHTML = `<b>${t.distance[i].toFixed(0)} km</b>${here.join("") || "<div>no data</div>"}`;
     }] } };
     card.plot = new uPlot({
