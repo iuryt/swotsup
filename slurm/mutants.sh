@@ -23,3 +23,7 @@ mutate app/swot_view.py 's/    lons = "" if (east - west) % 360 == 0 else/    lo
 mutate app/server.py 's/str(pd.Timestamp(data.line_time\[i, line\]).round("s"))/str(pd.Timestamp(data.sub.time.values[i]).round("s"))/' "click gives the passage's mean time, not its line's"
 mutate app/server.py 's/yield i, rows.start + block.start, /yield i, rows.start, /' "click takes the line from the wrong block"
 mutate app/server.py 's/            if len(above) == 0 or len(below) == 0:/            if len(np.intersect1d(above, below)) == 0:/' "a click between two lines finds no data"
+mutate app/server.py 's/    angles = np.arccos(np.clip((v\[:-1\] \* v\[1:\]).sum(-1), -1, 1))  # of each segment/    angles = np.deg2rad(np.hypot(np.diff(lon), np.diff(lat)))  # of each segment/' "transect segments measured in degrees, not along great circles"
+mutate app/server.py 's/d, j = tree.query(pts, distance_upper_bound=radius \/ swot_view.EARTH_RADIUS)/d, j = tree.query(pts)/' "transect fills the nadir gap and beyond the swath"
+mutate app/server.py 's/        t = pd.Timestamp(data.line_time\[i, seen\[len(seen) \/\/ 2\]\]).round("s")/        t = pd.Timestamp(data.sub.time.values[i]).round("s")/' "transect gives the passage's mean time"
+mutate app/server.py 's/    dist = np.r_\[np.arange(0, length, step), length\]  # and the last vertex/    dist = np.arange(0, length, step)/' "transect stops short of its last vertex"

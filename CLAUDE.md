@@ -33,13 +33,16 @@ conversation that built the app can be resumed here (`claude --resume`).
   - map tiles: each passage a curvilinear mesh rasterized with datashader (`Loaded.mean_on`), colored
     here, so only images go to the browser; overlapping passages are averaged;
   - `/api/timeline` (days with passages over the region, from the per-pass geometry, no data read),
-    `/api/load`, `/api/value` (under the mouse), `/api/series`, `/api/netcdf`, `/api/world.png`.
+    `/api/load`, `/api/value` (at a click: the value and its passages, with the time of their nearest line),
+    `/api/series`, `/api/transect` (along a drawn polyline: points every 2 km on great circles, each passage's
+    nearest pixel within 1.5 km, so the nadir gap stays empty), `/api/netcdf`, `/api/world.png`.
   Loaded subsets are kept in memory (a few, LRU); the opening view (whole globe, 2 Nov 2024, 1 day,
   `DEFAULT`) is loaded when the server starts.
 - `app/static/`: the page, no build step (MapLibre GL 5, uPlot, lucide from jsDelivr, pinned):
   map full screen without axes, globe by default with a button for the flat map (remembered per browser), floating panels, a canvas timeline (orange band of up to 21 days; the
   dragged edge stops at the limit, moving keeps the length), an Equal Earth overview (projected in JS),
-  the mouse position and value, and a card tied to a clicked point by a line, with its series.
+  the mouse position and value, a card tied to a clicked point by a line, with its series, and a card with
+  the values along a drawn line (one curve per passage; hovering it moves a marker along the line).
 
 Decisions worth keeping:
 - Dark only for now; basemap GEBCO grayscale from NOAA NCEI tiles (no key), darkened.

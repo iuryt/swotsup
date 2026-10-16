@@ -117,6 +117,9 @@ body.globe #overview { display: none; }
   background: rgba(2, 6, 23, 0.9); border: 1px solid var(--orange); color: var(--fg); font-size: 11px; }
 .card .loading { height: 180px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .uplot { font-family: Inter, system-ui, sans-serif; }
+.card.transect { position: fixed; right: var(--gap); bottom: 170px; width: 600px; height: 320px; z-index: 3; }
+.card .passages { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.card .passages i, .tip i { display: inline-block; width: 10px; height: 3px; margin-right: 5px; vertical-align: middle; }
 
 dialog.panel { position: fixed; color: var(--fg); padding: 16px 20px; max-width: 720px; width: calc(100% - 40px); }
 dialog::backdrop { background: rgba(0, 0, 0, .5); }

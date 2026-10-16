@@ -2,6 +2,7 @@ import io
 import sys
 
 import numpy as np
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -90,3 +91,51 @@ def test_click_names_the_passages_and_the_time_of_their_line(client):
     v = client.get("/api/value", params=both | dict(lon=30.25, lat=5.0, mode="none")).json()
     assert [(q["pass_id"], q["cycle"]) for q in v["passages"]] == [(7, 3), (20, 3)]
     assert [q["time"] for q in v["passages"]] == ["2024-01-03 05:48:03", "2024-01-04 05:46:24"]
+
+
+def test_line_follows_great_circles(client):
+    """Points every `step` km along great circles: two segments meet at their vertex, and a segment across
+    180 is 222 km long, not around the world."""
+    import server
+
+    lon, lat, dist, step = server.along_line(np.array([0.0, 1.0, 1.0]), np.array([0.0, 0.0, 1.0]), 2.0)
+    assert step == 2.0 and np.allclose(np.diff(dist)[:-1], 2.0)
+    assert dist[-1] == pytest.approx(2 * 111.195, abs=0.01) and (lon[-1], lat[-1]) == pytest.approx((1, 1))
+    first = dist <= 111.19
+    assert np.allclose(lat[first], 0, atol=1e-9) and np.allclose(lon[~first], 1, atol=1e-6)
+    lon, lat, dist, _ = server.along_line(np.array([179.0, -179.0]), np.array([0.0, 0.0]), 2.0)
+    assert dist[-1] == pytest.approx(222.39, abs=0.01) and np.all((lon >= 179) | (lon <= -179))
+
+
+def test_transect_takes_the_nearest_pixel_within_its_cell(client):
+    """A swath of 0.01 deg pixels from lon 29.9 to 30.1 whose values are their longitude, with a 3 pixel gap
+    at 30 (nadir): along lat 0.5, a point gets its nearest pixel, and nothing in the gap or off the swath."""
+    import server
+    import xarray as xr
+
+    lats, lons = np.linspace(-1, 1, 201), np.linspace(29.9, 30.1, 21)
+    lat, lon = np.meshgrid(lats, lons, indexing="ij")
+    values = lon.copy()
+    values[:, 9:12] = np.nan  # 29.99 to 30.01
+    dims = ("time", "along", "cross")
+    sub = xr.Dataset({"ssha_unfiltered": (dims, values[None])},
+                     coords={"latitude": (dims, lat[None]), "longitude": (dims, lon[None]), "lat": ("along", lats)})
+    data = server.Loaded(sub, ["ssha_unfiltered"], 29, 31)
+    lon, lat, _, _ = server.along_line(np.array([29.8, 30.2]), np.array([0.5, 0.5]), 0.25)
+    v = data.along("none", lon, lat)[0][0]
+    on = (np.abs(lon - 30) > 0.03) & (np.abs(lon - 30) < 0.095)
+    assert np.allclose(v[on], lon[on], atol=0.0051)  # its own pixel, on the swath
+    assert np.isnan(v[np.abs(lon - 30) < 0.005]).all()  # the gap: 2.2 km from the nearest pixel
+    assert np.isnan(v[np.abs(lon - 30) > 0.115]).all()  # off the swath, beyond 1.5 km
+
+
+def test_transect_names_its_passages(client):
+    """Along lon 30 from lat 4 to 6, pass 7 of cycle 3: its values come from lines 139 to 159 (data =
+    3000 + line), and its time is that of the line at the middle, 149 (05:48:03, a line a second), not the
+    passage's mean (05:47:13)."""
+    t = client.get("/api/transect", params=PASS_7 | dict(points="30,4;30,6", mode="none")).json()
+    assert [(q["pass_id"], q["cycle"]) for q in t["passages"]] == [(7, 3)]
+    assert abs(pd.Timestamp(t["passages"][0]["time"]) - pd.Timestamp("2024-01-03 05:48:03")) <= pd.Timedelta("2s")
+    v = np.array([np.nan if x is None else x for x in t["passages"][0]["value"]])
+    assert np.isfinite(v).any() and np.nanmin(v) >= 3139 and np.nanmax(v) <= 3159
+    assert t["distance"][-1] == pytest.approx(222.39, abs=0.01)
