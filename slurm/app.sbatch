@@ -11,6 +11,8 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 export AWS_PROFILE=${AWS_PROFILE:-swot-read} AWS_REGION=${AWS_REGION:-us-east-1}
 PORT=${PORT:-5006}
+# edits come from the login node over NFS, which sends this node no file events: look for changes instead
+export WATCHFILES_FORCE_POLLING=true
 echo "host=$(hostname) start=$(date -Is)"
 echo "on your machine: ssh -N -L $PORT:$(hostname):$PORT biomix   then open http://localhost:$PORT"
 /home/iury/.pixi/bin/pixi run uvicorn server:app --app-dir app --host 0.0.0.0 --port $PORT \
