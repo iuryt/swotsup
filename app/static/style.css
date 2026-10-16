@@ -118,8 +118,12 @@ body.globe #overview { display: none; }
 .card .loading { height: 180px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .uplot { font-family: Inter, system-ui, sans-serif; }
 .card.transect { position: fixed; right: var(--gap); bottom: 170px; width: 600px; height: 320px; z-index: 3; }
-.card .passages { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 2px; font-size: 11px; color: var(--muted); }
-.card .passages i, .tip i { display: inline-block; width: 10px; height: 3px; margin-right: 5px; vertical-align: middle; }
+.tip.floating { position: fixed; z-index: 10; display: none; }
+.tip table { border-collapse: collapse; margin-top: 2px; }
+.tip th { color: var(--orange); font-weight: 500; text-align: right; padding: 0 0 1px 10px; }
+.tip td { text-align: right; padding: 0 0 0 10px; font-variant-numeric: tabular-nums; }
+.tip td:first-child, .tip th:first-child { padding: 0; }
+.tip i { display: inline-block; width: 10px; height: 3px; margin-right: 5px; vertical-align: middle; }
 
 dialog.panel { position: fixed; color: var(--fg); padding: 16px 20px; max-width: 720px; width: calc(100% - 40px); }
 dialog::backdrop { background: rgba(0, 0, 0, .5); }
