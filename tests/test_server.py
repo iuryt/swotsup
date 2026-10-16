@@ -80,3 +80,13 @@ def test_nothing_drawn_across_a_gap(client):
     drawn = np.isfinite(data.mean_on("none", (x0, x1), (y0, y1), 4, 8)).all(axis=1)  # rows south to north, 0.5 deg
     assert drawn[0] and drawn[-1]  # ocean, south and north
     assert not drawn[2:6].any()  # -1 to 1: land (the rows next to it touch the last ocean cells)
+
+
+def test_click_names_the_passages_and_the_time_of_their_line(client):
+    """Passes 7 (ascending, 3 Jan) and 20 (descending, 4 Jan) overlap at lon 30.25. Their files start at
+    05:45:34 with one line a second; at lat 5 pass 7 is at its line 149 (counted from the south) and pass 20
+    at its line 50 (counted from the north)."""
+    both = PASS_7 | dict(days=2)
+    v = client.get("/api/value", params=both | dict(lon=30.25, lat=5.0, mode="none")).json()
+    assert [(q["pass_id"], q["cycle"]) for q in v["passages"]] == [(7, 3), (20, 3)]
+    assert [q["time"] for q in v["passages"]] == ["2024-01-03 05:48:03", "2024-01-04 05:46:24"]

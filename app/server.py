@@ -70,8 +70,9 @@ def continuous(lon, center):
 class Loaded:
     """One subset in memory: the passages over a box in a time window, ready to draw."""
 
-    def __init__(self, sub, names, west, east):
+    def __init__(self, sub, names, west, east, line_time=None):
         self.sub, self.names = sub, names
+        self.line_time = line_time  # (time, along): when each line was measured
         values = sum(sub[n] for n in names).values
         lon = sub.longitude.values
         w, e = box_lons(west, east)
@@ -101,15 +102,17 @@ class Loaded:
             v = v[np.isfinite(v)]
             self.quantiles[mode] = np.quantile(v, np.linspace(0, 1, 1001)).round(4).tolist() if len(v) else []
 
-    def mean_on(self, mode, x_range, y_range, width, height):
-        """Mean of the passages on a width x height grid, NaN where none."""
+    def rasters(self, mode, x_range, y_range, width, height):
+        """Each mesh in view on a width x height grid: (passage, first line of the block, its x and y, raster)."""
         canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
-        total, count = np.zeros((height, width)), np.zeros((height, width))
         for i, rows, x, y, line_y0, line_y1, (x0, x1, y0, y1) in self.meshes:
-            seen = np.flatnonzero((line_y1 >= y_range[0]) & (line_y0 <= y_range[1]))
-            if len(seen) == 0:
+            # lines run south to north: the first reaching the view from the south and the last from the north
+            # (a small view can fall between two lines: then these two are the cell around it)
+            above, below = np.flatnonzero(line_y1 >= y_range[0]), np.flatnonzero(line_y0 <= y_range[1])
+            if len(above) == 0 or len(below) == 0:
                 continue
-            block = slice(max(seen[0] - 1, 0), seen[-1] + 2)  # one more line each side: whole cells
+            a, b = above[0], below[-1]
+            block = slice(max(min(a, b) - 1, 0), max(a, b) + 2)  # one more line each side: whole cells
             v = self.values[mode][i][rows][block]
             for shift in (-WORLD, 0, WORLD):  # the map repeats the world east and west
                 if x1 + shift < x_range[0] or x0 + shift > x_range[1]:
@@ -117,10 +120,23 @@ class Loaded:
                 mesh = xr.DataArray(v, name="v", dims=("along", "cross"),
                                     coords={"x": (("along", "cross"), x[block] + shift),
                                             "y": (("along", "cross"), y[block])})
-                m = canvas.quadmesh(mesh, x="x", y="y").values
-                total, count = total + np.where(np.isfinite(m), m, 0), count + np.isfinite(m)
+                yield i, rows.start + block.start, x[block] + shift, y[block], canvas.quadmesh(mesh, x="x", y="y").values
+
+    def mean_on(self, mode, x_range, y_range, width, height):
+        """Mean of the passages on a width x height grid, NaN where none."""
+        total, count = np.zeros((height, width)), np.zeros((height, width))
+        for *_, m in self.rasters(mode, x_range, y_range, width, height):
+            total, count = total + np.where(np.isfinite(m), m, 0), count + np.isfinite(m)
         with np.errstate(invalid="ignore"):
             return total / count
+
+    def passages_at(self, mode, x, y):
+        """The passages with data on the ~1 km cell at (x, y): (value, passage, the line nearest the point)."""
+        found = []
+        for i, first, xs, ys, m in self.rasters(mode, (x - 500, x + 500), (y - 500, y + 500), 1, 1):
+            if np.isfinite(m[0, 0]):
+                found.append((m[0, 0], i, first + np.unravel_index(np.nanargmin((xs - x) ** 2 + (ys - y) ** 2), xs.shape)[0]))
+        return found
 
 
 loaded = OrderedDict()  # views in memory, least recently used first; the opening view stays
@@ -146,7 +162,7 @@ def load(west, east, south, north, start, days, variable):
         sub = swot_view.subset(ds, west, east, south, north, start, end)
         if sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > MAX_PIXELS:
             raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
-        data = Loaded(sub[names].load(), names, west, east)
+        data = Loaded(sub[names].load(), names, west, east, sub.line_time.values)
         with cache_lock:
             loaded[key] = data
             loading.pop(key, None)
@@ -231,10 +247,13 @@ def tile(z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2, vmax: fl
 
 @app.get("/api/value")
 def value(lon: float, lat: float, mode: str = "box", data=Depends(view)):
-    """The value under the mouse: the mean of the passages on a ~1 km cell there."""
-    x, y = mercator(lon, lat)
-    v = data.mean_on(mode, (x - 500, x + 500), (y - 500, y + 500), 1, 1)[0, 0]
-    return dict(value=None if np.isnan(v) else round(float(v), 4))
+    """The value under the mouse (the mean of the passages on a ~1 km cell there) and those passages, with
+    the time of their line nearest the point."""
+    found = data.passages_at(mode, *mercator(lon, lat))
+    passages = sorted((str(pd.Timestamp(data.line_time[i, line]).round("s")), int(data.sub.pass_id[i]),
+                       int(data.sub.cycle[i])) for _, i, line in found)
+    return dict(value=round(float(np.mean([v for v, *_ in found])), 4) if found else None,
+                passages=[dict(time=t, pass_id=p, cycle=c) for t, p, c in passages])
 
 
 @app.get("/api/series")

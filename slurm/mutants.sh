@@ -20,3 +20,6 @@ mutate app/server.py 's/    lon = np.unwrap(lon, period=360, axis=1)/    pass/' 
 mutate app/server.py 's/                rows = slice(a, b)/                rows = usable/' "lines across land joined into one mesh"
 mutate app/server.py 's/    return load(west, east, south, north, start, int(np.clip(days, 1, MAX_DAYS)), variable)\[0\]/    return next(reversed(loaded.values()))/' "tiles drawn from whatever view is in memory"
 mutate app/swot_view.py 's/    lons = "" if (east - west) % 360 == 0 else/    lons = "" if False else/' "global code keeps the longitude filter"
+mutate app/server.py 's/str(pd.Timestamp(data.line_time\[i, line\]).round("s"))/str(pd.Timestamp(data.sub.time.values[i]).round("s"))/' "click gives the passage's mean time, not its line's"
+mutate app/server.py 's/yield i, rows.start + block.start, /yield i, rows.start, /' "click takes the line from the wrong block"
+mutate app/server.py 's/            if len(above) == 0 or len(below) == 0:/            if len(np.intersect1d(above, below)) == 0:/' "a click between two lines finds no data"

@@ -25,6 +25,7 @@ const lonText = (lon, digits) => deg(wrap(lon), "W", "E", digits);
 const latText = (lat, digits) => deg(lat, "S", "N", digits);
 const dayText = (t) => new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const isoDay = (t) => new Date(t).toISOString().slice(0, 10);
+const timeText = (iso) => `${dayText(Date.parse(iso + "Z"))} ${iso.slice(11, 16)} UTC`;
 const isGlobe = (b) => ((b.east - b.west) % 360 + 360) % 360 === 0 && b.south <= -78 && b.north >= 78;
 function toast(text) {
   $("#toast").textContent = text;
@@ -349,8 +350,10 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
   const v = state.data ? await api(`/api/value?${state.view}`, { lon: wrap(lngLat.lng), lat: lngLat.lat, mode: state.mode })
     .catch(() => ({})) : {};
   const bottom = card.offsetTop + card.offsetHeight;  // the text may take more lines: keep the edge near the point
+  const mean = v.passages?.length > 1 ? ` (mean of ${v.passages.length} passages)` : "";
   card.querySelector(".hint").textContent = v.value == null ? "No data here on the selected dates"
-    : `${v.value.toFixed(3)} m · ${$("#legend-variable").textContent}, ${$("#selection").textContent}`;
+    : [`${v.value.toFixed(3)} m${mean} · ${$("#legend-variable").textContent}`,
+       ...v.passages.map((q) => `Pass ${q.pass_id} · cycle ${q.cycle} · ${timeText(q.time)}`)].join("\n");
   if (!below) card.style.top = `${bottom - card.offsetHeight}px`;
   link();
 }
