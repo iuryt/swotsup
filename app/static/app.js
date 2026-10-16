@@ -479,6 +479,7 @@ function setupLine() {
 }
 
 function openTransect(points) {
+  transect?.card.tip?.remove();
   transect?.card.remove();
   const card = document.createElement("section");
   card.className = "card transect";
@@ -486,11 +487,11 @@ function openTransect(points) {
       <div class="tools"><select title="Distance between the points of the line">
         ${[1, 2, 5, 10].map((k) => `<option value="${k}" ${k === 2 ? "selected" : ""}>every ${k} km</option>`).join("")}</select>
         <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
-    <div class="chart"></div><div class="passages"></div>`;
+    <div class="chart"></div>`;
   document.body.appendChild(card);
   lucide.createIcons();
   transect = { points, step: 2, card };
-  card.querySelector(".close").onclick = () => { card.remove(); transect = null; showLine([]); showProbe(null); };
+  card.querySelector(".close").onclick = () => { card.tip?.remove(); card.remove(); transect = null; showLine([]); showProbe(null); };
   card.querySelector("select").onchange = (e) => { transect.step = Number(e.target.value); fillTransect(); };
   dragByHeader(card);
   new ResizeObserver(() => card.plot?.setSize(transectSize(card))).observe(card);
@@ -500,7 +501,7 @@ function openTransect(points) {
 
 function transectSize(card) {
   return { width: card.clientWidth - 24,
-           height: card.clientHeight - card.querySelector("header").offsetHeight - card.querySelector(".passages").offsetHeight - 30 };
+           height: card.clientHeight - card.querySelector("header").offsetHeight - 26 };
 }
 
 async function fillTransect() {
@@ -508,37 +509,44 @@ async function fillTransect() {
   transect.key = `${state.view}|${state.mode}|${step}`;
   card.plot?.destroy();
   card.plot = null;
+  card.tip?.remove();
   chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the values along the line…</div>`;
-  card.querySelector(".passages").innerHTML = "";
   try {
     const t = await api(`/api/transect?${state.view}`, { mode: state.mode, step,
       points: points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";") });
     card.querySelector("h3").textContent = `Along the line · ${t.distance.at(-1).toFixed(0)} km · ${$("#legend-variable").textContent}`;
-    hint.textContent = `nearest pixel of each passage, every ${t.step} km · hover to see where`;
+    hint.textContent = `${t.passages.length} passages · nearest pixel of each, every ${t.step} km`;
     chart.innerHTML = "";
     if (!t.passages.length) {
       chart.innerHTML = `<div class="loading">No passage crosses the line on the selected dates.</div>`;
       return;
     }
     const color = (k) => PALETTE[k % PALETTE.length];
-    card.querySelector(".passages").innerHTML = t.passages.map((q, k) =>
-      `<span><i style="background:${color(k)}"></i>Pass ${q.pass_id} · cycle ${q.cycle} · ${timeText(q.time)}</span>`).join("");
     const axis = { stroke: "#94a3b8", grid: { stroke: "rgba(148,163,184,0.12)" }, ticks: { stroke: "rgba(148,163,184,0.25)" } };
-    const tip = document.createElement("div");
-    tip.className = "tip";
-    const hover = { hooks: { init: [(u) => u.over.appendChild(tip)], setCursor: [(u) => {
+    const tip = document.createElement("div");  // on the page, not in the card: it may stick out of it
+    tip.className = "tip floating";
+    document.body.appendChild(tip);
+    card.tip = tip;
+    const hover = { hooks: { setCursor: [(u) => {
       const i = u.cursor.idx;
       tip.style.display = i == null ? "none" : "block";
       showProbe(i == null ? null : [t.lon[i], t.lat[i]]);
       if (i == null) return;
-      const x = u.valToPos(t.distance[i], "x");
-      Object.assign(tip.style, { left: `${x}px`, top: "4px", transform: `translateX(${x > u.over.clientWidth * 0.6 ? "-105%" : "5%"})` });
-      const here = t.passages.map((q, k) => q.value[i] == null ? "" : `<div><i style="background:${color(k)}"></i>` +
-        `${q.value[i].toFixed(3)} m · ${dayText(q.line_time[i])} ${new Date(q.line_time[i]).toISOString().slice(11, 19)} UTC</div>`);
-      tip.innerHTML = `<b>${t.distance[i].toFixed(0)} km</b>${here.join("") || "<div>no data</div>"}`;
+      // a table: the column names in orange, then one row per passage with data here
+      const here = t.passages.map((q, k) => ({ q, k, v: q.value[i], at: new Date(q.line_time[i]) })).filter((h) => h.v != null);
+      const date = (d) => d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
+      tip.innerHTML = `<b>${t.distance[i].toFixed(0)} km</b>` + (here.length ? `<table>
+        <tr><th></th><th>value</th><th>dd/mm/yyyy</th><th>hh:mm UTC</th><th>pass</th><th>cycle</th></tr>` +
+        here.map((h) => `<tr><td><i style="background:${color(h.k)}"></i></td><td>${h.v.toFixed(3)} m</td>
+          <td>${date(h.at)}</td><td>${h.at.toISOString().slice(11, 16)}</td><td>${h.q.pass_id}</td><td>${h.q.cycle}</td></tr>`).join("") +
+        "</table>" : "<div>no data</div>");
+      const r = u.over.getBoundingClientRect(), x = r.left + u.valToPos(t.distance[i], "x");  // right of the cursor, if it fits
+      tip.style.left = `${x + 12 + tip.offsetWidth < innerWidth - 8 ? x + 12 : x - 12 - tip.offsetWidth}px`;
+      tip.style.top = `${r.top + 4}px`;
     }] } };
     card.plot = new uPlot({
-      ...transectSize(card), plugins: [hover], legend: { show: false }, cursor: { points: { size: 6 } },
+      ...transectSize(card), plugins: [hover], legend: { show: false }, focus: { alpha: 0.3 },
+      cursor: { points: { size: 6 }, focus: { prox: 20 } },  // the curve nearest the mouse stands out
       scales: { x: { time: false } },
       axes: [{ ...axis, values: (u, ticks) => ticks.map((v) => `${v} km`) }, { ...axis, label: "m", size: 45 }],
       series: [{}, ...t.passages.map((q, k) => ({ stroke: color(k), width: 1.5 }))],
