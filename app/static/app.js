@@ -81,6 +81,7 @@ function setColors() {
   document.querySelectorAll("#mode button").forEach((b) => b.classList.toggle("active", b.dataset.value === state.mode));
   $("#symmetric").checked = state.symmetric;
   if (!state.data) return;
+  if (transect && transect.key !== `${state.view}|${state.mode}|${transect.step}`) fillTransect();
   const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}`;
   const source = map.getSource("swot");
   if (source) source.setTiles([url]);
@@ -287,6 +288,20 @@ function drawOverview() {
   ctx.beginPath(); ctx.arc(cx, cy, 2.5, 0, 2 * Math.PI); ctx.fill();
 }
 
+function dragByHeader(card, moved = () => {}) {
+  card.querySelector("header").addEventListener("pointerdown", (e) => {
+    if (e.target.closest("select, button")) return;
+    const [x0, y0, l0, t0] = [e.clientX, e.clientY, card.offsetLeft, card.offsetTop];
+    const move = (m) => {
+      Object.assign(card.style, { left: `${l0 + m.clientX - x0}px`, top: `${t0 + m.clientY - y0}px`, right: "auto", bottom: "auto" });
+      moved();
+    };
+    const stop = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", stop); };
+    addEventListener("pointermove", move);
+    addEventListener("pointerup", stop);
+  });
+}
+
 // --- the time series at a clicked point: a card tied to the point by a line
 let pin = null;
 async function openPoint(lngLat) {  // a small card: where, and the value there; the time series on request
@@ -322,14 +337,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
     card.style.left = `${right ? x : x - w}px`;
     card.style.top = `${below ? y : y - h}px`;
   };
-  card.querySelector("header").addEventListener("pointerdown", (e) => {
-    if (e.target.closest("select, button")) return;
-    const [x0, y0, l0, t0] = [e.clientX, e.clientY, card.offsetLeft, card.offsetTop];
-    const move = (m) => { card.style.left = `${l0 + m.clientX - x0}px`; card.style.top = `${t0 + m.clientY - y0}px`; link(); };
-    const stop = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", stop); };
-    addEventListener("pointermove", move);
-    addEventListener("pointerup", stop);
-  });
+  dragByHeader(card, link);
   card.querySelector(".expand").onclick = () => {
     const [w, h] = [440, 250];
     place(w, h);
@@ -426,6 +434,119 @@ function setupCoords() {
   map.getCanvas().addEventListener("mouseleave", () => { $("#coords").textContent = ""; });
 }
 
+// --- a line drawn on the map: the values along it, one curve per passage of the selected dates
+const PALETTE = ["#3b82f6", "#f97316", "#22c55e", "#e879f9", "#facc15", "#14b8a6", "#f43f5e", "#a78bfa"];
+let transect = null;  // { points, step, card, key }
+
+function drawLine() {  // the next clicks on the map are its vertices; a double click ends it
+  if (state.drawing) drawBox();
+  state.lining = !state.lining;
+  state.vertices = [];
+  $("#line").classList.toggle("active", state.lining);
+  map.getCanvas().style.cursor = state.lining ? "crosshair" : "";
+  state.lining ? map.doubleClickZoom.disable() : map.doubleClickZoom.enable();
+  if (!state.lining) showLine(transect?.points ?? []);
+}
+
+function showLine(points, mouse) {  // on the map, with the segment to the mouse while drawing
+  const c = mouse ? [...points, mouse] : points;
+  map.getSource("line").setData({ type: "Feature", geometry: c.length > 1 ? { type: "LineString", coordinates: c }
+                                                                        : { type: "Point", coordinates: [0, 0] } });
+}
+
+function showProbe(lngLat) {  // the place on the line under the chart's cursor
+  map.getSource("probe").setData({ type: "FeatureCollection", features: lngLat ? [{ type: "Feature",
+    geometry: { type: "Point", coordinates: lngLat } }] : [] });
+}
+
+function setupLine() {
+  map.on("click", (e) => {
+    if (!state.lining) return;
+    const last = state.vertices.at(-1), p = map.project(e.lngLat);
+    if (last && Math.hypot(p.x - map.project(last).x, p.y - map.project(last).y) < 4) return;  // the double click's
+    state.vertices.push([e.lngLat.lng, e.lngLat.lat]);
+    showLine(state.vertices);
+  });
+  map.on("mousemove", (e) => { if (state.lining && state.vertices.length) showLine(state.vertices, [e.lngLat.lng, e.lngLat.lat]); });
+  map.on("dblclick", (e) => {
+    if (!state.lining) return;
+    e.preventDefault();
+    const points = state.vertices;
+    drawLine();
+    if (points.length > 1) openTransect(points);
+  });
+  addEventListener("keydown", (e) => { if (e.key === "Escape" && state.lining) drawLine(); });
+}
+
+function openTransect(points) {
+  transect?.card.remove();
+  const card = document.createElement("section");
+  card.className = "card transect";
+  card.innerHTML = `<header><div><h3>Along the line</h3><p class="hint"><span class="spinner"></span></p></div>
+      <div class="tools"><select title="Distance between the points of the line">
+        ${[1, 2, 5, 10].map((k) => `<option value="${k}" ${k === 2 ? "selected" : ""}>every ${k} km</option>`).join("")}</select>
+        <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
+    <div class="chart"></div><div class="passages"></div>`;
+  document.body.appendChild(card);
+  lucide.createIcons();
+  transect = { points, step: 2, card };
+  card.querySelector(".close").onclick = () => { card.remove(); transect = null; showLine([]); showProbe(null); };
+  card.querySelector("select").onchange = (e) => { transect.step = Number(e.target.value); fillTransect(); };
+  dragByHeader(card);
+  new ResizeObserver(() => card.plot?.setSize(transectSize(card))).observe(card);
+  showLine(points);
+  fillTransect();
+}
+
+function transectSize(card) {
+  return { width: card.clientWidth - 24,
+           height: card.clientHeight - card.querySelector("header").offsetHeight - card.querySelector(".passages").offsetHeight - 30 };
+}
+
+async function fillTransect() {
+  const { card, points, step } = transect, chart = card.querySelector(".chart"), hint = card.querySelector(".hint");
+  transect.key = `${state.view}|${state.mode}|${step}`;
+  card.plot?.destroy();
+  card.plot = null;
+  chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the values along the line…</div>`;
+  card.querySelector(".passages").innerHTML = "";
+  try {
+    const t = await api(`/api/transect?${state.view}`, { mode: state.mode, step,
+      points: points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";") });
+    card.querySelector("h3").textContent = `Along the line · ${t.distance.at(-1).toFixed(0)} km · ${$("#legend-variable").textContent}`;
+    hint.textContent = `nearest pixel of each passage, every ${t.step} km · hover to see where`;
+    chart.innerHTML = "";
+    if (!t.passages.length) {
+      chart.innerHTML = `<div class="loading">No passage crosses the line on the selected dates.</div>`;
+      return;
+    }
+    const color = (k) => PALETTE[k % PALETTE.length];
+    card.querySelector(".passages").innerHTML = t.passages.map((q, k) =>
+      `<span><i style="background:${color(k)}"></i>Pass ${q.pass_id} · cycle ${q.cycle} · ${timeText(q.time)}</span>`).join("");
+    const axis = { stroke: "#94a3b8", grid: { stroke: "rgba(148,163,184,0.12)" }, ticks: { stroke: "rgba(148,163,184,0.25)" } };
+    const tip = document.createElement("div");
+    tip.className = "tip";
+    const hover = { hooks: { init: [(u) => u.over.appendChild(tip)], setCursor: [(u) => {
+      const i = u.cursor.idx;
+      tip.style.display = i == null ? "none" : "block";
+      showProbe(i == null ? null : [t.lon[i], t.lat[i]]);
+      if (i == null) return;
+      const x = u.valToPos(t.distance[i], "x");
+      Object.assign(tip.style, { left: `${x}px`, top: "4px", transform: `translateX(${x > u.over.clientWidth * 0.6 ? "-105%" : "5%"})` });
+      const here = t.passages.map((q, k) => q.value[i] == null ? "" : `<div><i style="background:${color(k)}"></i>${q.value[i].toFixed(3)} m</div>`);
+      tip.innerHTML = `<b>${t.distance[i].toFixed(0)} km</b>${here.join("") || "<div>no data</div>"}`;
+    }] } };
+    card.plot = new uPlot({
+      ...transectSize(card), plugins: [hover], legend: { show: false }, cursor: { points: { size: 6 } },
+      scales: { x: { time: false } },
+      axes: [{ ...axis, values: (u, ticks) => ticks.map((v) => `${v} km`) }, { ...axis, label: "m", size: 45 }],
+      series: [{}, ...t.passages.map((q, k) => ({ stroke: color(k), width: 1.5 }))],
+    }, [t.distance, ...t.passages.map((q) => q.value)], chart);
+  } catch (e) {
+    chart.innerHTML = `<div class="loading">${e.message}</div>`;
+  }
+}
+
 // --- menus and dialogs
 function setupMenus() {
   const menus = { "#region-button": "#region-menu", "#display-button": "#display-menu" };
@@ -444,7 +565,8 @@ function setupMenus() {
     setBox(Object.fromEntries(["west", "east", "south", "north"].map((k) => [k, Number($("#" + k).value)])));
   };
   $("#globe").onclick = () => { $("#region-menu").classList.add("hidden"); setBox({ west: -180, east: 180, south: -90, north: 90 }); };
-  $("#draw").onclick = drawBox;
+  $("#draw").onclick = () => { if (state.lining) drawLine(); drawBox(); };
+  $("#line").onclick = drawLine;
   $("#variable").onchange = () => { state.variable = $("#variable").value; state.symmetric = state.variable !== "adt" || state.mode !== "none"; loadData(); };
   for (const [id, key] of [["#mode", "mode"], ["#preset", "preset"]]) {
     $(id).onclick = (e) => {
@@ -519,6 +641,12 @@ async function main() {
     $("#projection").onclick = () => setProjection(!document.body.classList.contains("globe"));
     map.addSource("box", { type: "geojson", data: { type: "Feature", geometry: { type: "Point", coordinates: [0, 0] } } });
     map.addLayer({ id: "box", type: "line", source: "box", paint: { "line-color": "#3b82f6", "line-width": 2 } });
+    map.addSource("line", { type: "geojson", data: { type: "Feature", geometry: { type: "Point", coordinates: [0, 0] } } });
+    map.addLayer({ id: "line", type: "line", source: "line", paint: { "line-color": "#f97316", "line-width": 2.5 } });
+    map.addSource("probe", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({ id: "probe", type: "circle", source: "probe",
+                   paint: { "circle-radius": 5, "circle-color": "#ffffff", "circle-stroke-color": "#f97316", "circle-stroke-width": 3 } });
+    setupLine();
     setupDrawing();
     setupCoords();
     setBox({ west: d.west, east: d.east, south: d.south, north: d.north });
@@ -526,7 +654,7 @@ async function main() {
   });
   map.on("move", drawOverview);
   map.on("click", (e) => {
-    if (!state.drawing && !state.justDrew) openPoint(e.lngLat);
+    if (!state.drawing && !state.lining && !state.justDrew) openPoint(e.lngLat);
     state.justDrew = false;
   });
   setupMenus();

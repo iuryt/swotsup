@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
+from scipy.spatial import cKDTree
 
 import swot_view
 
@@ -49,6 +50,31 @@ geometry = ds[["lon_min", "lon_max"]].load()  # which passes cross a box, withou
 
 def mercator(lon, lat):
     return R * np.deg2rad(lon), R * np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2))
+
+
+def unit(lon, lat):
+    """Points on the unit sphere, (..., 3)."""
+    lon, lat = np.deg2rad(lon), np.deg2rad(lat)
+    return np.stack([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)], axis=-1)
+
+
+def along_line(lon, lat, step, most=5000):
+    """Points every `step` km (or more, to keep at most `most`) along the great circles between the vertices:
+    their lon, lat, distance from the first vertex (km), and the step used."""
+    v = unit(lon, lat)
+    angles = np.arccos(np.clip((v[:-1] * v[1:]).sum(-1), -1, 1))  # of each segment
+    length = angles.sum() * swot_view.EARTH_RADIUS
+    step = max(step, length / most)
+    dist = np.r_[np.arange(0, length, step), length]  # and the last vertex
+    starts = np.r_[0, np.cumsum(angles)]
+    k = np.clip(np.searchsorted(starts, dist / swot_view.EARTH_RADIUS, side="right") - 1, 0, len(angles) - 1)
+    a = angles[k]  # each point's segment, and how far along it (0 to 1)
+    t = np.divide(dist / swot_view.EARTH_RADIUS - starts[k], a, out=np.zeros_like(dist), where=a > 0)
+    sin_a = np.where(a > 0, np.sin(a), 1)
+    w0 = np.where(a > 0, np.sin((1 - t) * a) / sin_a, 1)  # slerp; a zero-length segment stays at its vertex
+    w1 = np.where(a > 0, np.sin(t * a) / sin_a, 0)
+    x, y, z = (w0[:, None] * v[k] + w1[:, None] * v[k + 1]).T
+    return np.rad2deg(np.arctan2(y, x)), np.rad2deg(np.arcsin(np.clip(z, -1, 1))), dist, step
 
 
 def box_lons(west, east):
@@ -129,6 +155,27 @@ class Loaded:
             total, count = total + np.where(np.isfinite(m), m, 0), count + np.isfinite(m)
         with np.errstate(invalid="ignore"):
             return total / count
+
+    def along(self, mode, lon, lat, radius=1.5):
+        """Each passage's values at the points: those of its nearest pixel within `radius` km (a 2 km cell has
+        its center within 1.4 km of any point in it), else NaN. With the line of each nearest pixel (-1: none)."""
+        pts = unit(lon, lat)
+        near = (self.sub.lat.values >= lat.min() - 2) & (self.sub.lat.values <= lat.max() + 2)  # lines near them
+        lines = np.flatnonzero(near)
+        values, rows = [], []
+        for i in range(len(self.values[mode])):
+            v = self.values[mode][i][near]
+            ok = np.isfinite(v) & np.isfinite(self.sub.latitude.values[i][near])
+            out, row = np.full(len(pts), np.nan), np.full(len(pts), -1)
+            if ok.any():
+                tree = cKDTree(unit(self.sub.longitude.values[i][near][ok], self.sub.latitude.values[i][near][ok]))
+                d, j = tree.query(pts, distance_upper_bound=radius / swot_view.EARTH_RADIUS)
+                hit = np.isfinite(d)
+                out[hit] = v[ok][j[hit]]
+                row[hit] = lines[np.nonzero(ok)[0][j[hit]]]
+            values.append(out)
+            rows.append(row)
+        return np.array(values), np.array(rows)
 
     def passages_at(self, mode, x, y):
         """The passages with data on the ~1 km cell at (x, y): (value, passage, the line nearest the point)."""
@@ -254,6 +301,23 @@ def value(lon: float, lat: float, mode: str = "box", data=Depends(view)):
                        int(data.sub.cycle[i])) for _, i, line in found)
     return dict(value=round(float(np.mean([v for v, *_ in found])), 4) if found else None,
                 passages=[dict(time=t, pass_id=p, cycle=c) for t, p, c in passages])
+
+
+@app.get("/api/transect")
+def transect(points: str, mode: str = "box", step: float = 2.0, data=Depends(view)):
+    """Values along a polyline ("lon,lat;lon,lat;..."), every `step` km (2: the L3 grid) along great circles,
+    one curve per passage that has any; each passage with the time of its line at its middle point."""
+    lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
+    lon, lat, dist, step = along_line(lon, lat, max(step, 0.5))
+    values, rows = data.along(mode, lon, lat)
+    passages = []
+    for i in np.flatnonzero(np.isfinite(values).any(1)):
+        seen = rows[i][rows[i] >= 0]
+        t = pd.Timestamp(data.line_time[i, seen[len(seen) // 2]]).round("s")
+        passages.append(dict(time=str(t), pass_id=int(data.sub.pass_id[i]), cycle=int(data.sub.cycle[i]),
+                             value=[None if np.isnan(v) else round(float(v), 4) for v in values[i]]))
+    return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
+                step=round(float(step), 3), passages=sorted(passages, key=lambda q: q["time"]))
 
 
 @app.get("/api/series")
