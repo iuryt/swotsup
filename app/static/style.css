@@ -100,7 +100,7 @@ body.globe #overview { display: none; }
   border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0, 0, 0, .45); backdrop-filter: blur(8px); cursor: default; }
 .card header { cursor: move; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .card h3 { margin: 0; font-size: 13px; color: var(--title); }
-.card .hint { margin: 1px 0 0; }
+.card .hint { margin: 1px 0 0; white-space: pre-line; }
 .card header .tools { display: flex; align-items: center; gap: 4px; }
 .card select { padding: 2px 6px; font-size: 12px; }
 .card .chart { margin-top: 4px; }
