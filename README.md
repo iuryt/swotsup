@@ -1,6 +1,6 @@
 # SWOT Sea Surface Height Explorer
 
-A web map over the SWOT L3 LR SSH (AVISO v3.0 Basic) data, read on demand from an IceChunk store in the
+A web map over SWOT KaRIn low-rate sea surface height swaths, read on demand from an IceChunk store in the
 cloud: every swath since July 2023, without downloading files.
 
 - Pick a region and up to 21 days on the timeline; see the swaths on a globe or a flat map.
@@ -8,8 +8,10 @@ cloud: every swath since July 2023, without downloading files.
 - Draw a line: the values along it, one curve per passage.
 - Copy the few lines of icechunk + xarray that give you the same data in your own Python.
 
-The store is built in [swot_icechunk](../swot_icechunk). Data: SWOT L3 LR SSH, produced by AVISO/DUACS
-with CNES support (see About in the app for the citation and the license terms).
+Data: SWOT LR SSH from NASA and CNES. Today the app reads the L3 product (AVISO/DUACS v3.0 Basic, produced
+with CNES support); the public version will show the L2 product, and L3 too if AVISO allows it (see About in
+the app for the citation and the license terms). The stores are built in
+[swot_icechunk](https://github.com/iuryt/swot_icechunk) (private).
 
 ## Layout
 
@@ -20,6 +22,7 @@ with CNES support (see About in the app for the citation and the license terms).
 - `Dockerfile`: the server with the pixi environment `serve` from `pixi.lock`.
 - `deploy/`, `slurm/ec2.sh`: the test server on EC2, which sleeps when idle and wakes on a visit.
 - `tests/`: pytest on small fake stores; `slurm/mutants.sh` checks that they catch injected bugs.
+- `img/history/`: a screenshot of every version.
 
 ## Run
 
