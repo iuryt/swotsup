@@ -15,7 +15,7 @@ PORT=$((5100 + RANDOM % 800))
 $PIXI uvicorn server:app --app-dir app --port $PORT > logs/shot-server-$SLURM_JOB_ID.log 2>&1 &
 for i in $(seq 120); do curl -sf -o /dev/null "http://localhost:$PORT/api/info" && break; sleep 5; done
 [ $# -ge 2 ] && $PIXI python scripts/screenshot.py "$1" "$2"
-$PIXI python scripts/screenshot.py "http://localhost:$PORT/" img/app open click line flat
+$PIXI python scripts/screenshot.py "http://localhost:$PORT/" img/app open click series line flat
 kill %1; grep -v "WARN cache" logs/shot-server-$SLURM_JOB_ID.log | tail -40
 # keep every version: a dated copy (with the commit, + if there are uncommitted changes) in img/history
 STAMP=$(date -u +%Y-%m-%dT%H%M)_$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- app || echo +)
