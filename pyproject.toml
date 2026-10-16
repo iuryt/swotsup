@@ -36,7 +36,7 @@ pytest = "*"
 
 [tool.pixi.feature.dev.pypi-dependencies]
 playwright = "*"  # screenshots of the app in a headless browser (scripts/screenshot.py)
-swot_icechunk = { path = "../swot_icechunk", editable = true }  # tests build small stores with it
+swot_cloud = { path = "../swot_cloud", editable = true }  # tests build small stores with it
 
 [tool.pixi.tasks]
 test = "pytest -q tests"
