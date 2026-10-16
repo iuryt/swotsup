@@ -1,10 +1,10 @@
 [project]
 authors = [{name = "iury Simoes-Sousa", email = "iuryt@pm.me"}]
-name = "whereisswot"
+name = "swot-explorer"
 requires-python = ">= 3.11"
-version = "3.0.1"
+version = "0.1.0"
 license = "MIT"
-description = "Web app to visualize and track SWOT satellite passings, and the SWOT data themselves."
+description = "SWOT Sea Surface Height Explorer: a web map over the SWOT L3 LR SSH IceChunk store."
 
 [build-system]
 build-backend = "hatchling.build"
@@ -22,6 +22,7 @@ numpy = ">=2"
 pandas = "*"
 h5netcdf = ">=1.8.1,<2"
 datashader = "*"
+scipy = "*"  # nearest pixels along a drawn line
 matplotlib = "*"
 cartopy = ">=0.25.0,<0.26"
 pillow = "*"
@@ -41,26 +42,9 @@ swot_icechunk = { path = "../swot_icechunk", editable = true }  # tests build sm
 test = "pytest -q tests"
 serve = "uvicorn server:app --app-dir app --port 5006"
 
-# the current Where is SWOT? (Flask + Folium), until the explorer replaces it: pixi run -e legacy start
-[tool.pixi.feature.legacy.dependencies]
-flask = ">=3.0.3,<4"
-folium = ">=0.17.0,<0.18"
-geopandas = ">=1.0.1,<2"
-gunicorn = ">=23.0.0,<24"
-pandas = ">=2.2.3,<3"
-numpy = ">=2.0.2,<3"
-matplotlib = ">=3.9.2,<4"
-mapclassify = ">=2.8.1,<3"
-shapely = ">=2.0.6,<3"
-pyproj = ">=3.6.1,<4"
-
-[tool.pixi.feature.legacy.tasks]
-start = "python app.py"
-
 [tool.pixi.environments]
 default = { features = ["dev"], solve-group = "app" }
 serve = { features = [], solve-group = "app" }  # same versions as default, so the server runs what we test
-legacy = { features = ["legacy"], no-default-feature = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["app"]

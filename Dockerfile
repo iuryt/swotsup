@@ -1,23 +1,20 @@
-FROM ghcr.io/prefix-dev/pixi:0.41.4 AS build
+# The explorer's server, with the pixi environment `serve` from the lockfile: the same versions as the tests.
+# Build context: the repo root (pyproject.toml, pixi.lock, app/; slurm/ec2.sh packs just these).
+# The store is read with the AWS credentials of the environment (an instance role, or AWS_* as secrets).
+FROM ghcr.io/prefix-dev/pixi:0.78.0 AS build
+WORKDIR /srv
+COPY pyproject.toml pixi.lock ./
+# --frozen: the lockfile as is (the dev environment's path dependency is not in the image)
+RUN pixi install --frozen -e serve && pixi shell-hook --frozen -e serve -s bash > /shell-hook.sh
 
-WORKDIR /app
-COPY pixi.lock pyproject.toml ./
-RUN pixi install --locked
-
-COPY . .
-
-RUN pixi shell-hook -s bash > /shell-hook.sh
-
-FROM ubuntu:24.04 AS production
-
-RUN useradd -m -u 1000 -o user || true
-USER 1000
-WORKDIR /app
-
-COPY --from=build /app /app
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /srv/.pixi/envs/serve /srv/.pixi/envs/serve
 COPY --from=build /shell-hook.sh /shell-hook.sh
-
+COPY app /srv/app
+WORKDIR /srv
+USER 1000
+ENV AWS_REGION=us-east-1
 EXPOSE 7860
-
 ENTRYPOINT ["/bin/bash", "-c", "source /shell-hook.sh && exec \"$@\"", "--"]
-CMD ["gunicorn", "app:app", "-b", "0.0.0.0:7860"]
+CMD ["uvicorn", "server:app", "--app-dir", "app", "--host", "0.0.0.0", "--port", "7860"]

@@ -31,10 +31,15 @@ s = client.get("/api/series", params=dict(lon=-59.3, lat=-40.5, variable="ssha_u
 print(f"point series, whole mission: {time.perf_counter() - t:.1f} s, {len(s['time'])} passages", flush=True)
 
 # tiles of the whole globe on one day, as a first screen asks for them (zoom 2: 16 tiles; zoom 4: a region)
-d = client.get("/api/load", params=CASES[0][1] | dict(variable="ssha_unfiltered")).json()
+globe = CASES[0][1] | dict(variable="ssha_unfiltered")
+client.get("/api/load", params=globe)
 for z, tiles in [(2, [(x, y) for x in range(4) for y in range(4)]), (4, [(x, y) for x in range(8, 12) for y in range(5, 9)])]:
     t = time.perf_counter()
     for x, y in tiles:
-        client.get(f"/api/tile/{d['id']}/{z}/{x}/{y}.png")
+        client.get(f"/api/tile/{z}/{x}/{y}.png", params=globe)
     dt = time.perf_counter() - t
     print(f"tiles zoom {z}: {len(tiles)} in {dt:.1f} s ({dt / len(tiles) * 1000:.0f} ms each, one after another)", flush=True)
+
+t = time.perf_counter()  # a 5000 km line across the South Atlantic, every 2 km
+client.get("/api/transect", params=globe | dict(points="-30,-20;10,-35;30,-30"))
+print(f"line of 5000 km: {time.perf_counter() - t:.2f} s", flush=True)

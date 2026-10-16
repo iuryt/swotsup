@@ -24,7 +24,7 @@ instance() {
 }
 address() { aws ec2 describe-addresses --filters Name=tag:Name,Values=$NAME --query "Addresses[0].$1" --output text; }
 send_code() {  # build context (Dockerfile at the root) and the boot script
-  tar -czf logs/app.tar.gz --exclude __pycache__ pyproject.toml pixi.lock app -C app Dockerfile -C ../deploy boot.sh
+  tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh
   aws s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
 role() {  # name, service that assumes it, inline policy

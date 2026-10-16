@@ -9,6 +9,6 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 export PIXI_CACHE_DIR="${TMPDIR:-/tmp}/pixi-cache-$USER"
-/home/iury/.pixi/bin/pixi install --all  # default (explorer) and legacy
+/home/iury/.pixi/bin/pixi install --all  # default (tests, screenshots) and serve (the server alone)
 /home/iury/.pixi/bin/pixi run python -m playwright install chromium
 /home/iury/.pixi/bin/pixi list | grep -E "^(icechunk|xarray|datashader|fastapi) "
