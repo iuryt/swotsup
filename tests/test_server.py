@@ -139,3 +139,7 @@ def test_transect_names_its_passages(client):
     v = np.array([np.nan if x is None else x for x in t["passages"][0]["value"]])
     assert np.isfinite(v).any() and np.nanmin(v) >= 3139 and np.nanmax(v) <= 3159
     assert t["distance"][-1] == pytest.approx(222.39, abs=0.01)
+    # each value with the time of its own line: line k at 05:45:34.07 + k seconds
+    at = np.array([np.nan if x is None else x for x in t["passages"][0]["line_time"]])
+    line = pd.to_datetime(at[np.isfinite(v)], unit="ms") - pd.Timestamp("2024-01-03 05:45:34.074870274")
+    assert np.allclose(line.total_seconds(), v[np.isfinite(v)] - 3000, atol=0.01)

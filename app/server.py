@@ -306,7 +306,8 @@ def value(lon: float, lat: float, mode: str = "box", data=Depends(view)):
 @app.get("/api/transect")
 def transect(points: str, mode: str = "box", step: float = 2.0, data=Depends(view)):
     """Values along a polyline ("lon,lat;lon,lat;..."), every `step` km (2: the L3 grid) along great circles,
-    one curve per passage that has any; each passage with the time of its line at its middle point."""
+    one curve per passage that has any, with the time of the line each value comes from (ms) and the time of
+    the line at its middle point."""
     lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
     lon, lat, dist, step = along_line(lon, lat, max(step, 0.5))
     values, rows = data.along(mode, lon, lat)
@@ -314,8 +315,10 @@ def transect(points: str, mode: str = "box", step: float = 2.0, data=Depends(vie
     for i in np.flatnonzero(np.isfinite(values).any(1)):
         seen = rows[i][rows[i] >= 0]
         t = pd.Timestamp(data.line_time[i, seen[len(seen) // 2]]).round("s")
+        times = data.line_time[i, rows[i].clip(0)].astype("datetime64[ms]").astype("int64")
         passages.append(dict(time=str(t), pass_id=int(data.sub.pass_id[i]), cycle=int(data.sub.cycle[i]),
-                             value=[None if np.isnan(v) else round(float(v), 4) for v in values[i]]))
+                             value=[None if np.isnan(v) else round(float(v), 4) for v in values[i]],
+                             line_time=[None if r < 0 else int(ms) for r, ms in zip(rows[i], times)]))
     return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
                 step=round(float(step), 3), passages=sorted(passages, key=lambda q: q["time"]))
 
