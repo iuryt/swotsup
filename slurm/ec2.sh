@@ -27,6 +27,13 @@ send_code() {  # build context (Dockerfile at the root) and the boot script
   tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh
   aws s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
+# what the instance may read: the S3 store, the app package, and the secrets under /swot-explorer/ in SSM
+# (the Arraylake token, put there by the user in the console)
+INSTANCE_POLICY="
+    {\"Effect\":\"Allow\",\"Action\":\"s3:GetObject\",\"Resource\":[\"arn:aws:s3:::$BUCKET/$STORE/*\",\"arn:aws:s3:::$BUCKET/$CODE\"]},
+    {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::$BUCKET\",
+     \"Condition\":{\"StringLike\":{\"s3:prefix\":\"$STORE/*\"}}},
+    {\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameter\",\"Resource\":\"arn:aws:ssm:us-east-1:*:parameter/swot-explorer/*\"}"
 role() {  # name, service that assumes it, inline policy
   aws iam create-role --role-name "$1" --assume-role-policy-document \
     "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"$2\"},\"Action\":\"sts:AssumeRole\"}]}"
@@ -37,10 +44,7 @@ case $1 in
 up)
   [ -z "$(instance)" ] || { echo "already there: $(instance)"; exit 1; }
   send_code
-  role $NAME ec2.amazonaws.com "
-    {\"Effect\":\"Allow\",\"Action\":\"s3:GetObject\",\"Resource\":[\"arn:aws:s3:::$BUCKET/$STORE/*\",\"arn:aws:s3:::$BUCKET/$CODE\"]},
-    {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::$BUCKET\",
-     \"Condition\":{\"StringLike\":{\"s3:prefix\":\"$STORE/*\"}}}"
+  role $NAME ec2.amazonaws.com "$INSTANCE_POLICY"
   aws iam create-instance-profile --instance-profile-name $NAME
   aws iam add-role-to-instance-profile --instance-profile-name $NAME --role-name $NAME
   sg=$(aws ec2 create-security-group --group-name $NAME --description "SWOT explorer, web only" --query GroupId --output text)
@@ -100,6 +104,7 @@ status)
   ;;
 update)
   send_code
+  aws iam put-role-policy --role-name $NAME --policy-name main --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[$INSTANCE_POLICY]}"
   (cd deploy && pixi exec --spec python python -m zipfile -c ../logs/wake.zip wake.py)
   aws lambda update-function-code --function-name $WAKE --zip-file fileb://logs/wake.zip --query LastModified
   if [ "$(aws ec2 describe-instances --instance-ids "$(instance)" --query 'Reservations[0].Instances[0].State.Name' --output text)" = running ]; then

@@ -8,7 +8,16 @@ t=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadat
 ip=$(curl -s -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/public-ipv4)
 docker build -t swot .
 docker rm -f swot caddy
-docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=0 -e SWOT_CACHE_GB=8 swot
+# the store: Arraylake (Earthmover) if its token is in SSM (/swot-explorer/arraylake-token), else the S3 copy;
+# no command echo (bash -x) while the token is around: the boot log is readable from the EC2 console
+set +x
+token=$(aws ssm get-parameter --region us-east-1 --name /swot-explorer/arraylake-token --with-decryption \
+  --query Parameter.Value --output text 2>/dev/null)
+store=()
+[ -n "$token" ] && store=(-e "ARRAYLAKE_TOKEN=$token" -e SWOT_STORE=arraylake:computational-oceanography-udel/swot-l3-lr-ssh-basic-v3)
+echo "store: ${store[3]:-the S3 copy}"
+docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=0 -e SWOT_CACHE_GB=8 "${store[@]}" swot
+set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860
 # every request shows up in the server's access log; none in the last IDLE minutes (and up for as long): stop
