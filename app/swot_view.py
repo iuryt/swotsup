@@ -48,9 +48,12 @@ def distance(lat1, lon1, lat2, lon2):
     return 2 * EARTH_RADIUS * np.arcsin(np.sqrt(a))
 
 
-def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=5):
+def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None):
     """Mean of `var` over the pixels within `radius` km of (lon, lat), one value per passage.
-    Passages with fewer than `min_pixels` valid pixels there (nadir gap, swath edge) are dropped."""
+    Passages with fewer than `min_pixels` valid pixels there (nadir gap, swath edge) are dropped: by default a
+    quarter of what the circle holds on the 2 km grid, at least 1 (5 km: 5; 2 km: 1)."""
+    if min_pixels is None:
+        min_pixels = max(1, round(np.pi * radius**2 / 4 / 4))
     km_per_deg = EARTH_RADIUS * np.pi / 180
     dlon = radius / (km_per_deg * np.cos(np.deg2rad(lat)))
     # lat(along) is the nadir latitude: swath edges lean up to ~0.3 deg away from it

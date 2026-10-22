@@ -67,3 +67,15 @@ def test_snippet_from_arraylake(store_path, monkeypatch):
     exec(swot_view.snippet(*box, target="arraylake:some-org/some-repo"), scope)
     assert asked == ["some-org/some-repo"]
     xr.testing.assert_equal(scope["sub"].ssha_filtered, swot_view.subset(swot_view.open_store(path), *box).ssha_filtered)
+
+
+def test_point_series_with_a_small_radius(tmp_path, make_file):
+    """On a ~2 km grid like the real one, a 2 km circle holds ~3 pixels: the passage must still be there."""
+    from swot_cloud.store import append
+
+    path = str(tmp_path / "fine")
+    session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
+    append(session.store, make_file(3, 7, day=3, n_lines=1001, n_pixels=51), along_chunk=100, time_chunk=1)
+    session.commit("fine grid")
+    out = swot_view.point_series(swot_view.open_store(path), 30.1, 2.0, radius=2)
+    assert out.sizes["time"] == 1 and 1 <= int(out.pixels[0]) < 5
