@@ -4,11 +4,11 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from swot_icechunk.store import append
+from swot_cloud.store import append
 
 
 def fake_l3(path, cycle, pass_id, lon0=30.0, day=None, tilt=0.0, n_lines=200, n_pixels=9):
-    """A small SWOT L3-like file (as in ../swot_icechunk/tests/conftest.py) centered on lon0, from -10 to 10 deg latitude.
+    """A small SWOT L3-like file (as in ../swot_cloud/tests/conftest.py) centered on lon0, from -10 to 10 deg latitude.
 
     Like the real files, odd passes run south to north with pixel 0 to the west, even passes
     north to south with pixel 0 to the east. The track leans `tilt` degrees of longitude per

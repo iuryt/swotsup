@@ -11,7 +11,7 @@ cloud: every swath since July 2023, without downloading files.
 Data: SWOT LR SSH from NASA and CNES. Today the app reads the L3 product (AVISO/DUACS v3.0 Basic, produced
 with CNES support); the public version will show the L2 product, and L3 too if AVISO allows it (see About in
 the app for the citation and the license terms). The stores are built in
-[swot_icechunk](https://github.com/iuryt/swot_icechunk) (private).
+[swot_cloud](https://github.com/iuryt/swot_cloud) (private).
 
 ## Layout
 
