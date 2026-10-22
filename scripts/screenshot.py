@@ -6,7 +6,7 @@
   flat   switch to the flat map
   dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
   phone  a phone (390x844, touch): the opening view, a tapped point and its series, the menu sheet, a line
-         drawn with taps and Done, the date buttons and a grip, and the opening view held sideways
+         drawn with taps and Done, the date buttons, a new band and moving it, and the opening view held sideways
 A scenario that fails (an older version without that feature) does not stop the others. Browser errors are
 printed. Usage (app env): screenshot.py URL PREFIX [scenario ...]   (default: open click series)"""
 import sys
@@ -122,16 +122,23 @@ with sync_playwright() as p:
                 for button in ("#next", "#next", "#more", "#more"):  # two steps later, then 3 days
                     phone.tap(button)
                     phone.wait_for_timeout(150)
-                box = phone.query_selector("#timeline").bounding_box()  # drag the end grip 40 px right
-                grip = phone.evaluate("timeline.grips[1]")
-                y = box["y"] + box["height"] - 25
-                phone.mouse.move(box["x"] + grip, y)
+                box = phone.query_selector("#timeline").bounding_box()  # a new band, dragged away from this one
+                start = phone.evaluate("timeline.x(timeline.end)") + 60
+                phone.mouse.move(box["x"] + start, box["y"] + 20)
                 phone.mouse.down()
-                phone.mouse.move(box["x"] + grip + 40, y, steps=5)
+                phone.mouse.move(box["x"] + start + 3, box["y"] + 20, steps=3)
                 phone.mouse.up()
                 phone.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
                 phone.wait_for_timeout(5000)
                 print("phone dates:", phone.inner_text("#selection"), flush=True)
+                # a finger on the band itself (on the bar, not a grip) moves it whole, keeping its length
+                band = phone.evaluate("(timeline.x(timeline.start) + timeline.x(timeline.end)) / 2")
+                phone.mouse.move(box["x"] + band, box["y"] + 20)
+                phone.mouse.down()
+                phone.mouse.move(box["x"] + band + 30, box["y"] + 20, steps=5)
+                phone.mouse.up()
+                phone.wait_for_timeout(500)
+                print("phone band moved:", phone.inner_text("#selection"), flush=True)
                 phone.screenshot(path=f"{prefix}-phone-time.png")
                 print(f"{prefix}-phone-series/menu/drawing/line/time.png", flush=True)
         elif scenario == "flat":

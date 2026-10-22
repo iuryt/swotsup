@@ -231,9 +231,8 @@ class Timeline {
     [c.width, c.height] = [w * dpr, h * dpr];
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
-    // on a small screen, round grips hang below the band's edges (room for them between the bar and the months)
-    this.touch = narrow();
-    const bar = [4, h - (this.touch ? 36 : 20)];  // top, bottom of the ticks
+    this.touch = narrow();  // a finger: no grips; buttons change the length (see down)
+    const bar = [4, h - 20];  // top, bottom of the ticks
     ctx.fillStyle = "rgba(148,163,184,0.08)";
     ctx.fillRect(this.x(this.full[0]), bar[0], this.x(this.full[1]) - this.x(this.full[0]), bar[1] - bar[0]);
     ctx.fillStyle = "#64748b";
@@ -261,17 +260,7 @@ class Timeline {
     ctx.fillStyle = "#f97316";
     ctx.fillRect(a - 1, 0, 3, bar[1] + 2);
     ctx.fillRect(Math.max(b, a + 2) - 2, 0, 3, bar[1] + 2);
-    if (this.touch) {  // below the edges, pushed apart when the band is narrow so each can be taken
-      const mid = (a + b) / 2;
-      this.grips = [Math.min(a, mid - 14), Math.max(b, mid + 14)];
-      for (const [x, edge] of [[this.grips[0], a], [this.grips[1], b]]) {
-        ctx.fillRect(Math.min(x, edge), bar[1], Math.abs(x - edge) + 1, 2);
-        ctx.fillRect(x - 1, bar[1], 2, 6);
-        ctx.beginPath();
-        ctx.arc(x, bar[1] + 11, 9, 0, 2 * Math.PI);
-        ctx.fill();
-      }
-    } else for (const x of [a, Math.max(b, a + 2)]) {  // grips on the edges, to drag them
+    if (!this.touch) for (const x of [a, Math.max(b, a + 2)]) {  // grips on the edges, to drag them
       ctx.beginPath();
       ctx.roundRect(x - 4, (bar[0] + bar[1]) / 2 - 9, 8, 18, 3);
       ctx.fill();
@@ -290,10 +279,8 @@ class Timeline {
       return this.draw();
     }
     const x = e.offsetX, [a, b] = [this.x(this.start), this.x(this.end)];
-    if (this.touch) {  // the nearer grip, if the finger is near one
-      const [d1, d2] = this.grips.map((g) => Math.abs(x - g));
-      this.drag = Math.min(d1, d2) < 18 ? (d1 <= d2 ? "start" : "end") : x > a && x < b ? "move" : "new";
-    } else this.drag = Math.abs(x - a) < 6 ? "start" : Math.abs(x - b) < 6 ? "end" : x > a && x < b ? "move" : "new";
+    // a finger on the band (or 20 px around it, a day is a pixel) moves it whole; elsewhere it draws a new one
+    if (this.touch) this.drag = x > a - 20 && x < b + 20 ? "move" : "new"; else this.drag = Math.abs(x - a) < 6 ? "start" : Math.abs(x - b) < 6 ? "end" : x > a && x < b ? "move" : "new";
     this.anchor = { x, start: this.start, end: this.end, day: this.day(x) };
   }
   move(e) {
