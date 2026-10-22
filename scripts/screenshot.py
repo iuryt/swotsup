@@ -5,6 +5,8 @@
   line   zoom on the South Atlantic, draw a line across two swaths, hover its chart
   flat   switch to the flat map
   dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
+  phone  a phone (390x844, touch): the opening view, a tapped point and its series, the menu sheet, a line
+         drawn with taps and Done, and the opening view held sideways
 A scenario that fails (an older version without that feature) does not stop the others. Browser errors are
 printed. Usage (app env): screenshot.py URL PREFIX [scenario ...]   (default: open click series)"""
 import sys
@@ -13,8 +15,8 @@ from playwright.sync_api import sync_playwright
 
 url, prefix, scenarios = sys.argv[1], sys.argv[2], sys.argv[3:] or ["open", "click", "series"]
 with sync_playwright() as p:
-    page = p.chromium.launch(args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]).new_page(
-        viewport={"width": 1600, "height": 950})
+    browser = p.chromium.launch(args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"])
+    page = browser.new_page(viewport={"width": 1600, "height": 950})
     page.on("console", lambda m: m.type == "error" and print(f"console error: {m.text}", flush=True))
     page.on("pageerror", lambda e: print(f"page error: {e}", flush=True))
     page.goto(url, wait_until="networkidle", timeout=180_000)
@@ -81,6 +83,42 @@ with sync_playwright() as p:
             page.wait_for_timeout(1500)
             print("dateline line:", page.inner_text(".card.transect h3"), flush=True)
             shot("dateline-line")
+        elif scenario == "phone":
+            for size, name in (((390, 844), "phone"), ((844, 390), "phone-sideways")):
+                phone = browser.new_context(viewport=dict(zip(("width", "height"), size)), has_touch=True,
+                                            is_mobile=True, device_scale_factor=2).new_page()
+                phone.on("pageerror", lambda e: print(f"page error (phone): {e}", flush=True))
+                phone.goto(url, wait_until="networkidle", timeout=180_000)
+                phone.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
+                phone.wait_for_timeout(6000)
+                phone.screenshot(path=f"{prefix}-{name}.png")
+                print(f"{prefix}-{name}.png", flush=True)
+                if name != "phone":
+                    continue
+                phone.touchscreen.tap(130, 520)  # a swath west of Africa on the opening globe
+                phone.wait_for_selector(".card.sheet .hint:not(:has(.spinner))", timeout=60_000)
+                print("phone card:", phone.inner_text(".card.sheet .hint"), flush=True)
+                phone.tap(".card.sheet .expand")
+                phone.wait_for_selector(".card.sheet .uplot, .card.sheet .loading:not(:has(.spinner))", timeout=120_000)
+                phone.wait_for_timeout(1500)
+                phone.screenshot(path=f"{prefix}-phone-series.png")
+                phone.tap(".card.sheet .close")
+                phone.tap("#tool-menu")
+                phone.wait_for_timeout(500)
+                phone.screenshot(path=f"{prefix}-phone-menu.png")
+                phone.tap("#sheet-close")
+                phone.tap("#tool-line")
+                for xy in ((60, 470), (200, 560)):
+                    phone.touchscreen.tap(*xy)
+                    phone.wait_for_timeout(400)
+                print("phone drawing:", phone.inner_text("#drawing-text"), flush=True)
+                phone.screenshot(path=f"{prefix}-phone-drawing.png")
+                phone.tap("#done")
+                phone.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=60_000)
+                phone.wait_for_timeout(1500)
+                print("phone line:", phone.inner_text(".card.transect .hint"), flush=True)
+                phone.screenshot(path=f"{prefix}-phone-line.png")
+                print(f"{prefix}-phone-series/menu/drawing/line.png", flush=True)
         elif scenario == "flat":
             page.click("#projection")
             page.wait_for_timeout(5000)

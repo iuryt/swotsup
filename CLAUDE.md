@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Goal
 
-**SWOT Sea Surface Height Explorer**: a web map over SWOT KaRIn low-rate (LR) sea surface height swaths
+**SWOT's Up** (the name, decided 2026-10-22; the repo is still `swot_explorer`): a web map over SWOT KaRIn low-rate (LR) sea surface height swaths
 kept in an IceChunk store in the cloud, for the SWOT meeting (first week of November 2026). People pick a
 region and up to 21 days, see the swaths on a globe or a flat map, click a point (its value, passages and
 whole-mission time series), draw a line (values along it), and copy the few lines of icechunk + xarray that
@@ -50,6 +50,11 @@ be resumed here (`claude --resume`).
   the length), an Equal Earth overview on the flat map, the mouse position, a card tied to a clicked point
   (value, passages, time series on request; clicking a passage moves the map to its date), and a card for a
   drawn line (one curve per passage; the hover is a table, and a marker follows it along the line).
+  Small screens (`max-width: 640px` or `max-height: 500px`, `narrow()` in app.js), after Windy: just the name on
+  top (the panel opens as a sheet from the layers icon), the options as icons bottom left, the color bar and the
+  timeline (grips on the band's edges) at the bottom, the cards as sheets across the bottom; touch draws the box,
+  taps place a line's points and Done ends it (no double click on a touch screen), a finger moves the charts'
+  cursor. While drawing, a bar shows what to do, with Undo / Done / Cancel (on the desktop too).
 - `Dockerfile`: the server with the pixi environment `serve` (the server's dependencies, solved together
   with the default environment, so the image runs the versions we test).
 - `deploy/boot.sh` (runs on the EC2 instance at every boot: build, serve behind Caddy, stop after 30 idle

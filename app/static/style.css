@@ -50,13 +50,13 @@ select { cursor: pointer; }
 .segmented button + button { border-left: 1px solid var(--border); }
 .segmented button.active { background: var(--blue); color: white; }
 
-#controls { top: var(--gap); left: var(--gap); padding: 12px 14px; max-width: 440px; }
+#controls { top: var(--gap); left: var(--gap); padding: 12px 14px; max-width: 470px; }
 .brand { display: flex; gap: 10px; align-items: center; }
 .logo { color: var(--orange); font-size: 26px; font-weight: 700; line-height: 1; }
 h1 { font-size: 16px; margin: 0; color: var(--title); font-weight: 600; }
 .brand p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
 #variable { font-weight: 500; }
-#region-text { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#region-text { max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .popover { width: 300px; padding: 12px 14px; z-index: 5; }
 #region-menu { top: 150px; left: var(--gap); }
@@ -142,3 +142,66 @@ dialog td + td, dialog th + th { text-align: right; }
 
 #toast { left: 50%; transform: translateX(-50%); top: var(--gap); padding: 10px 14px; border-color: var(--orange);
   z-index: 10; max-width: 480px; }
+
+/* icon-only buttons (their text is in the tooltip) */
+button.icon { padding: 6px 8px; }
+button.icon svg { width: 17px; height: 17px; }
+#sheet-close, #tools, #tool-about { display: none; }
+
+/* while drawing a box or a line: what to do, and Undo / Done / Cancel (a touch screen has no double click) */
+#drawing { top: var(--gap); left: 50%; transform: translateX(-50%); padding: 6px 8px 6px 14px; z-index: 6;
+  display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+#drawing-text { color: var(--fg); font-size: 12px; }
+
+/* the timeline's hint and the mouse position need a mouse; a phone has neither room nor hover */
+@media (max-width: 640px), (max-height: 500px) {
+  :root { --gap: 8px; --time-h: 84px; --legend-h: 64px; }
+  #time-hint, #coords, #overview, #projection, #percentiles, .stats { display: none !important; }
+  #time { padding: 6px 12px 4px; }
+  #timeline { height: 52px; }
+
+  /* top: just the name; the panel opens below it as a sheet from the layers icon */
+  #controls { left: var(--gap); right: var(--gap); max-width: none; padding: 8px 12px; z-index: 6; }
+  #controls .row, .brand p { display: none; }
+  body.sheet #controls .row, body.sheet .brand p { display: flex; }
+  body.sheet .brand p { display: block; }
+  body.sheet #sheet-close { display: inline-flex; margin-left: auto; }
+  .brand { gap: 8px; }
+  .logo { font-size: 20px; }
+  h1 { font-size: 15px; }
+  #tool-about { display: inline-flex; position: absolute; top: calc(var(--gap) + 4px); right: calc(var(--gap) + 6px);
+    z-index: 7; padding: 6px; }
+  body.sheet #tool-about { display: none; }
+  #draw, #line { display: none; }  /* they are icons on the map here */
+  .popover { left: var(--gap) !important; right: var(--gap); width: auto; }
+
+  /* bottom: the color bar, then the time bar */
+  #legend { left: var(--gap); right: var(--gap); width: auto; top: auto; bottom: calc(var(--gap) * 2 + var(--time-h));
+    padding: 6px 12px; display: grid; grid-template-columns: auto 1fr; column-gap: 10px; align-items: center; }
+  .legend-title { font-size: 11px; font-weight: 500; color: var(--muted); grid-column: 1 / -1; }
+  #colorbar { margin: 4px 0 2px; grid-column: 1 / -1; }
+  .ticks { grid-column: 1 / -1; }
+
+  /* the options, as icons, bottom left */
+  #tools { display: flex; flex-direction: column; gap: 6px; position: absolute; left: var(--gap); z-index: 4;
+    bottom: calc(var(--gap) * 3 + var(--time-h) + var(--legend-h) + 12px); }
+  #tools button { width: 40px; height: 40px; justify-content: center; padding: 0; border-radius: 10px;
+    background: var(--panel); box-shadow: 0 4px 10px rgba(0, 0, 0, .4); }
+  #tools button.active { background: var(--blue); color: white; border-color: var(--blue); }
+  #tools svg { width: 19px; height: 19px; }
+  .maplibregl-ctrl-bottom-right { bottom: calc(var(--gap) * 3 + var(--time-h) + var(--legend-h) + 8px); }
+
+  /* the point's card and the line's card: sheets across the bottom, above the color bar */
+  .card.sheet, .card.transect { position: fixed; left: var(--gap); right: var(--gap); width: auto !important;
+    bottom: calc(var(--gap) * 3 + var(--time-h) + var(--legend-h) + 8px); top: auto; resize: none; min-width: 0; z-index: 5; }
+  .card.sheet.compact { height: auto; }
+  .card.sheet:not(.compact), .card.transect { height: 42vh !important; }
+  #drawing { top: calc(var(--gap) + 52px); max-width: calc(100% - 2 * var(--gap)); }
+}
+@media (max-height: 500px) {  /* a phone held sideways: the icons in a row, the panels lower and thinner */
+  :root { --time-h: 76px; --legend-h: 48px; }
+  #tools { flex-direction: row; }
+  #timeline { height: 44px; }
+  .legend-title { display: none; }
+  .card.sheet:not(.compact), .card.transect { height: calc(100vh - 220px) !important; }
+}
