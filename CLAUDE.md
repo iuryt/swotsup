@@ -107,6 +107,11 @@ truncated: load it again). Several jobs starting `pixi run` right after `pixi in
 
 ## Data
 
+- L3 store on Arraylake (Earthmover, Cloudflare R2), private, icechunk format v2:
+  `SWOT_STORE=arraylake:computational-oceanography-udel/swot-l3-lr-ssh-basic-v3`; the arraylake client vends
+  the R2 credentials from a token (`arraylake auth login` on biomix, `ARRAYLAKE_TOKEN` on a server). The EC2
+  server reads it when the token is in SSM Parameter Store (`/swot-explorer/arraylake-token`, put there by the
+  user), else the S3 copy. From biomix it was slower than S3 (whole globe, one day: 16 s vs 5 s, 2026-10-20).
 - L3 store on S3 (us-east-1): `s3://iuryt-shared-east/icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2`, read with
   the `swot-read` AWS profile (`swot-write` can write). Local copy:
   `/mnt/maximus/data/iury/processed/swot_icechunk/basic`.
