@@ -29,7 +29,7 @@ import swot_view
 matplotlib.use("agg")
 # zarr fetches 10 chunks at once by default; S3 answers each in tens of ms, so more at once is faster
 # (whole globe, 1 day: 15 s -> 5 s with 8 CPUs; scripts/bench_server.py)
-zarr.config.set({"async.concurrency": 64})
+zarr.config.set({"async.concurrency": 256})
 MAX_DAYS = 21
 MAX_PIXELS = 60e6  # ~2 days of the whole globe; keeps a load under ~1 GB of memory
 MAX_BYTES = float(os.environ.get("SWOT_CACHE_GB", 4)) * 1e9  # loaded views kept in memory, beyond the newest

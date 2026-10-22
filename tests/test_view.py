@@ -47,3 +47,23 @@ def test_snippet_for_the_whole_globe(store_path, monkeypatch):
     exec(code, scope)
     np.testing.assert_array_equal(scope["sub"].pass_id, swot_view.subset(swot_view.open_store(path), *box).pass_id)
     np.testing.assert_array_equal(scope["sub"].pass_id, [7, 20, 150])
+
+
+def test_snippet_from_arraylake(store_path, monkeypatch):
+    """A store on Earthmover: the code asks the arraylake client for that repository and gives the app's subset."""
+    import arraylake
+
+    path, _ = store_path
+    asked = []
+
+    class Client:
+        def get_repo(self, name):
+            asked.append(name)
+            return icechunk.Repository.open(icechunk.local_filesystem_storage(path))
+
+    monkeypatch.setattr(arraylake, "Client", Client)
+    box = (29, 31, -1, 1, "2024-01-01", "2024-01-05")
+    scope = {}
+    exec(swot_view.snippet(*box, target="arraylake:some-org/some-repo"), scope)
+    assert asked == ["some-org/some-repo"]
+    xr.testing.assert_equal(scope["sub"].ssha_filtered, swot_view.subset(swot_view.open_store(path), *box).ssha_filtered)
