@@ -20,6 +20,7 @@ async function api(path, params = {}) {
   return r.json();
 }
 const wrap = (lon) => ((lon + 180) % 360 + 360) % 360 - 180;
+const near = (lon, ref) => lon + 360 * Math.round((ref - lon) / 360);  // lon as close to ref as it gets (± 360)
 const deg = (v, neg, pos, digits = 2) => `${+Math.abs(v).toFixed(digits)}°${v < 0 ? neg : v > 0 ? pos : ""}`;
 const lonText = (lon, digits) => deg(wrap(lon), "W", "E", digits);
 const latText = (lat, digits) => deg(lat, "S", "N", digits);
@@ -125,10 +126,13 @@ function drawBox() {  // the next drag on the map draws the region
 
 function setupDrawing() {
   let start = null;
+  // the globe gives longitudes in -180..180, so a drag across 180 jumps by 360: take the end the short way
+  // from the start; the flat map's are already continuous (and a box there may be wider than 180)
+  const lng = (e) => document.body.classList.contains("globe") ? near(e.lngLat.lng, start.lng) : e.lngLat.lng;
   map.on("mousedown", (e) => { if (state.drawing) start = e.lngLat; });
   map.on("mousemove", (e) => {
     if (!start) return;
-    const [w, e2, s, n] = [Math.min(start.lng, e.lngLat.lng), Math.max(start.lng, e.lngLat.lng),
+    const [w, e2, s, n] = [Math.min(start.lng, lng(e)), Math.max(start.lng, lng(e)),
                            Math.min(start.lat, e.lngLat.lat), Math.max(start.lat, e.lngLat.lat)];
     map.getSource("box").setData({ type: "Feature", geometry: { type: "LineString",
       coordinates: [[w, s], [e2, s], [e2, n], [w, n], [w, s]] } });
@@ -136,7 +140,7 @@ function setupDrawing() {
   map.on("mouseup", (e) => {
     if (!start) return;
     const r = (v) => Math.round(v * 100) / 100;
-    const box = { west: r(wrap(Math.min(start.lng, e.lngLat.lng))), east: r(wrap(Math.max(start.lng, e.lngLat.lng))),
+    const box = { west: r(wrap(Math.min(start.lng, lng(e)))), east: r(wrap(Math.max(start.lng, lng(e)))),
                   south: r(Math.min(start.lat, e.lngLat.lat)), north: r(Math.max(start.lat, e.lngLat.lat)) };
     start = null;
     state.justDrew = true;  // the click that ends the drag is not a click for a time series
@@ -464,10 +468,15 @@ function setupLine() {
     if (!state.lining) return;
     const last = state.vertices.at(-1), p = map.project(e.lngLat);
     if (last && Math.hypot(p.x - map.project(last).x, p.y - map.project(last).y) < 4) return;  // the double click's
-    state.vertices.push([e.lngLat.lng, e.lngLat.lat]);
+    // each vertex the short way from the previous one (segments are great circles), so the line drawn so far
+    // does not go around the world when it crosses 180
+    state.vertices.push([last ? near(e.lngLat.lng, last[0]) : e.lngLat.lng, e.lngLat.lat]);
     showLine(state.vertices);
   });
-  map.on("mousemove", (e) => { if (state.lining && state.vertices.length) showLine(state.vertices, [e.lngLat.lng, e.lngLat.lat]); });
+  map.on("mousemove", (e) => {
+    const last = state.lining && state.vertices.at(-1);
+    if (last) showLine(state.vertices, [near(e.lngLat.lng, last[0]), e.lngLat.lat]);
+  });
   map.on("dblclick", (e) => {
     if (!state.lining) return;
     e.preventDefault();
