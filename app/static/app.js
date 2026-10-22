@@ -401,6 +401,27 @@ function closePoint() {
   pointCard?.tip?.remove();
   pointCard?.remove();
   pin = pointCard = null;
+  updateSheets();
+}
+
+// on a small screen a card is a sheet in the color bar's place (hidden meanwhile), small; its grab bar (a tap,
+// or a drag up or down) makes it tall or small again
+function updateSheets() {
+  document.body.classList.toggle("card-open", narrow() && !!(pointCard?.classList.contains("sheet") || transect));
+}
+function grab(card) {
+  const bar = document.createElement("div");
+  bar.className = "grab";
+  card.prepend(bar);
+  // a drag decides on release; a tap on its click, which then lands on the bar (resizing on release would send
+  // the tap's click to whatever is under the finger in the resized card: the chart, which changes the dates)
+  let y0 = null, dragged = false;
+  bar.addEventListener("pointerdown", (e) => { y0 = e.clientY; dragged = false; bar.setPointerCapture(e.pointerId); });
+  bar.addEventListener("pointerup", (e) => {
+    const dy = e.clientY - y0;
+    if ((dragged = Math.abs(dy) >= 10)) card.classList.toggle("tall", dy < 0);
+  });
+  bar.addEventListener("click", () => { if (!dragged) card.classList.toggle("tall"); });
 }
 async function openPoint(lngLat) {  // a small card: where, and the value there; the time series on request
   closePoint();
@@ -424,6 +445,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
     card.classList.add("sheet");
     document.body.appendChild(card);
     el.querySelector("svg").remove();
+    grab(card);
   }
   for (const ev of ["mousedown", "mouseup", "click", "dblclick", "wheel", "pointerdown"]) card.addEventListener(ev, (e) => e.stopPropagation());
   card.querySelector(".close").onclick = closePoint;
@@ -458,6 +480,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
     card.plot?.setSize(chartSize(card));
   }).observe(card);
   pin = new maplibregl.Marker({ element: el, anchor: "top-left" }).setLngLat(lngLat).addTo(map);
+  updateSheets();
   lucide.createIcons();
   place(card.offsetWidth, card.offsetHeight, true);
   link();
@@ -486,8 +509,8 @@ function placeTip(tip, u, x, y) {  // a tip on the page, by the point (x, y) of 
   tip.style.top = `${Math.max(r.top + y - h - 12, 8)}px`;
 }
 
-function chartSize(card) {  // the chart fills the card below its header
-  return { width: card.clientWidth - 24, height: card.clientHeight - card.querySelector("header").offsetHeight - 26 };
+function chartSize(card) {  // the chart fills the card below its header (and grab bar)
+  return { width: card.clientWidth - 24, height: card.clientHeight - card.querySelector(".chart").offsetTop - 12 };
 }
 
 async function fillSeries(card, lngLat, radius) {
@@ -500,6 +523,7 @@ async function fillSeries(card, lngLat, radius) {
   try {
     const s = await api("/api/series", { lon: wrap(lngLat.lng), lat: lngLat.lat, variable: state.variable, radius });
     hint.textContent = `mean within ${radius} km · ${s.time.length} passages · click one to see that date on the map`;
+    if (card.classList.contains("sheet")) card.querySelector("h3").textContent = `${latText(lngLat.lat)} ${lonText(lngLat.lng)} · ${s.time.length} passages`;
     chart.innerHTML = "";
     if (!s.time.length) { chart.innerHTML = `<div class="loading">No passage here (outside the swaths, or in the nadir gap).</div>`; return; }
     const band = { hooks: { drawClear: [(u) => {  // the selected dates
@@ -623,9 +647,13 @@ function openTransect(points) {
         <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
     <div class="chart"></div>`;
   document.body.appendChild(card);
+  if (narrow()) grab(card);
   lucide.createIcons();
   transect = { points, step: 2, card };
-  card.querySelector(".close").onclick = () => { card.tip?.remove(); card.remove(); transect = null; showLine([]); showProbe(null); };
+  updateSheets();
+  card.querySelector(".close").onclick = () => {
+    card.tip?.remove(); card.remove(); transect = null; showLine([]); showProbe(null); updateSheets();
+  };
   card.querySelector("select").onchange = (e) => { transect.step = Number(e.target.value); fillTransect(); };
   dragByHeader(card);
   new ResizeObserver(() => card.plot?.setSize(transectSize(card))).observe(card);
@@ -633,10 +661,7 @@ function openTransect(points) {
   fillTransect();
 }
 
-function transectSize(card) {
-  return { width: card.clientWidth - 24,
-           height: card.clientHeight - card.querySelector("header").offsetHeight - 26 };
-}
+const transectSize = chartSize;
 
 async function fillTransect() {
   const { card, points, step } = transect, chart = card.querySelector(".chart"), hint = card.querySelector(".hint");
@@ -655,6 +680,7 @@ async function fillTransect() {
     showLine(transect.path);
     card.querySelector("h3").textContent = `Along the line · ${t.distance.at(-1).toFixed(0)} km · ${$("#legend-variable").textContent}`;
     hint.textContent = `${t.passages.length} passages · nearest pixel of each, every ${t.step} km`;
+    if (narrow()) card.querySelector("h3").textContent = `Line · ${t.distance.at(-1).toFixed(0)} km · ${t.passages.length} passages`;
     chart.innerHTML = "";
     if (!t.passages.length) {
       chart.innerHTML = `<div class="loading">No passage crosses the line on the selected dates.</div>`;
