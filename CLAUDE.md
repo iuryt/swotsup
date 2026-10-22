@@ -67,6 +67,19 @@ Decisions worth keeping:
 - History: a Panel/HoloViews version came first; full-screen map, floating panels and the popup tied to
   a point were fragile there (Bokeh document locks, CSS overlays), hence MapLibre + FastAPI.
 
+## Workflow
+
+Work is tracked in the repo's issues. For each issue:
+1. A branch named after it (`12-time-order`), from `main`.
+2. Commits with tests, mutations and screenshots as usual (screenshots into `img/history` from the
+   branch's commits).
+3. A PR with "Closes #N": what changed, the test and mutation results, the screenshot paths.
+4. The version goes up in the PR (`pyproject.toml`, semver while in 0.x): a feature bumps the minor
+   (0.1.0 -> 0.2.0), a fix the patch (0.2.0 -> 0.2.1); docs-only changes keep it.
+5. Merge only after the user's ok, with a **merge commit** (not squash: `img/history` names carry the
+   branch's commit hashes), then tag `vX.Y.Z` on `main`.
+6. The EC2 server gets only what is on `main`, and only when the user asks.
+
 ## Commands
 
 Run everything through Slurm, never on the login node (`biomix`):
