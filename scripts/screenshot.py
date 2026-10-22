@@ -6,7 +6,7 @@
   flat   switch to the flat map
   dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
   phone  a phone (390x844, touch): the opening view, a tapped point and its series, the menu sheet, a line
-         drawn with taps and Done, and the opening view held sideways
+         drawn with taps and Done, the date buttons and a grip, and the opening view held sideways
 A scenario that fails (an older version without that feature) does not stop the others. Browser errors are
 printed. Usage (app env): screenshot.py URL PREFIX [scenario ...]   (default: open click series)"""
 import sys
@@ -118,7 +118,22 @@ with sync_playwright() as p:
                 phone.wait_for_timeout(1500)
                 print("phone line:", phone.inner_text(".card.transect .hint"), flush=True)
                 phone.screenshot(path=f"{prefix}-phone-line.png")
-                print(f"{prefix}-phone-series/menu/drawing/line.png", flush=True)
+                phone.tap(".card.transect .close")
+                for button in ("#next", "#next", "#more", "#more"):  # two steps later, then 3 days
+                    phone.tap(button)
+                    phone.wait_for_timeout(150)
+                box = phone.query_selector("#timeline").bounding_box()  # drag the end grip 40 px right
+                grip = phone.evaluate("timeline.grips[1]")
+                y = box["y"] + box["height"] - 25
+                phone.mouse.move(box["x"] + grip, y)
+                phone.mouse.down()
+                phone.mouse.move(box["x"] + grip + 40, y, steps=5)
+                phone.mouse.up()
+                phone.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
+                phone.wait_for_timeout(5000)
+                print("phone dates:", phone.inner_text("#selection"), flush=True)
+                phone.screenshot(path=f"{prefix}-phone-time.png")
+                print(f"{prefix}-phone-series/menu/drawing/line/time.png", flush=True)
         elif scenario == "flat":
             page.click("#projection")
             page.wait_for_timeout(5000)
