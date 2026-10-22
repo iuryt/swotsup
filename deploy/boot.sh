@@ -12,7 +12,8 @@ docker rm -f swot caddy
 # no command echo (bash -x) while the token is around: the boot log is readable from the EC2 console
 set +x
 token=$(aws ssm get-parameter --region us-east-1 --name /swot-explorer/arraylake-token --with-decryption \
-  --query Parameter.Value --output text 2>/dev/null)
+  --query Parameter.Value --output text 2>/tmp/ssm.err)
+[ -n "$token" ] || echo "no Arraylake token: $(tail -1 /tmp/ssm.err)"  # AWS's message, without the token
 store=()
 [ -n "$token" ] && store=(-e "ARRAYLAKE_TOKEN=$token" -e SWOT_STORE=arraylake:computational-oceanography-udel/swot-l3-lr-ssh-basic-v3)
 echo "store: ${store[3]:-the S3 copy}"
