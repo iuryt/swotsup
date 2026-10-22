@@ -4,6 +4,7 @@
   series open the time series of that point
   line   zoom on the South Atlantic, draw a line across two swaths, hover its chart
   flat   switch to the flat map
+  dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
 A scenario that fails (an older version without that feature) does not stop the others. Browser errors are
 printed. Usage (app env): screenshot.py URL PREFIX [scenario ...]   (default: open click series)"""
 import sys
@@ -56,6 +57,30 @@ with sync_playwright() as p:
             page.wait_for_timeout(800)
             print("line:", page.inner_text(".card.transect .hint"), flush=True)
             shot("line")
+        elif scenario == "dateline":
+            for projection in ("globe", "flat"):
+                if page.evaluate("document.body.classList.contains('globe')") != (projection == "globe"):
+                    page.click("#projection")
+                page.evaluate("map.jumpTo({center: [180, 0], zoom: 3})")
+                page.wait_for_timeout(2000)
+                page.click("#draw")
+                page.mouse.move(650, 380)  # 180 degrees is at the middle of the map (x 800)
+                page.mouse.down()
+                page.mouse.move(800, 460, steps=5)
+                page.mouse.move(950, 540, steps=5)
+                page.mouse.up()
+                page.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
+                page.wait_for_timeout(5000)
+                print(f"dateline box on the {projection}:", page.inner_text("#region-text"), flush=True)
+                shot(f"dateline-{projection}")
+            page.click("#line")  # and a line across it (on the flat map)
+            page.mouse.click(660, 440)  # inside the box, across its passages
+            page.wait_for_timeout(300)
+            page.mouse.dblclick(940, 470)
+            page.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=60_000)
+            page.wait_for_timeout(1500)
+            print("dateline line:", page.inner_text(".card.transect h3"), flush=True)
+            shot("dateline-line")
         elif scenario == "flat":
             page.click("#projection")
             page.wait_for_timeout(5000)
