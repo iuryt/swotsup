@@ -1,7 +1,7 @@
 # SWOT's Up
 
-Explore the whole SWOT mission. A web map over SWOT KaRIn low-rate sea surface height swaths, read on demand from an IceChunk store in the
-cloud: every swath since July 2023, without downloading files.
+Explore the whole SWOT mission: a web map over SWOT KaRIn low-rate sea surface height swaths, read on
+demand from an IceChunk store in the cloud. Every swath since July 2023, without downloading files.
 
 - Pick a region and up to 21 days on the timeline; see the swaths on a globe or a flat map.
 - Click a point: its value, the passages there (pass, cycle, time), and the time series over the whole mission.
