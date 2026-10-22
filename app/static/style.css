@@ -158,11 +158,11 @@ button.icon svg { width: 17px; height: 17px; }
 
 /* the timeline's hint and the mouse position need a mouse; a phone has neither room nor hover */
 @media (max-width: 640px), (max-height: 500px) {
-  :root { --gap: 8px; --time-h: 110px; --legend-h: 64px; }
+  :root { --gap: 8px; --time-h: 98px; --legend-h: 64px; }
   #time-hint, #coords, #overview, #projection, #percentiles, .stats, #readout,
   .maplibregl-ctrl-attrib { display: none !important; }  /* the credits are in About */
   #time { padding: 6px 12px 4px; }
-  #timeline { height: 64px; }
+  #timeline { height: 52px; }
   /* the date (taps open the calendar) and buttons for a finger: move by the selection's length, a day less or more */
   .time-top { height: auto; align-items: center; }
   #selection { cursor: pointer; font-size: 14px; text-decoration: underline dotted; text-underline-offset: 3px; }
@@ -209,9 +209,9 @@ button.icon svg { width: 17px; height: 17px; }
   #drawing { top: calc(var(--gap) + 52px); max-width: calc(100% - 2 * var(--gap)); }
 }
 @media (max-height: 500px) {  /* a phone held sideways: the icons in a row, the panels lower and thinner */
-  :root { --time-h: 96px; --legend-h: 48px; }
+  :root { --time-h: 90px; --legend-h: 48px; }
   #tools { flex-direction: row; }
-  #timeline { height: 52px; }
+  #timeline { height: 44px; }
   .legend-title { display: none; }
   .card.sheet:not(.compact), .card.transect { height: calc(100vh - 220px) !important; }
 }
