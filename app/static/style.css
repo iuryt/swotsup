@@ -205,7 +205,19 @@ button.icon svg { width: 17px; height: 17px; }
   .card.sheet, .card.transect { position: fixed; left: var(--gap); right: var(--gap); width: auto !important;
     bottom: calc(var(--gap) * 3 + var(--time-h) + var(--legend-h) + 8px); top: auto; resize: none; min-width: 0; z-index: 5; }
   .card.sheet.compact { height: auto; }
-  .card.sheet:not(.compact), .card.transect { height: 42vh !important; }
+  .card.sheet:not(.compact), .card.transect { height: 230px !important; padding-top: 4px; }
+  .card.sheet.tall:not(.compact), .card.transect.tall { height: 70vh !important; }
+  /* while a card is open it takes the color bar's place, and the icons go in a row above it */
+  body.card-open #legend { display: none; }
+  body.card-open .card.sheet, body.card-open .card.transect { bottom: calc(var(--gap) * 2 + var(--time-h)); }
+  body.card-open #tools { flex-direction: row; bottom: calc(var(--gap) * 3 + var(--time-h) + 230px); }
+  body.card-open:has(.tall) #tools, body.card-open:has(.sheet.compact) #tools { display: none; }
+  .grab { width: 44px; height: 5px; border-radius: 3px; background: var(--faint); margin: 2px auto 6px; cursor: ns-resize;
+    touch-action: none; padding: 6px 0; background-clip: content-box; box-sizing: content-box; }
+  .card.sheet.compact .grab { display: none; }
+  .card.sheet:not(.compact) .hint, .card.transect .hint { display: none; }
+  .card.sheet h3, .card.transect h3 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card.sheet header > div, .card.transect header > div { min-width: 0; }
   #drawing { top: calc(var(--gap) + 52px); max-width: calc(100% - 2 * var(--gap)); }
 }
 @media (max-height: 500px) {  /* a phone held sideways: the icons in a row, the panels lower and thinner */

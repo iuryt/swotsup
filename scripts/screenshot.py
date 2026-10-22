@@ -5,7 +5,7 @@
   line   zoom on the South Atlantic, draw a line across two swaths, hover its chart
   flat   switch to the flat map
   dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
-  phone  a phone (390x844, touch): the opening view, a tapped point and its series, the menu sheet, a line
+  phone  a phone (390x844, touch): the opening view, a tapped point and its series (small and tall), the menu sheet, a line
          drawn with taps and Done, the date buttons, a new band and moving it, and the opening view held sideways
 A scenario that fails (an older version without that feature) does not stop the others. Browser errors are
 printed. Usage (app env): screenshot.py URL PREFIX [scenario ...]   (default: open click series)"""
@@ -102,6 +102,11 @@ with sync_playwright() as p:
                 phone.wait_for_selector(".card.sheet .uplot, .card.sheet .loading:not(:has(.spinner))", timeout=120_000)
                 phone.wait_for_timeout(1500)
                 phone.screenshot(path=f"{prefix}-phone-series.png")
+                phone.tap(".card.sheet .grab")  # tall, then small again
+                phone.wait_for_timeout(800)
+                phone.screenshot(path=f"{prefix}-phone-series-tall.png")
+                print("phone dates after the grab bar:", phone.inner_text("#selection"), flush=True)
+                phone.tap(".card.sheet .grab")
                 phone.tap(".card.sheet .close")
                 phone.tap("#tool-menu")
                 phone.wait_for_timeout(500)
