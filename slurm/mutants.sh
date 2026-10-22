@@ -28,5 +28,5 @@ mutate app/server.py 's/d, j = tree.query(pts, distance_upper_bound=radius \/ sw
 mutate app/server.py 's/        t = pd.Timestamp(data.line_time\[i, seen\[len(seen) \/\/ 2\]\]).round("s")/        t = pd.Timestamp(data.sub.time.values[i]).round("s")/' "transect gives the passage's mean time"
 mutate app/server.py 's/    dist = np.r_\[np.arange(0, length, step), length\]  # and the last vertex/    dist = np.arange(0, length, step)/' "transect stops short of its last vertex"
 mutate app/server.py 's/        times = data.line_time\[i, rows\[i\].clip(0)\]/        times = data.line_time[i, np.full_like(rows[i], seen[len(seen) \/\/ 2])]/' "transect gives every point the time of the middle line"
-mutate app/swot_view.py 's/repo = arraylake.Client().get_repo("{target.removeprefix("arraylake:")}")/repo = arraylake.Client().get_repo("{target}")/' "Arraylake code asks for the wrong repository name"
+mutate app/swot_view.py 's/get_repo("{target.removeprefix("arraylake:")}")/get_repo("{target}")/' "Arraylake code asks for the wrong repository name"
 mutate app/swot_view.py 's/        min_pixels = max(1, round(np.pi \* radius\*\*2 \/ 4 \/ 4))/        min_pixels = 5/' "a 2 km time series drops every passage"

@@ -68,26 +68,26 @@ def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None)
 def snippet(west, east, south, north, start, end, var="ssha_filtered", target=STORE):
     """The code a user runs to get the same subset, with icechunk + xarray only. The longitude filter and
     the latitude cut are left out when they keep everything (west == east, e.g. -180 to 180, is all longitudes)."""
+    # the generated code (text at column 0): only the line that opens the repository differs
     if target.startswith("arraylake:"):
-        opening = f'''import arraylake
-import xarray as xr
-
-# an Arraylake token: run `arraylake auth login` once
-repo = arraylake.Client().get_repo("{target.removeprefix("arraylake:")}")'''
+        library, how = "arraylake", "an Arraylake token: run `arraylake auth login` once"
+        repo = f'arraylake.Client().get_repo("{target.removeprefix("arraylake:")}")'
     else:
         bucket, prefix = target.removeprefix("s3://").split("/", 1)
-        opening = f'''import icechunk
-import xarray as xr
-
-# AWS credentials from the environment (AWS_PROFILE or AWS_ACCESS_KEY_ID...), region us-east-1
-repo = icechunk.Repository.open(icechunk.s3_storage(bucket="{bucket}", prefix="{prefix}", from_env=True))'''
+        library = "icechunk"
+        how = "AWS credentials from the environment (AWS_PROFILE or AWS_ACCESS_KEY_ID...), region us-east-1"
+        repo = f'icechunk.Repository.open(icechunk.s3_storage(bucket="{bucket}", prefix="{prefix}", from_env=True))'
     lats = "" if south <= -90 and north >= 90 else f", lat=slice({south:g}, {north:g})"
     lons = "" if (east - west) % 360 == 0 else f'''west, east = {west:g}, {east:g}
 first = (sub.lon_min - west) % 360  # how far east of `west` each line starts
 hit = ((first <= (east - west) % 360) | (first + sub.lon_max - sub.lon_min >= 360)).any("along")
 sub = sub.isel(time=sub.pass_id.isin(sub.pass_number[hit]).values)
 '''
-    return f'''{opening}
+    return f'''import {library}
+import xarray as xr
+
+# {how}
+repo = {repo}
 ds = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, chunks=None).set_xindex("lat")
 
 sub = ds.sel(time=slice("{start}", "{end}"){lats})
