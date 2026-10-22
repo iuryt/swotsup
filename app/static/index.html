@@ -22,6 +22,7 @@
         <h1>SWOT's Up</h1>
         <p>Sea surface height · L3 LR SSH v3.0 · read live from the cloud</p>
       </div>
+      <button id="tool-about" class="ghost" title="About"><i data-lucide="info"></i></button>
       <button id="sheet-close" class="ghost" title="Close"><i data-lucide="x"></i></button>
     </div>
     <div class="row">
@@ -88,7 +89,6 @@
     <button id="tool-projection" title="Globe or flat map"><i data-lucide="earth"></i></button>
     <button id="tool-code" title="The same data in your own Python"><i data-lucide="code"></i></button>
   </nav>
-  <button id="tool-about" class="ghost" title="About"><i data-lucide="info"></i></button>
 
   <!-- while drawing: what to do, and the buttons a touch screen needs (no double click there) -->
   <div id="drawing" class="panel hidden">
@@ -104,7 +104,15 @@
 
   <!-- bottom: time -->
   <section class="panel" id="time">
-    <div class="time-top"><span id="readout"></span><span id="selection"></span></div>
+    <div class="time-top"><span id="readout"></span>
+      <button id="selection" class="ghost" title="Pick a day"></button>
+      <input type="date" id="pick" tabindex="-1" aria-hidden="true">
+      <span id="time-buttons">
+        <button id="prev" title="Earlier, by the selection's length"><i data-lucide="chevron-left"></i></button>
+        <button id="fewer" title="One day less"><i data-lucide="minus"></i></button>
+        <button id="more" title="One day more"><i data-lucide="plus"></i></button>
+        <button id="next" title="Later, by the selection's length"><i data-lucide="chevron-right"></i></button>
+      </span></div>
     <canvas id="timeline"></canvas>
     <div class="hint" id="time-hint">Drag the orange band, or drag anywhere for a new one, up to <span class="max-days"></span> days; scroll to zoom.
       Ticks: days SWOT passed over the region. Click the map for the time series at a point.</div>

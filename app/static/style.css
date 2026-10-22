@@ -76,7 +76,10 @@ h1 { font-size: 16px; margin: 0; color: var(--title); font-weight: 600; }
 #time { left: var(--gap); right: var(--gap); bottom: var(--gap); padding: 8px 14px 6px; }
 .time-top { display: flex; justify-content: space-between; height: 18px; font-size: 12px; }
 #readout { color: var(--muted); }
-#selection { color: var(--orange); font-weight: 600; }
+#selection { color: var(--orange); font-weight: 600; padding: 0; border: 0; background: none; cursor: default; }
+#selection:hover { background: none; }
+#pick { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+#time-buttons { display: none; }
 #timeline { width: 100%; height: 46px; display: block; cursor: crosshair; touch-action: none; }
 #time .hint { margin: 2px 0 0; font-size: 11px; }
 
@@ -155,13 +158,21 @@ button.icon svg { width: 17px; height: 17px; }
 
 /* the timeline's hint and the mouse position need a mouse; a phone has neither room nor hover */
 @media (max-width: 640px), (max-height: 500px) {
-  :root { --gap: 8px; --time-h: 84px; --legend-h: 64px; }
-  #time-hint, #coords, #overview, #projection, #percentiles, .stats { display: none !important; }
+  :root { --gap: 8px; --time-h: 110px; --legend-h: 64px; }
+  #time-hint, #coords, #overview, #projection, #percentiles, .stats, #readout,
+  .maplibregl-ctrl-attrib { display: none !important; }  /* the credits are in About */
   #time { padding: 6px 12px 4px; }
-  #timeline { height: 52px; }
+  #timeline { height: 64px; }
+  /* the date (taps open the calendar) and buttons for a finger: move by the selection's length, a day less or more */
+  .time-top { height: auto; align-items: center; }
+  #selection { cursor: pointer; font-size: 14px; text-decoration: underline dotted; text-underline-offset: 3px; }
+  #time-buttons { display: flex; gap: 6px; }
+  #time-buttons button { width: 38px; height: 32px; padding: 0; justify-content: center; }
+  #time-buttons svg { width: 18px; height: 18px; }
 
-  /* top: just the name; the panel opens below it as a sheet from the layers icon */
-  #controls { left: var(--gap); right: var(--gap); max-width: none; padding: 8px 12px; z-index: 6; }
+  /* top left: a small label with the name and About; the panel opens from it as a sheet (layers icon) */
+  #controls { left: var(--gap); max-width: none; padding: 6px 6px 6px 12px; z-index: 6; }
+  body.sheet #controls { right: var(--gap); padding: 8px 12px; }
   #controls .row, .brand p { display: none; }
   body.sheet #controls .row, body.sheet .brand p { display: flex; }
   body.sheet .brand p { display: block; }
@@ -169,8 +180,7 @@ button.icon svg { width: 17px; height: 17px; }
   .brand { gap: 8px; }
   .logo { font-size: 20px; }
   h1 { font-size: 15px; }
-  #tool-about { display: inline-flex; position: absolute; top: calc(var(--gap) + 4px); right: calc(var(--gap) + 6px);
-    z-index: 7; padding: 6px; }
+  #tool-about { display: inline-flex; padding: 6px; margin-left: 4px; }
   body.sheet #tool-about { display: none; }
   #draw, #line { display: none; }  /* they are icons on the map here */
   .popover { left: var(--gap) !important; right: var(--gap); width: auto; }
@@ -199,9 +209,9 @@ button.icon svg { width: 17px; height: 17px; }
   #drawing { top: calc(var(--gap) + 52px); max-width: calc(100% - 2 * var(--gap)); }
 }
 @media (max-height: 500px) {  /* a phone held sideways: the icons in a row, the panels lower and thinner */
-  :root { --time-h: 76px; --legend-h: 48px; }
+  :root { --time-h: 96px; --legend-h: 48px; }
   #tools { flex-direction: row; }
-  #timeline { height: 44px; }
+  #timeline { height: 52px; }
   .legend-title { display: none; }
   .card.sheet:not(.compact), .card.transect { height: calc(100vh - 220px) !important; }
 }

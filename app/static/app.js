@@ -26,6 +26,10 @@ const lonText = (lon, digits) => deg(wrap(lon), "W", "E", digits);
 const latText = (lat, digits) => deg(lat, "S", "N", digits);
 const dayText = (t) => new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const isoDay = (t) => new Date(t).toISOString().slice(0, 10);
+const rangeText = (a, b) => {  // two days, without repeating their month and year: 4–24 Nov 2024, 28 Nov – 3 Dec 2024
+  const [x, y] = [dayText(a).split(" "), dayText(b).split(" ")];
+  return x[2] !== y[2] ? `${dayText(a)} – ${dayText(b)}` : x[1] !== y[1] ? `${x[0]} ${x[1]} – ${dayText(b)}` : `${x[0]}–${dayText(b)}`;
+};
 const timeText = (iso) => `${dayText(Date.parse(iso + "Z"))} ${iso.slice(11, 16)} UTC`;
 // a phone or a short window: the options become icons, the cards sheets across the bottom (style.css)
 const narrow = () => matchMedia("(max-width: 640px), (max-height: 500px)").matches;
@@ -96,10 +100,38 @@ function setColors() {
 
 // --- the dates: from the timeline, or a click on a time series
 function setDates(start, days) {
+  clearTimeout(nudge.timer);  // a drag after the buttons wins over what they left pending
   Object.assign(state, { start, days });
   timeline.setBand(start, days);
   pointCard?.plot?.redraw();  // its shaded band
   loadData();
+}
+
+// --- the dates with a finger: move by the selection's length, a day less or more, or a day from the calendar.
+// The band moves at once; the data are read once the taps stop.
+function nudge(start, days) {
+  const [lo, hi] = timeline.full;
+  days = Math.min(Math.max(days, 1), info.max_days);
+  start = Math.min(Math.max(start, lo), hi - days * DAY);
+  Object.assign(state, { start, days });
+  timeline.setBand(start, days);
+  clearTimeout(nudge.timer);
+  nudge.timer = setTimeout(() => setDates(start, days), 500);
+}
+
+function setupDateButtons() {
+  $("#prev").onclick = () => nudge(state.start - state.days * DAY, state.days);
+  $("#next").onclick = () => nudge(state.start + state.days * DAY, state.days);
+  $("#fewer").onclick = () => nudge(state.start, state.days - 1);
+  $("#more").onclick = () => nudge(state.start, state.days + 1);
+  const pick = $("#pick");
+  [pick.min, pick.max] = [isoDay(timeline.full[0]), isoDay(timeline.full[1] - DAY)];
+  $("#selection").onclick = () => {
+    if (!narrow()) return;
+    pick.value = isoDay(state.start);
+    try { pick.showPicker(); } catch (e) { pick.focus(); pick.click(); }
+  };
+  pick.onchange = () => { if (pick.value) nudge(Date.parse(pick.value + "T00:00:00Z"), state.days); };
 }
 
 // --- the region
@@ -178,12 +210,13 @@ function setupDrawing() {
 // --- the timeline: whole mission, a tick on each day SWOT passed over the region, an orange band for the dates
 class Timeline {
   constructor(canvas, first, last, onChange) {
-    Object.assign(this, { canvas, onChange, ticks: { day: [], n: [], cycle: [] } });
+    Object.assign(this, { canvas, onChange, ticks: { day: [], n: [], cycle: [] }, pointers: new Map() });
     this.full = [Math.floor(first / DAY) * DAY, Math.ceil(last / DAY) * DAY + DAY];
     this.view = [...this.full];
     canvas.addEventListener("pointerdown", (e) => this.down(e));
     canvas.addEventListener("pointermove", (e) => this.move(e));
     canvas.addEventListener("pointerup", (e) => this.up(e));
+    canvas.addEventListener("pointercancel", (e) => this.up(e));
     canvas.addEventListener("pointerleave", () => { $("#readout").textContent = ""; });
     canvas.addEventListener("wheel", (e) => this.zoom(e), { passive: false });
     new ResizeObserver(() => this.draw()).observe(canvas);
@@ -198,7 +231,9 @@ class Timeline {
     [c.width, c.height] = [w * dpr, h * dpr];
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
-    const bar = [4, h - 20];  // top, bottom of the ticks
+    // on a small screen, round grips hang below the band's edges (room for them between the bar and the months)
+    this.touch = narrow();
+    const bar = [4, h - (this.touch ? 36 : 20)];  // top, bottom of the ticks
     ctx.fillStyle = "rgba(148,163,184,0.08)";
     ctx.fillRect(this.x(this.full[0]), bar[0], this.x(this.full[1]) - this.x(this.full[0]), bar[1] - bar[0]);
     ctx.fillStyle = "#64748b";
@@ -226,21 +261,48 @@ class Timeline {
     ctx.fillStyle = "#f97316";
     ctx.fillRect(a - 1, 0, 3, bar[1] + 2);
     ctx.fillRect(Math.max(b, a + 2) - 2, 0, 3, bar[1] + 2);
-    for (const x of [a, Math.max(b, a + 2)]) {  // grips on the edges, to drag them
+    if (this.touch) {  // below the edges, pushed apart when the band is narrow so each can be taken
+      const mid = (a + b) / 2;
+      this.grips = [Math.min(a, mid - 14), Math.max(b, mid + 14)];
+      for (const [x, edge] of [[this.grips[0], a], [this.grips[1], b]]) {
+        ctx.fillRect(Math.min(x, edge), bar[1], Math.abs(x - edge) + 1, 2);
+        ctx.fillRect(x - 1, bar[1], 2, 6);
+        ctx.beginPath();
+        ctx.arc(x, bar[1] + 11, 9, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    } else for (const x of [a, Math.max(b, a + 2)]) {  // grips on the edges, to drag them
       ctx.beginPath();
       ctx.roundRect(x - 4, (bar[0] + bar[1]) / 2 - 9, 8, 18, 3);
       ctx.fill();
     }
     const n = Math.round((this.end - this.start) / DAY);
-    $("#selection").textContent = n > 1 ? `${dayText(this.start)} – ${dayText(this.end - DAY)} · ${n} days` : `${dayText(this.start)} · 1 day`;
+    $("#selection").textContent = n > 1 ? `${rangeText(this.start, this.end - DAY)} · ${n} days` : `${dayText(this.start)} · 1 day`;
   }
   down(e) {
-    const x = e.offsetX, [a, b] = [this.x(this.start), this.x(this.end)], reach = e.pointerType === "touch" ? 16 : 6;
-    this.drag = Math.abs(x - a) < reach ? "start" : Math.abs(x - b) < reach ? "end" : x > a && x < b ? "move" : "new";
-    this.anchor = { x, start: this.start, end: this.end, day: this.day(x) };
+    this.pointers.set(e.pointerId, e.offsetX);
     this.canvas.setPointerCapture(e.pointerId);
+    if (this.pointers.size === 2) {  // a second finger: pinch to zoom, instead of dragging
+      const [x1, x2] = [...this.pointers.values()];
+      [this.start, this.end] = [this.anchor?.start ?? this.start, this.anchor?.end ?? this.end];
+      this.drag = null;
+      this.pinch = { gap: Math.abs(x2 - x1) || 1, t: this.t((x1 + x2) / 2), view: [...this.view] };
+      return this.draw();
+    }
+    const x = e.offsetX, [a, b] = [this.x(this.start), this.x(this.end)];
+    if (this.touch) {  // the nearer grip, if the finger is near one
+      const [d1, d2] = this.grips.map((g) => Math.abs(x - g));
+      this.drag = Math.min(d1, d2) < 18 ? (d1 <= d2 ? "start" : "end") : x > a && x < b ? "move" : "new";
+    } else this.drag = Math.abs(x - a) < 6 ? "start" : Math.abs(x - b) < 6 ? "end" : x > a && x < b ? "move" : "new";
+    this.anchor = { x, start: this.start, end: this.end, day: this.day(x) };
   }
   move(e) {
+    if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, e.offsetX);
+    if (this.pinch && this.pointers.size === 2) {  // the span shrinks or grows with the fingers' gap
+      const [x1, x2] = [...this.pointers.values()], { gap, t, view } = this.pinch;
+      this.zoomTo(t, (view[1] - view[0]) * gap / (Math.abs(x2 - x1) || 1), (t - view[0]) / (view[1] - view[0]));
+      return;
+    }
     this.hover(e.offsetX);
     if (!this.drag) {
       const [a, b] = [this.x(this.start), this.x(this.end)];
@@ -262,7 +324,12 @@ class Timeline {
     }
     this.draw();
   }
-  up() {
+  up(e) {
+    this.pointers.delete(e.pointerId);
+    if (this.pinch) {
+      if (!this.pointers.size) this.pinch = null;
+      return;
+    }
     if (!this.drag) return;
     this.drag = null;
     this.onChange(this.start, Math.round((this.end - this.start) / DAY));
@@ -278,11 +345,14 @@ class Timeline {
   }
   zoom(e) {
     e.preventDefault();
-    const t = this.t(e.offsetX), f = e.deltaY > 0 ? 1.25 : 0.8, [lo, hi] = this.full;
-    let [a, b] = [t - (t - this.view[0]) * f, t + (this.view[1] - t) * f];
-    if (b - a < 20 * DAY) return;
-    [a, b] = b - a >= hi - lo ? [lo, hi] : a < lo ? [lo, lo + b - a] : b > hi ? [hi - (b - a), hi] : [a, b];
-    this.view = [a, b];
+    const t = this.t(e.offsetX), span = (this.view[1] - this.view[0]) * (e.deltaY > 0 ? 1.25 : 0.8);
+    this.zoomTo(t, span, (t - this.view[0]) / (this.view[1] - this.view[0]));
+  }
+  zoomTo(t, span, at) {  // a view `span` long, with time t at the fraction `at` of the width
+    const [lo, hi] = this.full;
+    span = Math.min(Math.max(span, 20 * DAY), hi - lo);
+    const a = Math.min(Math.max(t - at * span, lo), hi - span);
+    this.view = [a, a + span];
     this.draw();
   }
 }
@@ -734,11 +804,10 @@ async function main() {
                         paint: { "raster-brightness-max": brightness, "raster-fade-duration": 0 } }] },
   });
   map.setPadding({ ...padding, left: 0, right: 0 });
-  map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
-  // on a small screen, the credits behind their (i) (MapLibre opens them once the map is drawn)
-  if (narrow()) map.once("idle", () => $(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show"));
+  map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");  // in About on a small screen
   timeline = new Timeline($("#timeline"), Date.parse(info.first), Date.parse(info.last), setDates);
   timeline.setBand(state.start, state.days);
+  setupDateButtons();
   overview.image.onload = drawOverview;
   overview.image.src = "/api/world.png";
   $("#overview").onclick = (e) => {  // go to the clicked place (approximately inverts the projection)
