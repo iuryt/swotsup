@@ -768,7 +768,8 @@ async function fillHovmoller() {
   card.plot?.destroy();
   card.plot = null;
   card.tip?.remove();
-  chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the whole mission along the line…</div>`;
+  chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the whole mission along the line…
+    (a line across an ocean can take some 10-20 s)</div>`;
   try {
     // the values as stored, kept: changing what is subtracted does not read them again
     const key = transect.key;
