@@ -57,3 +57,15 @@ def store_path(tmp_path, make_file):
         append(session.store, f, along_chunk=50, time_chunk=2)
     session.commit("test")
     return str(path), files
+
+
+@pytest.fixture
+def fine_store_path(tmp_path, make_file):
+    """Pass 7 on a ~2 km grid like the real one (lines every 0.02 deg from lat -10, 51 pixels over lon 29.5-30.5),
+    cycles 3 (3 Jan) and 5 (6 Jan), data = cycle*1000 + line, one line a second."""
+    path = str(tmp_path / "fine")
+    session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
+    for cycle, day in ((3, 3), (5, 6)):
+        append(session.store, make_file(cycle, 7, day=day, n_lines=1001, n_pixels=51), along_chunk=100, time_chunk=1)
+    session.commit("fine grid")
+    return path
