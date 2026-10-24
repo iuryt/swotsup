@@ -75,6 +75,13 @@ with sync_playwright() as p:
             page.mouse.move(*cell)
             page.wait_for_timeout(500)
             shot("hovmoller")
+            for mode in ("none", "passage"):  # the other things to subtract, then back to the time mean
+                page.select_option(".card.transect .hov-mode", mode)
+                page.wait_for_timeout(1000)
+                print(f"hovmoller {mode}:", page.inner_text(".card.transect .hint"), flush=True)
+                shot(f"hovmoller-{mode}")
+            page.select_option(".card.transect .hov-mode", "time")
+            page.wait_for_timeout(1000)
             print("hovmoller tip:", page.inner_text(".tip.floating").replace("\n", " "), flush=True)
             page.mouse.move(box["x"] + box["width"] * 0.25, box["y"] + box["height"] * 0.35)  # a zoom box
             page.mouse.down()
