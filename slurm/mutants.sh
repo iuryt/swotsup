@@ -30,5 +30,5 @@ mutate app/server.py 's/    dist = np.r_\[np.arange(0, length, step), length\]  
 mutate app/server.py 's/        times = data.line_time\[i, rows\[i\].clip(0)\]/        times = data.line_time[i, np.full_like(rows[i], seen[len(seen) \/\/ 2])]/' "transect gives every point the time of the middle line"
 mutate app/swot_view.py 's/get_repo("{target.removeprefix("arraylake:")}")/get_repo("{target}")/' "Arraylake code asks for the wrong repository name"
 mutate app/swot_view.py 's/        min_pixels = max(1, round(np.pi \* radius\*\*2 \/ 4 \/ 4))/        min_pixels = 5/' "a 2 km time series drops every passage"
-mutate app/server.py 's/        v = sum(sub\[n\].values for n in names)\[:, row - row.min(), col\]  # (passages, points hit)/        v = np.repeat(sum(sub[n].values for n in names)[:1, row - row.min(), col], len(times), 0)/' "Hovmoller gives every passage the first one's values"
+mutate app/server.py 's/    at = \[np.repeat(times, len(hit)) for _, times, hit, \*_ in found\]/    at = [np.repeat(times[:1], len(hit) * len(times)) for _, times, hit, *_ in found]/' "Hovmoller gives every passage the first one's values"
 mutate app/server.py 's/        d, j = cKDTree(unit(lo\[ok\], la\[ok\])).query(pts, distance_upper_bound=1.5 \/ swot_view.EARTH_RADIUS)/        d, j = cKDTree(unit(lo[ok], la[ok])).query(pts)/' "Hovmoller fills points off the swath"

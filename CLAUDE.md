@@ -41,7 +41,8 @@ be resumed here (`claude --resume`).
     `/api/series`, `/api/transect` (along a drawn polyline: points every 2 km on great circles, each passage's
     nearest pixel within 1.5 km, so the nadir gap stays empty; each value with its line's time),
     `/api/hovmoller` (the same line over the whole mission: each passage's nearest pixels, found once per pass
-    since its grid is the same every cycle, then only the lines near the polyline read, passes in parallel),
+    since its grid and line times are the same every cycle, then every passage's pixels in one vectorized read,
+    each chunk fetched once: the equatorial Pacific, 12k passages, 18 s from biomix instead of 80 s),
     `/api/netcdf`, `/api/world.png`.
   Every request names its view (box, dates, variable); views are kept in memory up to `SWOT_CACHE_GB`
   and read again if they were pushed out. The opening view (whole globe, 2 Nov 2024, 1 day, `DEFAULT`) is
