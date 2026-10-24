@@ -53,8 +53,7 @@ async function loadData() {
     state.view = view.toString();
     $("#stats").innerHTML = `<b>${d.passages}</b> passages · <b>${(d.pixels / 1e6).toFixed(1)} M</b> pixels · ` +
       (d.seconds ? `read from the cloud in <b>${d.seconds.toFixed(1)} s</b>` : "from the server's memory");
-    $("#code").textContent = d.code;
-    Prism.highlightElement($("#code"));
+    state.code = d.code;
     if ($("#download")) $("#download").href = `/api/netcdf?${state.view}`;  // absent where SWOT_NETCDF=0
     setColors();
   } catch (e) {
@@ -437,12 +436,14 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
     <div class="card compact">
       <header><div><h3>${latText(lngLat.lat)} ${lonText(lngLat.lng)}</h3>
         <p class="hint"><span class="spinner"></span></p></div>
-        <div class="tools"><select class="hidden" title="Mean of the pixels within this distance">
+        <div class="tools"><span class="chart-buttons hidden">${chartButtons()}</span><select class="hidden" title="Mean of the pixels within this distance">
           ${[2, 5, 10, 20].map((r) => `<option value="${r}" ${r === 5 ? "selected" : ""}>${r} km</option>`).join("")}</select>
           <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
       <button class="expand" title="Mean around this point, every passage of the mission"><i data-lucide="chart-line"></i>Time series</button>
       <div class="chart"></div></div>`;
   const card = pointCard = el.querySelector(".card"), radius = card.querySelector("select");
+  card.lngLat = lngLat;
+  wireChart(card);
   if (sheet) {
     card.classList.add("sheet");
     document.body.appendChild(card);
@@ -475,6 +476,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
     if (!sheet) Object.assign(card.style, { width: `${w}px`, height: `${h}px` });
     card.querySelector("h3").textContent += ` · ${info.variables[state.variable]}`;
     radius.classList.remove("hidden");
+    card.querySelector(".chart-buttons").classList.remove("hidden");
     fillSeries(card, lngLat, 5);
   };
   new ResizeObserver(() => {
@@ -649,12 +651,14 @@ function openTransect(points) {
           title="Distance and time: every passage of the mission along the line">Hovmöller</button></div>
         <select class="hov-mode hidden" title="What is subtracted from the values">
           <option value="time">minus time mean</option><option value="none">as stored</option></select>
+        <span class="chart-buttons">${chartButtons()}</span>
         <select class="step" title="Distance between the points of the line">
         ${[1, 2, 5, 10].map((k) => `<option value="${k}" ${k === 2 ? "selected" : ""}>every ${k} km</option>`).join("")}</select>
         <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
     <div class="chart"></div>`;
   document.body.appendChild(card);
   if (narrow()) grab(card);
+  wireChart(card);
   lucide.createIcons();
   transect = { points, step: 2, card, kind: "profile", hovMode: "time" };
   updateSheets();
@@ -897,6 +901,81 @@ async function fillHovmoller() {
   }
 }
 
+// --- code in the dialog: the region's, or a chart's (with its figure)
+function showCode(code, title, hint) {
+  $("#code-title").textContent = title;
+  $("#code-hint").innerHTML = hint;
+  $("#code").textContent = code;
+  Prism.highlightElement($("#code"));
+  $("#copy").lastChild.textContent = "Copy";
+  $("#code-dialog").showModal();
+}
+const showRegionCode = () => showCode(state.code ?? "", "The same data in your own Python",
+  "Only <code>pip install icechunk xarray</code>. This is the region and dates on the map.");
+
+// --- a chart's buttons: the figure as PNG, its numbers as NetCDF, the code that reproduces it
+const chartButtons = () => `<button class="ghost icon" data-get="png" title="Download the figure (PNG)"><i data-lucide="image-down"></i></button>` +
+  (info.netcdf ? `<button class="ghost icon" data-get="nc" title="Download its data (NetCDF)"><i data-lucide="file-down"></i></button>` : "") +
+  `<button class="ghost icon" data-get="code" title="The code that reproduces it (Python)"><i data-lucide="code"></i></button>`;
+
+function chartQuery(card) {  // what the card shows, as the server's endpoints name it
+  if (card === pointCard) {
+    const [lon, lat, radius] = [wrap(card.lngLat.lng), card.lngLat.lat, Number(card.querySelector("select").value)];
+    return { kind: "series", params: { lon, lat, radius, variable: state.variable }, title: card.querySelector("h3").textContent };
+  }
+  const points = transect.points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";");
+  const params = { points, step: transect.step, variable: state.variable };
+  return { kind: transect.kind, params, title: card.querySelector("h3").textContent };
+}
+
+function wireChart(card) {  // on the card itself: the point's card stops clicks from going up
+  card.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-get]");
+    if (b) chartAction(card, b.dataset.get);
+  });
+}
+
+async function chartAction(card, what) {
+  const { kind, params, title } = chartQuery(card);
+  if (what === "png") {  // the chart drawn large, under the card's title and subtitle, on the panel's color
+    if (!card.plot) return;
+    const size = { width: card.plot.width, height: card.plot.height };
+    card.plot.setSize({ width: 1400, height: 600 });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));  // uPlot draws on the next frame
+    const plot = card.querySelector(".uplot canvas"), dpr = devicePixelRatio || 1;
+    const pad = 64 * dpr, out = document.createElement("canvas");
+    [out.width, out.height] = [plot.width, plot.height + pad];
+    const ctx = out.getContext("2d");
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.fillStyle = "#f9fafb";
+    ctx.font = `600 ${14 * (devicePixelRatio || 1)}px Inter, sans-serif`;
+    ctx.fillText(title, 20 * dpr, 28 * dpr);
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = `${12 * dpr}px Inter, sans-serif`;
+    ctx.fillText((card.querySelector(".hint")?.textContent ?? "").split(" · click")[0], 20 * dpr, 50 * dpr);  // no "click..."
+    ctx.drawImage(plot, 0, pad);
+    card.plot.setSize(size);
+    const a = document.createElement("a");
+    a.href = out.toDataURL("image/png");
+    a.download = `swot_${kind}.png`;
+    a.click();
+  } else if (what === "nc") {
+    const url = kind === "series" ? `/api/series.nc?${new URLSearchParams(params)}`
+      : kind === "profile" ? `/api/transect.nc?${state.view}&${new URLSearchParams({ ...params, mode: state.mode })}`
+      : `/api/hovmoller.nc?${new URLSearchParams(params)}`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.click();
+  } else {
+    const code = kind === "series" ? (await api("/api/code/series", params)).code
+      : (await api("/api/code/line", kind === "profile" ? { ...params, start: isoDay(state.start), days: state.days }
+                                                          : { ...params, mean: transect.hovMode })).code;
+    showCode(code, "This chart in your own Python", `<code>pip install icechunk xarray matplotlib${kind === "series" ? "" : " scipy"}</code>.
+      The same data and figure${kind === "hovmoller" ? " (the whole mission along the line: it reads a lot, give it a moment)" : ""}.`);
+  }
+}
+
 // --- menus and dialogs
 function setupMenus() {
   const menus = { "#region-button": "#region-menu", "#display-button": "#display-menu" };
@@ -920,7 +999,7 @@ function setupMenus() {
   $("#tool-menu").onclick = () => document.body.classList.toggle("sheet");
   $("#sheet-close").onclick = () => document.body.classList.remove("sheet");
   $("#tool-projection").onclick = () => setProjection(!document.body.classList.contains("globe"));
-  $("#tool-code").onclick = () => $("#code-dialog").showModal();
+  $("#tool-code").onclick = showRegionCode;
   $("#tool-about").onclick = () => $("#about-dialog").showModal();
   $("#variable").onchange = () => { state.variable = $("#variable").value; state.symmetric = state.variable !== "adt" || state.mode !== "none"; loadData(); };
   for (const [id, key] of [["#mode", "mode"], ["#preset", "preset"]]) {
@@ -942,10 +1021,11 @@ function setupMenus() {
     map.getSource("basemap").setTiles([url]);
     map.setPaintProperty("basemap", "raster-brightness-max", brightness);
   };
-  $("#code-button").onclick = () => $("#code-dialog").showModal();
+  $("#code-button").onclick = showRegionCode;
   $("#about-button").onclick = () => $("#about-dialog").showModal();
   document.querySelectorAll("dialog .close").forEach((b) => (b.onclick = () => b.closest("dialog").close()));
   $("#copy").onclick = async () => { await navigator.clipboard.writeText($("#code").textContent); $("#copy").lastChild.textContent = "Copied"; };
+
 }
 
 // --- globe or flat map (Web Mercator); the choice is remembered in this browser

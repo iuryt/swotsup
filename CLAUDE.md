@@ -57,6 +57,10 @@ be resumed here (`claude --resume`).
   reaching halfway to the next passage at most 4 px, so it looks filled until zoomed; minus the mean over time at
   each point by default (points with few passages left empty), or as stored (done in the page, no new read);
   box zoom, wheel on the time, double-click back; a click moves the map to that passage's date).
+  Each chart card has buttons for its figure (PNG, from the chart's canvas), its numbers (NetCDF:
+  `/api/series.nc`, `/api/transect.nc`, `/api/hovmoller.nc`, under the same switch as the region's NetCDF) and the
+  code that reproduces it (`/api/code/series`, `/api/code/line`: `swot_view.series_snippet` / `line_snippet`,
+  icechunk + xarray + matplotlib (+ scipy for lines), run by the tests).
   Small screens (`max-width: 640px` or `max-height: 500px`, `narrow()` in app.js), after Windy: the name as a
   small label top left (with About; the full panel opens as a sheet from the layers icon), the options as icons
   bottom left, the color bar and the timeline at the bottom. The timeline has no grips there: a finger on the band

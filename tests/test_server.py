@@ -145,19 +145,11 @@ def test_transect_names_its_passages(client):
     assert np.allclose(line.total_seconds(), v[np.isfinite(v)] - 3000, atol=0.01)
 
 
-def test_hovmoller_has_every_passage_with_its_own_values_and_time(tmp_path, make_file, monkeypatch):
-    """Pass 7 on a ~2 km grid (lines every 0.02 deg from lat -10, pixels lon 29.5-30.5) in cycles 3 (3 Jan) and 5
-    (6 Jan), data = cycle*1000 + line, one line a second. Along lon 29.8 from lat 4 to 6, then to lon 28: each
-    passage has its own values (lines 700-800), the time of its own line at the middle, and none off the swath."""
-    import icechunk
-    from swot_cloud.store import append
-
-    path = str(tmp_path / "fine")
-    session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
-    for cycle, day in ((3, 3), (5, 6)):
-        append(session.store, make_file(cycle, 7, day=day, n_lines=1001, n_pixels=51), along_chunk=100, time_chunk=1)
-    session.commit("fine grid")
-    monkeypatch.setenv("SWOT_STORE", path)
+def test_hovmoller_has_every_passage_with_its_own_values_and_time(fine_store_path, monkeypatch):
+    """Pass 7 on a ~2 km grid in cycles 3 (3 Jan) and 5 (6 Jan), data = cycle*1000 + line, one line a second. Along
+    lon 29.8 from lat 4 to 6, then to lon 28: each passage has its own values (lines 700-800), the time of its own
+    line at the middle, and none off the swath."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
     sys.modules.pop("server", None)
     import server
 
@@ -174,3 +166,24 @@ def test_hovmoller_has_every_passage_with_its_own_values_and_time(tmp_path, make
         middle = np.nanmedian(v) - cycle * 1000  # the line at the middle of the points hit
         t = pd.to_datetime(q["time"], unit="ms") - pd.Timestamp(f"{day} 05:45:34.074870274")
         assert abs(t.total_seconds() - middle) <= 3
+
+
+def test_chart_netcdf_has_the_chart_numbers(fine_store_path, monkeypatch):
+    """The NetCDF of a Hovmöller has the same passages and values as the chart's JSON, each value at its point (the
+    line starts off the swath, so the passages' values start further along)."""
+    import xarray as xr
+
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    c = TestClient(server.app)
+    params = dict(points="28,6;29.8,6;29.8,4", variable="ssha_unfiltered")
+    h = c.get("/api/hovmoller", params=params).json()
+    assert all(q["first"] > 0 for q in h["passages"])
+    nc = xr.open_dataset(io.BytesIO(c.get("/api/hovmoller.nc", params=params).content), engine="h5netcdf")
+    assert nc.cycle.values.tolist() == [q["cycle"] for q in h["passages"]] == [3, 5]
+    for k, q in enumerate(h["passages"]):
+        row = nc.value.values[k, q["first"]:q["first"] + len(q["value"])]
+        np.testing.assert_allclose(row, [np.nan if v is None else v for v in q["value"]])
+        assert np.isnan(nc.value.values[k, :q["first"]]).all()

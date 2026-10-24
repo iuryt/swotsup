@@ -32,3 +32,7 @@ mutate app/swot_view.py 's/get_repo("{target.removeprefix("arraylake:")}")/get_r
 mutate app/swot_view.py 's/        min_pixels = max(1, round(np.pi \* radius\*\*2 \/ 4 \/ 4))/        min_pixels = 5/' "a 2 km time series drops every passage"
 mutate app/server.py 's/    at = \[np.repeat(times, len(hit)) for _, times, hit, \*_ in found\]/    at = [np.repeat(times[:1], len(hit) * len(times)) for _, times, hit, *_ in found]/' "Hovmoller gives every passage the first one's values"
 mutate app/server.py 's/        d, j = cKDTree(unit(lo\[ok\], la\[ok\])).query(pts, distance_upper_bound=1.5 \/ swot_view.EARTH_RADIUS)/        d, j = cKDTree(unit(lo[ok], la[ok])).query(pts)/' "Hovmoller fills points off the swath"
+mutate app/swot_view.py 's/near = ({value}).where(d <= radius)/near = ({value}).where(d <= 3 * radius)/' "series code averages a wider circle than the app"
+mutate app/swot_view.py 's/query(samples, distance_upper_bound=1.5 \/ R)/query(samples)/' "line code fills points off the swath"
+mutate app/swot_view.py 's/    window = f/    window = "" and f/' "line code profile ignores the dates"
+mutate app/server.py 's/        values\[k, first:first + len(q\["value"\])\] = /        values[k, :len(q["value"])] = /' "chart NetCDF puts a passage's values at the line's start"
