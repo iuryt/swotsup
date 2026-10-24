@@ -648,8 +648,7 @@ function openTransect(points) {
           title="The values along the line on the selected dates">Profile</button><button data-v="hovmoller"
           title="Distance and time: every passage of the mission along the line">Hovmöller</button></div>
         <select class="hov-mode hidden" title="What is subtracted from the values">
-          <option value="time">minus time mean</option><option value="none">as stored</option>
-          <option value="passage">minus each passage's mean</option></select>
+          <option value="time">minus time mean</option><option value="none">as stored</option></select>
         <select class="step" title="Distance between the points of the line">
         ${[1, 2, 5, 10].map((k) => `<option value="${k}" ${k === 2 ? "selected" : ""}>every ${k} km</option>`).join("")}</select>
         <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
@@ -788,10 +787,7 @@ async function fillHovmoller() {
     // point, so what stays (the mean topography of the surface) leaves and what changes shows
     const mode = transect.hovMode, avg = (v) => v.reduce((a, b) => a + b, 0) / v.length;
     const cols = h.distance.map(() => []);
-    for (const q of h.passages) {
-      const mean = mode === "passage" ? avg(q.value.filter((v) => v != null)) : 0;
-      q.value.forEach((v, k) => { if (v != null) cols[q.first + k].push({ t: q.time / 1000, v: v - mean, q }); });
-    }
+    for (const q of h.passages) q.value.forEach((v, k) => { if (v != null) cols[q.first + k].push({ t: q.time / 1000, v, q }); });
     // a point where few passages have data (a swath's edge, a coast) has no mean over time worth the name:
     // it stays empty rather than a column of its own color
     const typical = [...cols.map((c) => c.length)].sort((a, b) => a - b)[Math.floor(cols.length / 2)];
@@ -806,8 +802,7 @@ async function fillHovmoller() {
     let [lo, hi] = [all[Math.floor(all.length * 0.02)], all[Math.floor(all.length * 0.98)]];
     if (mode !== "none") hi = -(lo = -Math.max(-lo, hi));
     if (!(hi > lo)) [lo, hi] = [lo - 0.1, lo + 0.1];
-    hint.textContent = `${passages(n)} · ${{ time: "minus the mean over time at each point", none: "as stored",
-      passage: "minus each passage's mean" }[mode]} · colors ${mode === "none" ? `${lo.toFixed(2)} to ${hi.toFixed(2)}` : `±${hi.toFixed(2)}`} m`;
+    hint.textContent = `${passages(n)} · ${mode === "time" ? "minus the mean over time at each point" : "as stored"} · colors ${mode === "none" ? `${lo.toFixed(2)} to ${hi.toFixed(2)}` : `±${hi.toFixed(2)}`} m`;
     chart.title = "Drag a box to zoom (the wheel zooms the time), double-click to go back, click a passage to see its date on the map";
     const [t0, t1] = [timeline.full[0] / 1000, timeline.full[1] / 1000], [d0, d1] = [h.distance[0], h.distance.at(-1)];
     const column = (u) => {  // the point under the cursor
