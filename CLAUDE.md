@@ -55,7 +55,7 @@ be resumed here (`claude --resume`).
   drawn line: its profile on the selected dates (one curve per passage; the hover is a table, a marker follows it
   along the line) or its Hovmöller (distance x time over the whole mission, each passage a row at its own time,
   reaching halfway to the next passage at most 4 px, so it looks filled until zoomed; minus the mean over time at
-  each point by default, or as stored, or minus each passage's mean (done in the page, no new read);
+  each point by default (points with few passages left empty), or as stored (done in the page, no new read);
   box zoom, wheel on the time, double-click back; a click moves the map to that passage's date).
   Small screens (`max-width: 640px` or `max-height: 500px`, `narrow()` in app.js), after Windy: the name as a
   small label top left (with About; the full panel opens as a sheet from the layers icon), the options as icons
