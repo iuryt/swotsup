@@ -50,16 +50,18 @@ be resumed here (`claude --resume`).
   the length), an Equal Earth overview on the flat map, the mouse position, a card tied to a clicked point
   (value, passages, time series on request; clicking a passage moves the map to its date), and a card for a
   drawn line (one curve per passage; the hover is a table, and a marker follows it along the line).
-  Small screens (`max-width: 640px` or `max-height: 500px`, `narrow()` in app.js), after Windy: just the name on
-  top (the panel opens as a sheet from the layers icon), the options as icons bottom left, the color bar and the
-  timeline (grips on the band's edges) at the bottom, the cards as sheets across the bottom; touch draws the box,
-  taps place a line's points and Done ends it (no double click on a touch screen), a finger moves the charts'
-  cursor. While drawing, a bar shows what to do, with Undo / Done / Cancel (on the desktop too).
+  Small screens (`max-width: 640px` or `max-height: 500px`, `narrow()` in app.js), after Windy: the name as a
+  small label top left (with About; the full panel opens as a sheet from the layers icon), the options as icons
+  bottom left, the color bar and the timeline at the bottom. The timeline has no grips there: a finger on the band
+  moves it, elsewhere draws a new one; buttons move it by its length or change it by a day, the date opens the
+  calendar, two fingers zoom. The cards are 230 px sheets in the color bar's place, made tall by their grab bar.
+  Touch draws the box, taps place a line's points and Done ends it (no double click on a touch screen), a finger
+  moves the charts' cursor. While drawing, a bar shows what to do, with Undo / Done / Cancel (on the desktop too).
 - `Dockerfile`: the server with the pixi environment `serve` (the server's dependencies, solved together
   with the default environment, so the image runs the versions we test).
 - `deploy/boot.sh` (runs on the EC2 instance at every boot: build, serve behind Caddy, stop after 30 idle
   minutes) and `deploy/wake.py` (the Lambda link: starts the instance and shows a waiting page).
-- `scripts/screenshot.py` (scenarios: open, click, series, line, flat), `scripts/bench_server.py`.
+- `scripts/screenshot.py` (scenarios: open, click, series, line, flat, dateline, phone), `scripts/bench_server.py`.
 
 Decisions worth keeping:
 - Dark only for now; basemap GEBCO grayscale from NOAA NCEI tiles (no key), darkened.
