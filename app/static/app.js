@@ -754,11 +754,12 @@ async function fillTransect() {
 // --- the Hovmöller of a line: distance and time, every passage of the mission at its own time. Like a pcolor
 // with holes: each passage's cell reaches halfway to the next passage at that point, at most 4 px, so the whole
 // mission looks filled and zooming in shows the passages apart.
-const LUT = (() => {  // the map's colors (RdBu), 256 steps
+const LUT = (() => {  // the map's colors (RdBu), 256 steps, as pixels (RGBA in a little-endian uint32)
   const rgb = RDBU.map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)));
-  return Array.from({ length: 256 }, (_, k) => {
+  return Uint32Array.from({ length: 256 }, (_, k) => {
     const f = k / 255 * (rgb.length - 1), i = Math.min(Math.floor(f), rgb.length - 2), w = f - i;
-    return `rgb(${rgb[i].map((c, j) => Math.round(c + (rgb[i + 1][j] - c) * w)).join(",")})`;
+    const [r, g, b] = rgb[i].map((c, j) => Math.round(c + (rgb[i + 1][j] - c) * w));
+    return ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
   });
 })();
 
@@ -791,9 +792,14 @@ async function fillHovmoller() {
       const mean = mode === "passage" ? avg(q.value.filter((v) => v != null)) : 0;
       q.value.forEach((v, k) => { if (v != null) cols[q.first + k].push({ t: q.time / 1000, v: v - mean, q }); });
     }
+    // a point where few passages have data (a swath's edge, a coast) has no mean over time worth the name:
+    // it stays empty rather than a column of its own color
+    const typical = [...cols.map((c) => c.length)].sort((a, b) => a - b)[Math.floor(cols.length / 2)];
     cols.forEach((c) => {
       c.sort((a, b) => a.t - b.t);
-      if (mode === "time" && c.length) { const m = avg(c.map((e) => e.v)); c.forEach((e) => { e.v -= m; }); }
+      if (mode !== "time") return;
+      if (c.length < Math.max(8, typical / 4)) c.length = 0;
+      else { const m = avg(c.map((e) => e.v)); c.forEach((e) => { e.v -= m; }); }
     });
     const all = cols.flat().map((c) => c.v).sort((a, b) => a - b);
     // colors at the 2-98 % percentiles, symmetric about zero unless the values are as stored
@@ -815,23 +821,29 @@ async function fillHovmoller() {
       return e && px(e) < 8 ? e : null;
     };
     const cells = { hooks: { draw: [(u) => {
+      // painted pixel by pixel into an image, then drawn at once: a line across an ocean is a million cells
       const ctx = u.ctx, dpr = devicePixelRatio || 1, cap = 4 * dpr, min = 0.5 * dpr, { left, top, width, height } = u.bbox;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(left, top, width, height);
-      ctx.clip();
-      const w = Math.max(Math.abs(u.valToPos(h.step, "x", true) - u.valToPos(0, "x", true)), 1) + 0.5;
+      const [W, H] = [Math.round(width), Math.round(height)], img = new ImageData(W, H), px = new Uint32Array(img.data.buffer);
+      const w = Math.abs(u.valToPos(h.step, "x", true) - u.valToPos(0, "x", true));
       cols.forEach((c, i) => {
-        const x = u.valToPos(h.distance[i], "x", true) - w / 2;
-        if (!c.length || x + w < left || x > left + width) return;
-        const y = c.map((e) => u.valToPos(e.t, "y", true));  // later is higher up: y decreases
+        if (!c.length) return;
+        const xc = u.valToPos(h.distance[i], "x", true) - left;
+        const x0 = Math.max(Math.floor(xc - w / 2), 0), x1 = Math.min(Math.max(Math.ceil(xc + w / 2), x0 + 1), W);
+        if (x1 <= 0 || x0 >= W) return;
+        const y = c.map((e) => u.valToPos(e.t, "y", true) - top);  // later is higher up: y decreases
         c.forEach((e, k) => {
           const up = Math.max(k < c.length - 1 ? Math.min((y[k] - y[k + 1]) / 2, cap) : cap, min);
           const down = Math.max(k > 0 ? Math.min((y[k - 1] - y[k]) / 2, cap) : cap, min);
-          ctx.fillStyle = LUT[Math.round(Math.min(Math.max((e.v - lo) / (hi - lo), 0), 1) * 255)];
-          ctx.fillRect(x, y[k] - up, w, up + down);
+          const y0 = Math.max(Math.floor(y[k] - up), 0), y1 = Math.min(Math.ceil(y[k] + down), H);
+          const color = LUT[Math.round(Math.min(Math.max((e.v - lo) / (hi - lo), 0), 1) * 255)];
+          for (let yy = y0; yy < y1; yy++) px.fill(color, yy * W + x0, yy * W + x1);
         });
       });
+      const sheet = document.createElement("canvas");  // through a canvas, so the grid shows where there is no data
+      [sheet.width, sheet.height] = [W, H];
+      sheet.getContext("2d").putImageData(img, 0, 0);
+      ctx.save();
+      ctx.drawImage(sheet, left, top);
       // the selected dates: two orange lines
       ctx.fillStyle = "#f97316";
       for (const t of [state.start, state.start + state.days * DAY]) ctx.fillRect(left, u.valToPos(t / 1000, "y", true) - dpr / 2, width, dpr);
