@@ -1,11 +1,12 @@
-# SWOT Sea Surface Height Explorer
+# SWOT's Up
 
-A web map over SWOT KaRIn low-rate sea surface height swaths, read on demand from an IceChunk store in the
-cloud: every swath since July 2023, without downloading files.
+Explore the whole SWOT mission: a web map over SWOT KaRIn low-rate sea surface height swaths, read on
+demand from an IceChunk store in the cloud. Every swath since July 2023, without downloading files.
 
 - Pick a region and up to 21 days on the timeline; see the swaths on a globe or a flat map.
 - Click a point: its value, the passages there (pass, cycle, time), and the time series over the whole mission.
 - Draw a line: the values along it, one curve per passage.
+- On a phone too: the options as icons, cards as sheets, Done / Undo instead of a double click.
 - Copy the few lines of icechunk + xarray that give you the same data in your own Python.
 
 Data: SWOT LR SSH from NASA and CNES. Today the app reads the L3 product (AVISO/DUACS v3.0 Basic, produced

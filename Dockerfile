@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build /srv/.pixi/envs/serve /srv/.pixi/envs/serve
 COPY --from=build /shell-hook.sh /shell-hook.sh
 COPY app /srv/app
+# the release shown in About
+COPY pyproject.toml /srv/
 WORKDIR /srv
 USER 1000
 ENV AWS_REGION=us-east-1
