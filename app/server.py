@@ -10,6 +10,7 @@ import time
 import tomllib
 import warnings
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 
@@ -324,6 +325,65 @@ def transect(points: str, mode: str = "box", step: float = 2.0, data=Depends(vie
                              line_time=[None if r < 0 else int(ms) for r, ms in zip(rows[i], times)]))
     return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
                 step=round(float(step), 3), passages=sorted(passages, key=lambda q: q["time"]))
+
+
+@app.get("/api/hovmoller")
+def hovmoller(points: str, variable: str, step: float = 2.0):
+    """A polyline's values over the whole mission: for each passage that crosses it, the values of its nearest
+    pixels within 1.5 km (as /api/transect), on the points every `step` km, and the time of its line at the middle.
+    The grid of a pass is the same in every cycle, so its nearest pixels are found once, on its first passage;
+    then only the lines near the polyline are read, for all its passages."""
+    names = VARIABLES[variable][1]
+    lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
+    lon, lat, dist, step = along_line(lon, lat, max(step, 0.5))
+    pts = unit(lon, lat)
+    # passes over the line's box, with a swath's half width (~0.6 degrees) around it
+    ulon = np.unwrap(lon, period=360)
+    west, east = (-180.0, 180.0) if np.ptp(ulon) > 356 else (ulon.min() - 1, ulon.max() + 1)
+    south, north = max(lat.min() - 1, -90), min(lat.max() + 1, 90)
+    near = np.flatnonzero((ds.lat.values >= south - 1) & (ds.lat.values <= north + 1))  # lines run south to north
+    if not len(near):
+        return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
+                    step=round(float(step), 3), passages=[])
+    r0, r1 = near[0], near[-1] + 1
+
+    def one_pass(p):  # its passages, as dicts
+        times = np.flatnonzero(index.pass_id.values == p)
+        if not len(times):
+            return []
+        geo = ds[["latitude", "longitude"]].isel(time=times[0], along=slice(r0, r1)).load()
+        la, lo = geo.latitude.values, geo.longitude.values
+        ok = np.isfinite(la) & np.isfinite(lo)
+        if not ok.any():
+            return []
+        d, j = cKDTree(unit(lo[ok], la[ok])).query(pts, distance_upper_bound=1.5 / swot_view.EARTH_RADIUS)
+        hit = np.flatnonzero(np.isfinite(d))
+        if not len(hit):
+            return []
+        row, col = np.unravel_index(np.flatnonzero(ok)[j[hit]], la.shape)
+        lines = slice(r0 + row.min(), r0 + row.max() + 1)
+        sub = ds[names + ["line_time"]].isel(time=times, along=lines).load()
+        v = sum(sub[n].values for n in names)[:, row - row.min(), col]  # (passages, points hit)
+        t = sub.line_time.values[:, row - row.min()]
+        out = []
+        for k, i in enumerate(times):
+            good = np.isfinite(v[k])
+            if not good.any():
+                continue
+            values = np.full(hit[-1] - hit[0] + 1, np.nan)
+            values[hit - hit[0]] = v[k]
+            middle = t[k][good][good.sum() // 2]
+            out.append(dict(pass_id=int(p), cycle=int(index.cycle.values[i]), first=int(hit[0]),
+                            time=int(middle.astype("datetime64[ms]").astype("int64")),
+                            value=[None if np.isnan(x) else round(float(x), 4) for x in values]))
+        return out
+
+    # the passes in parallel: each read waits on the network (its passages are chunks of many time chunks)
+    passes = swot_view.passes_over(ds, (west + 180) % 360 - 180, (east + 180) % 360 - 180, south, north)
+    with ThreadPoolExecutor(16) as pool:
+        out = [q for found in pool.map(one_pass, passes) for q in found]
+    return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
+                step=round(float(step), 3), passages=sorted(out, key=lambda q: q["time"]))
 
 
 @app.get("/api/series")

@@ -4,9 +4,10 @@
   series open the time series of that point
   line   zoom on the South Atlantic, draw a line across two swaths, hover its chart
   flat   switch to the flat map
+  hovmoller  the line's Hovmöller (after `line`): the whole mission, a hover, a zoom box, a click on a passage
   dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
   phone  a phone (390x844, touch): the opening view, a tapped point and its series (small and tall), the menu sheet, a line
-         drawn with taps and Done, the date buttons, a new band and moving it, and the opening view held sideways
+         drawn with taps and Done (profile and Hovmöller), the date buttons, a new band and moving it, and the opening view held sideways
 A scenario that fails (an older version without that feature) does not stop the others. Browser errors are
 printed. Usage (app env): screenshot.py URL PREFIX [scenario ...]   (default: open click series)"""
 import sys
@@ -59,6 +60,39 @@ with sync_playwright() as p:
             page.wait_for_timeout(800)
             print("line:", page.inner_text(".card.transect .hint"), flush=True)
             shot("line")
+        elif scenario == "hovmoller":
+            page.click(".card.transect .kind [data-v=hovmoller]")
+            page.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=120_000)
+            page.wait_for_timeout(1500)
+            print("hovmoller:", page.inner_text(".card.transect h3"), "|", page.inner_text(".card.transect .hint"), flush=True)
+            box = page.query_selector(".card.transect .u-over").bounding_box()
+            cell = page.evaluate("""(() => {  // a cell of the plot, on screen (the middle passage of a column with data)
+              const u = document.querySelector('.card.transect').plot, r = u.over.getBoundingClientRect();
+              for (let x = 0.3; x < 0.9; x += 0.05) for (let y = 0.2; y < 0.9; y += 0.02) {
+                u.setCursor({ left: r.width * x, top: r.height * y });
+                if (document.querySelector('.tip.floating').style.display === 'block') return [r.left + r.width * x, r.top + r.height * y];
+              } })()""")
+            page.mouse.move(*cell)
+            page.wait_for_timeout(500)
+            shot("hovmoller")
+            print("hovmoller tip:", page.inner_text(".tip.floating").replace("\n", " "), flush=True)
+            page.mouse.move(box["x"] + box["width"] * 0.25, box["y"] + box["height"] * 0.35)  # a zoom box
+            page.mouse.down()
+            page.mouse.move(box["x"] + box["width"] * 0.75, box["y"] + box["height"] * 0.55, steps=8)
+            page.mouse.up()
+            page.wait_for_timeout(800)
+            shot("hovmoller-zoom")
+            cell = page.evaluate("""(() => {
+              const u = document.querySelector('.card.transect').plot, r = u.over.getBoundingClientRect();
+              for (let x = 0.2; x < 0.9; x += 0.05) for (let y = 0.1; y < 0.9; y += 0.02) {
+                u.setCursor({ left: r.width * x, top: r.height * y });
+                if (document.querySelector('.tip.floating').style.display === 'block') return [r.left + r.width * x, r.top + r.height * y];
+              } })()""")
+            page.mouse.click(*cell)
+            page.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
+            page.wait_for_timeout(5000)
+            print("hovmoller click, dates:", page.inner_text("#selection"), flush=True)
+            shot("hovmoller-click")
         elif scenario == "dateline":
             for projection in ("globe", "flat"):
                 if page.evaluate("document.body.classList.contains('globe')") != (projection == "globe"):
@@ -123,6 +157,10 @@ with sync_playwright() as p:
                 phone.wait_for_timeout(1500)
                 print("phone line:", phone.inner_text(".card.transect .hint"), flush=True)
                 phone.screenshot(path=f"{prefix}-phone-line.png")
+                phone.tap(".card.transect .kind [data-v=hovmoller]")
+                phone.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=120_000)
+                phone.wait_for_timeout(1500)
+                phone.screenshot(path=f"{prefix}-phone-hovmoller.png")
                 phone.tap(".card.transect .close")
                 for button in ("#next", "#next", "#more", "#more"):  # two steps later, then 3 days
                     phone.tap(button)
