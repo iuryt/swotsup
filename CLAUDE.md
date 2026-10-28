@@ -35,7 +35,23 @@ be resumed here (`claude --resume`).
 - `app/server.py` (FastAPI): reads the store (`SWOT_STORE`, credentials from `AWS_*`) and serves
   - map tiles: each passage a curvilinear mesh rasterized with datashader (`Loaded.mean_on`), colored
     here, so only images go to the browser; overlapping passages are averaged; tile URLs carry a hash of
-    the server code, so browsers never keep tiles of an older version;
+    the server code, so browsers never keep tiles of an older version. A view is kept as float32 values
+    (~28 B/pixel), the modes as one number subtracted (medians: a few L2 pixels pass their flag km off), colors
+    from a 4 M-pixel sample. Where a screen pixel (on the ground) is wider than a cell, everything in view is drawn
+    as datashader points in one call: 4x4 / 16x16 block means (sorted by y, a tile takes its band), or the cells;
+    closer, each mesh in view (found from an array of their bounds) as a quadmesh. 12 days of the whole globe in
+    L2 Expert (228 M px) take ~7 GB; a tile ~0.06-0.2 s in process (a server busy with many is GIL-bound);
+  - detail tiles (`/api/detail`, SWOT_DETAIL_STORE, e.g. Unsmoothed over Expert): from SWOT_DETAIL_ZOOM - 1 on,
+    read tile by tile, chunks of lines of every passage at once (LRU cache), only the lines whose latitudes reach
+    the tile, shifted by what the base view subtracts so colors match; the page fades them in over a zoom level,
+    the base showing where they have none. A first look at a place reads ~5 s from Arraylake, then ~0.2 s. Once a
+    region's view is loaded, its detail is read ahead in the background (`read_ahead`, if it fits in half the
+    SWOT_DETAIL_BLOCKS kept, default 1024 ~3.5 GB): zooming in then finds it in memory (12 tiles in 0.7 s);
+  - reading a view: envelopes are kept in memory (`open_product`; the detail store takes the base's), and `read`
+    fetches one array and passage at a time, all at once: a vectorized read of a subset fetches its chunks nearly one
+    by one (the Gulf Stream, 12 days of Expert: ~35 s -> 1.6 s from biomix). From AWS the stores read ~10x faster
+    than from biomix (Unsmoothed, 2 days of the Gulf Stream, 644 MB: 0.6 s on a c7i.2xlarge in us-east-1);
+  - L2 products keep values only where `ssha_karin_2_qual == 0` (over land and ice they reach kilometres);
   - `/api/timeline` (days with passages over the region, from the per-pass geometry, no data read),
     `/api/load`, `/api/value` (at a click: the value and its passages, with the time of their nearest line),
     `/api/series`, `/api/transect` (along a drawn polyline: points every 2 km on great circles, each passage's
@@ -130,6 +146,15 @@ truncated: load it again). Several jobs starting `pixi run` right after `pixi in
   the R2 credentials from a token (`arraylake auth login` on biomix, `ARRAYLAKE_TOKEN` on a server). The EC2
   server reads it when the token is in SSM Parameter Store (`/swot-explorer/arraylake-token`, put there by the
   user), else the S3 copy. From biomix it was slower than S3 (whole globe, one day: 16 s vs 5 s, 2026-10-20).
+- L2 Expert (2 km, the whole mission, envelopes) on Arraylake: `arraylake:computational-oceanography-udel/swot-l2-lr-ssh-
+  expert-d`, `SWOT_PRODUCT=expert`; with `SWOT_DETAIL_STORE=<the Unsmoothed one>` the map turns into 250 m from zoom 9.
+  12 global days need `SWOT_MAX_PIXELS` ~250e6 (from biomix: read ~50-170 s, build ~30 s).
+- L2 Unsmoothed (250 m) on Arraylake, being uploaded (Oct 2026): `SWOT_STORE=arraylake:computational-oceanography-
+  udel/swot-l2-lr-ssh-unsmoothed-d SWOT_PRODUCT=unsmoothed` (needs `pcodec`). The server pins the latest commit at start
+  (shown in the subtitle; restart for a newer one), keeps only the passages with a `line_time` chunk (listing them reads
+  no data), fills the envelopes not written yet from each pass's nadir, and opens on the latest day, 6 x 6 degrees
+  around a passage. Its nadir gap and edge pixels have no position: `across()` interpolates the positions (only)
+  across each line so the meshes have every corner. 64 times L3's pixels: small regions only (MAX_PIXELS).
 - L3 store on S3 (us-east-1): `s3://iuryt-shared-east/icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2`, read with
   the `swot-read` AWS profile (`swot-write` can write). Local copy:
   `/mnt/maximus/data/iury/processed/swot_icechunk/basic`.
