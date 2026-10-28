@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 
 import numpy as np
@@ -591,3 +592,40 @@ def test_copied_links_start_with_the_public_address(store_path, monkeypatch):
     import server
 
     assert TestClient(server.app).get("/api/info").json()["public_url"] == "https://wake.example/"
+
+
+
+def test_anonymous_usage(store_path, tmp_path, monkeypatch):
+    """An event is kept with the view fields it may carry, the time, the country and the visitor of the day; never the
+    address (nor anything else sent). The visitor is the same for one address and browser on a day, another on the
+    next. Every API request's time is kept too. Unknown events are not."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    monkeypatch.setenv("SWOT_TELEMETRY_DIR", str(tmp_path))
+    sys.modules.pop("server", None)
+    import server
+
+    monkeypatch.setattr(server, "country", lambda address: "BR" if address == "200.1.2.3" else "")
+    c = TestClient(server.app)
+    who = {"x-forwarded-for": "200.1.2.3, 10.0.0.1", "user-agent": "Firefox"}
+    sent = dict(session="s1", event="point", variable="ssha_unfiltered", point_lon=30.1, point_lat=2.0, password="x")
+    for _ in range(2):
+        assert c.post("/api/event", json=sent, headers=who).status_code == 204
+    c.post("/api/event", json=dict(session="s1", event="hack"), headers=who)
+    c.get("/api/info")
+    events = list(tmp_path.glob("events-*.jsonl"))
+    assert len(events) == 1
+    text = events[0].read_text()
+    assert "200.1.2.3" not in text and "Firefox" not in text and "password" not in text
+    rows = [json.loads(line) for line in text.splitlines()]
+    assert [r["event"] for r in rows] == ["point", "point"] and rows[0]["country"] == "BR"
+    assert rows[0]["point_lon"] == 30.1 and rows[0]["visitor_day"] == rows[1]["visitor_day"]
+    today = rows[0]["time"][:10]
+    assert server.visitor_day("200.1.2.3", "Firefox", today) == rows[0]["visitor_day"]
+    assert server.visitor_day("200.1.2.3", "Firefox", "2099-01-01") != rows[0]["visitor_day"]
+    assert server.visitor_day("200.1.2.3", "Firefox", today) != rows[0]["visitor_day"]  # that day's salt is gone
+    for _ in range(20):  # tiles: one in ten kept, saying so
+        c.get("/api/tile/2/2/1.png", params=PASS_7)
+    requests = [json.loads(line) for line in next(tmp_path.glob("requests-*.jsonl")).read_text().splitlines()]
+    assert {"endpoint": "/api/info", "status": 200, "sample": 1} == {k: requests[0][k] for k in ("endpoint", "status", "sample")}
+    tiles = [r for r in requests if r["endpoint"] == "/api/tile/{z}/{x}/{y}.png"]
+    assert len(tiles) == 2 and all(r["sample"] == 10 for r in tiles)
