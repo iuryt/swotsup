@@ -89,7 +89,7 @@ be resumed here (`claude --resume`).
   with the default environment, so the image runs the versions we test).
 - `deploy/boot.sh` (runs on the EC2 instance at every boot: build, serve behind Caddy, stop after 30 idle
   minutes) and `deploy/wake.py` (the Lambda link: starts the instance and shows a waiting page).
-- `scripts/screenshot.py` (scenarios: open, click, series, line, hovmoller, flat, dateline, phone), `scripts/bench_server.py`.
+- `scripts/screenshot.py` (scenarios: open, click, series, line (and line-250m), hovmoller, flat, dateline, phone, wide, zoom), `scripts/bench_server.py`.
 
 Decisions worth keeping:
 - Dark only for now; basemap GEBCO grayscale from NOAA NCEI tiles (no key), darkened.
