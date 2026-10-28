@@ -453,19 +453,12 @@ def test_fine_hovmoller_only_on_short_lines(store_path, fine_store_path, monkeyp
 
 
 
-def test_latest_complete_cycle():
-    """The opening cycle: the latest whose passages span 20 days or more, else the one before; its first day, and the
-    days up to its last passage (at most 21)."""
+def test_opening_on_the_latest_days():
+    """The opening view: the 21 days up to the day of the latest passage, whatever the cycles."""
     import server
 
-    day = np.timedelta64(1, "D")
-    t0 = np.datetime64("2026-09-01T05:00")
-    times = np.array([t0 + k * day for k in range(21)] + [t0 + 20 * day + np.timedelta64(20, "h")]
-                     + [t0 + (21 + k) * day for k in range(5)])  # cycle 7: 20.8 days; cycle 8: 4 days so far
-    cycles = np.array([7] * 22 + [8] * 5)
-    assert server.latest_cycle(cycles, times) == dict(start="2026-09-01", days=21)
-    cycles[22:], times[22:] = 7, times[22:] - 10 * day  # cycle 8 not started: 7 is the latest, and complete
-    assert server.latest_cycle(cycles, times)["start"] == "2026-09-01"
+    times = np.array(["2026-09-30T23:00", "2026-10-24T05:10", "2026-10-12T12:00"], "datetime64[ns]")
+    assert server.latest_days(times) == dict(start="2026-10-04", days=21)
 
 
 def test_overview_draws_what_the_view_in_memory_draws(fine_store_path, tmp_path, monkeypatch):

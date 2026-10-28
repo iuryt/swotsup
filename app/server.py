@@ -50,7 +50,7 @@ PRODUCTS = {
                    max_pixels=250e6, variables={
         "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
         "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
-        default="cycle", overview=True),  # the latest cycle of the whole globe, as an overview
+        default="latest", overview=True),  # the whole globe on the latest 21 days, as an overview
     # 250 m, 64 times the pixels of L3: small regions only; being uploaded, so the passages with data only
     "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", credit="NASA/JPL, CNES", pixel=0.25, partial=True,
                        mask="ssha_karin_2_qual", variables={
@@ -106,16 +106,10 @@ def open_product(target, partial=False, geometry=None):
     return SimpleNamespace(ds=ds, index=index, geometry=geometry, commit=commit)
 
 
-def latest_cycle(cycles, times):
-    """The dates of the latest complete cycle (its passages over 20 days or more; else the one before): its first day
-    and how many days reach its last passage (at most MAX_DAYS)."""
-    last = cycles[np.argmax(times)]
-    for cycle in (last, last - 1):
-        span = times[cycles == cycle]
-        if len(span) and span.max() - span.min() >= np.timedelta64(20, "D"):
-            break
-    first = span.min().astype("datetime64[D]")
-    return dict(start=str(first), days=int(min(MAX_DAYS, np.ceil((span.max() - first) / np.timedelta64(1, "D")))))
+def latest_days(times):
+    """The MAX_DAYS days up to the day of the latest passage (part of two cycles, often): their first day and number."""
+    first = times.max().astype("datetime64[D]") - np.timedelta64(MAX_DAYS - 1, "D")
+    return dict(start=str(first), days=MAX_DAYS)
 
 
 STORE = os.environ.get("SWOT_STORE", L2 + "expert-d")
@@ -135,8 +129,8 @@ if DEFAULT is None:  # the latest passage's day, 6 x 6 degrees around its nadir 
     lat0, lon0 = float(nadir.latitude_nadir.values[k]), (float(nadir.longitude_nadir.values[k]) + 180) % 360 - 180
     DEFAULT = dict(west=round(lon0 - 3, 2), east=round(lon0 + 3, 2), south=round(lat0 - 3, 2), north=round(lat0 + 3, 2),
                    start=str(pd.Timestamp(index.time.values[last]).date()), days=1)
-elif DEFAULT == "cycle":  # the whole globe on the latest complete cycle
-    DEFAULT = dict(west=-180, east=180, south=-90, north=90) | latest_cycle(index.cycle.values, index.time.values)
+elif DEFAULT == "latest":  # the whole globe on the latest days
+    DEFAULT = dict(west=-180, east=180, south=-90, north=90) | latest_days(index.time.values)
 DEFAULT = DEFAULT | dict(variable=next(iter(VARIABLES)))
 CACHE_DIR = os.environ.get("SWOT_CACHE_DIR")  # where overviews are kept between restarts
 

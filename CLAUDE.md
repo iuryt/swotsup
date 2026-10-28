@@ -62,8 +62,9 @@ be resumed here (`claude --resume`).
     each chunk fetched once: the equatorial Pacific, 12k passages, 18 s from biomix instead of 80 s),
     `/api/netcdf`, `/api/world.png`.
   Every request names its view (box, dates, variable); views are kept in memory up to `SWOT_CACHE_GB`
-  and read again if they were pushed out. The opening view (`DEFAULT`): for L2 Expert the whole globe on the latest
-  complete cycle (`latest_cycle`, ~21 days, ~400 M pixels: too big to keep), served by an `Overview`: built in the
+  and read again if they were pushed out. The opening view (`DEFAULT`): for L2 Expert the whole globe on the 21 days
+  up to the latest passage (`latest_days`, often part of two cycles; ~400 M pixels: too big to keep), served by an
+  `Overview` (as is any view bigger than SWOT_OVERVIEW_PIXELS, built on demand): built in the
   background at start, a batch of 32 passages at a time (from biomix 123 s, 4.9 GB at most), into world rasters of
   zoom 4 (sum and count of every cell as a point, per mode: the colors and modes change without reading again), kept
   on disk (`SWOT_CACHE_DIR`, by commit and view: a restart reads them back); tiles up to zoom 4 come from them, closer
