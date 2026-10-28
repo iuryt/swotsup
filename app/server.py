@@ -453,6 +453,7 @@ class Overview:
         self.count = np.zeros((size, size), "float32")
         self._shift = {mode: np.zeros(len(self.times), "float32") for mode in ("none", "box", "passage")}
         self.samples, self.quantiles, self.pixels, self.seconds = [], {}, 0, 0.0
+        self.done, self.started = 0, None  # passages read so far, and when the build started (progress)
         self.read_ahead = []
         box = "_".join(f"{view[k]:g}" for k in ("west", "east", "south", "north"))
         self.file = (os.path.join(CACHE_DIR, f"overview-{COMMIT.id}-{box}-{view['start']}-{view['days']}-{variable}.npz")
@@ -481,12 +482,16 @@ class Overview:
         self.pixels += int(ok.sum())
         pick = rng.integers(0, max(len(v), 1), min(len(v), 200_000))
         self.samples.append((v[pick], at[which[pick]]))
-        canvas = dsh.Canvas(plot_width=self.count.shape[1], plot_height=self.count.shape[0],
-                            x_range=(-WORLD / 2, WORLD / 2), y_range=(-WORLD / 2, WORLD / 2))
-        frame = pd.DataFrame({"x": x, "y": y, "v": v, "p": v - per[which]})
-        self.count += np.nan_to_num(canvas.points(frame, "x", "y", agg=dsh.count()).values.astype("float32"))
-        for mode, column in (("none", "v"), ("passage", "p")):
-            self.sum[mode] += np.nan_to_num(canvas.points(frame, "x", "y", agg=dsh.sum(column)).values.astype("float32"))
+        # the raster's pixel of each cell (rows from the south), summed with one count each (as datashader's points)
+        size = self.count.shape[0]
+        col = np.floor((x + WORLD / 2) / WORLD * size).astype(int)
+        row = np.floor((y + WORLD / 2) / WORLD * size).astype(int)
+        inside = (col >= 0) & (col < size) & (row >= 0) & (row < size)
+        flat = row[inside] * size + col[inside]
+        add = lambda w=None: np.bincount(flat, w, size * size).reshape(size, size).astype("float32")  # noqa: E731
+        self.count += add()
+        self.sum["none"] += add(v[inside])
+        self.sum["passage"] += add((v - per[which])[inside])
 
     def finish(self):
         """What the box mode subtracts (the median), and the colors' quantiles, from the samples."""
@@ -515,7 +520,7 @@ class Overview:
             self.sum = {"none": f["none"], "passage": f["passage"]}
             self.count, self._shift["passage"] = f["count"], f["shift"]
             self._shift["box"][:] = f["box"][0]
-            self.pixels, self.seconds = int(f["pixels"]), float(f["seconds"])
+            self.pixels = int(f["pixels"])  # read now from disk, not from the cloud: no seconds to show
             self.quantiles = json.loads(str(f["quantiles"][0]))
         self.ready.set()
         return True
@@ -561,13 +566,21 @@ def build_overviews(view, overviews):
         return
     names = sorted({n for o in todo for n in o.names}) + ([MASK] if MASK else [])
     times = todo[0].times
-    for b in range(0, len(times), Overview.BATCH):
-        at = np.arange(b, min(b + Overview.BATCH, len(times)))
-        sub, _ = read(ds.isel(time=times[at], along=todo[0].lines), names)
-        lon, lat = sub.longitude.values, sub.latitude.values
-        for o in todo:
-            o.add(at, masked(sum(sub[n].values for n in o.names), sub[MASK].values if MASK else None).astype("float32"), lon, lat)
-        print(f"overview: {at[-1] + 1} of {len(times)} passages, {time.perf_counter() - t0:.0f} s", flush=True)
+    for o in todo:
+        o.started = t0
+    batches = [np.arange(b, min(b + Overview.BATCH, len(times))) for b in range(0, len(times), Overview.BATCH)]
+    fetch = lambda at: read(ds.isel(time=times[at], along=todo[0].lines), names)[0]  # noqa: E731
+    with ThreadPoolExecutor(1) as ahead:  # the next batch is read while this one is summed
+        coming = ahead.submit(fetch, batches[0]) if batches else None
+        for k, at in enumerate(batches):
+            sub = coming.result()
+            if k + 1 < len(batches):
+                coming = ahead.submit(fetch, batches[k + 1])
+            lon, lat = sub.longitude.values, sub.latitude.values
+            for o in todo:
+                o.add(at, masked(sum(sub[n].values for n in o.names), sub[MASK].values if MASK else None).astype("float32"), lon, lat)
+                o.done = int(at[-1]) + 1
+            print(f"overview: {at[-1] + 1} of {len(times)} passages, {time.perf_counter() - t0:.0f} s", flush=True)
     for o in todo:
         o.seconds = time.perf_counter() - t0
         o.finish()
@@ -678,6 +691,15 @@ def page():
     if not NETCDF:
         html = "\n".join(line for line in html.splitlines() if 'id="download"' not in line)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/progress")
+def progress(west: float, east: float, south: float, north: float, start: str, days: int, variable: str):
+    """How far the overview of a view being built is (passages read, of how many, seconds so far); {} otherwise."""
+    o = OVERVIEWS.get((west, east, south, north, start, int(np.clip(days, 1, MAX_DAYS)), variable))
+    if o is None or o.ready.is_set() or o.started is None:
+        return {}
+    return dict(done=o.done, total=len(o.times), seconds=round(time.perf_counter() - o.started, 1))
 
 
 @app.get("/api/info")

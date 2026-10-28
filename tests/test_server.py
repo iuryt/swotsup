@@ -531,3 +531,22 @@ def test_overview_up_close_waits_for_what_the_modes_subtract(fine_store_path, mo
     server.build_overviews(view, [over])
     asking.join()
     assert abs(early[0][0] - over.shift["box"][0]) < 1e-6 and abs(over.shift["box"][0]) > 1000
+
+
+
+def test_progress_of_an_overview_being_built(store_path, monkeypatch):
+    """While a view too big to keep is read, its progress: passages read, of how many; nothing for other views."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    sys.modules.pop("server", None)
+    import server
+
+    big = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    over = server.Overview(big, big["variable"])
+    over.started, over.done = server.time.perf_counter(), 2
+    monkeypatch.setitem(server.OVERVIEWS, tuple(big.values()), over)
+    c = TestClient(server.app)
+    p = c.get("/api/progress", params=big).json()
+    assert p["done"] == 2 and p["total"] == 4
+    assert c.get("/api/progress", params=PASS_7).json() == {}
+    over.ready.set()
+    assert c.get("/api/progress", params=big).json() == {}
