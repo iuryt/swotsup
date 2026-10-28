@@ -128,6 +128,8 @@ def test_written_passages_and_envelopes_from_the_nadir(store_path):
     session = icechunk.Repository.open(icechunk.local_filesystem_storage(path)).readonly_session("main")
     ds = swot_view.dataset(session.store)
     assert swot_view.written(ds, session.store).tolist() == [0, 1, 2, 3]  # every passage (2 chunks of 2)
+    flags = ds.assign(written=("time", np.array([1, 0, 2, 1], "int8")))  # the store's own record, when it has one
+    assert swot_view.written(flags, session.store).tolist() == [0, 3]
     ds = ds.assign(latitude_nadir=ds.latitude.isel(cross=ds.sizes["cross"] // 2),
                    longitude_nadir=ds.longitude.isel(cross=ds.sizes["cross"] // 2))
     lon_min, lon_max = swot_view.nadir_envelope(ds, half_width=60)
