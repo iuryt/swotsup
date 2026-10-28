@@ -247,6 +247,36 @@ def test_detail_tiles_take_the_base_colors(store_path, monkeypatch):
     assert (np.asarray(Image.open(io.BytesIO(far)).convert("RGBA"))[..., 3] == 0).all()  # not below its zoom - 1
 
 
+def test_detail_tile_with_only_the_edges_of_lines(tmp_path, make_file, monkeypatch):
+    """The track leans, so do its lines: north of the last nadir (lat 10), a zoom 11 tile holds only the west edges
+    of the last lines. The detail tile draws them like the base does (the passes are found from lines near it)."""
+    import icechunk
+    from swot_cloud.store import append
+
+    path = str(tmp_path / "tilted")
+    session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
+    append(session.store, make_file(3, 7, day=3, tilt=0.5, n_lines=1001, n_pixels=51), along_chunk=100, time_chunk=1)
+    session.commit("tilted")
+    monkeypatch.setenv("SWOT_STORE", path)
+    monkeypatch.setenv("SWOT_DETAIL_STORE", path)
+    monkeypatch.setenv("SWOT_DETAIL_PRODUCT", "l3")
+    monkeypatch.setenv("SWOT_DETAIL_ZOOM", "6")
+    sys.modules.pop("server", None)
+    import server
+
+    c = TestClient(server.app)
+    view = dict(west=33, east=37, south=8, north=12, start="2024-01-03", days=1, variable="ssha_unfiltered",
+                mode="none", vmin=3500, vmax=4100)
+    z, lon, lat = 11, 34.65, 10.17  # the west edge of the last lines: lon ~34.55-35, lat up to 10.22
+    fx = (lon + 180) / 360 * 2**z
+    fy = (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+    south = server.tile_ranges(z, int(fx), int(fy))[1][0]
+    assert np.rad2deg(2 * np.arctan(np.exp(south / server.R)) - np.pi / 2) > 10  # all north of the last nadir
+    get = lambda kind: np.asarray(Image.open(io.BytesIO(c.get(f"/api/{kind}/{z}/{int(fx)}/{int(fy)}.png", params=view).content)).convert("RGBA"))  # noqa: E731
+    on = get("tile")[..., 3] == 255
+    assert on.sum() > 100 and (on & (get("detail")[..., 3] == 0)).sum() <= 0.002 * on.sum()
+
+
 def test_coarse_levels_draw_what_the_full_data_draws(fine_store_path, monkeypatch):
     """A view of the world (one tile pixel ~40 km over 2 km cells) is drawn from 16 x 16 block means as points: each
     block at its centre, so the tile's means are those of the cells (data = cycle*1000 + line: a block put at its

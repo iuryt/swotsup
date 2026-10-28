@@ -51,3 +51,4 @@ mutate app/server.py 's/"passage": np.array(\[np.nanmedian(v) for v in per\], "f
 mutate app/server.py 's/        pixel = (x_range\[1\] - x_range\[0\]) \/ width \* np.cos(2 \* np.arctan(np.exp(np.mean(y_range) \/ R)) - np.pi \/ 2)/        pixel = (x_range[1] - x_range[0]) \/ width \/ 16/' "coarse levels chosen 16 times too fine"
 mutate app/server.py 's/vs.append(self.value(mode, i, lines).ravel())/vs.append(self.value(mode, i).ravel()[:x.size])/' "cells as points take values of the wrong lines"
 mutate app/server.py 's/    near = slice(max(near\[0\] - 1, 0), near\[-1\] + 2)/    near = slice(near[0], near[-1] + 1)/' "detail tiles without the cells across their edges"
+mutate app/server.py 's/(east + 180) % 360 - 180, south - 0.7, north + 0.7))/(east + 180) % 360 - 180, south, north))/' "detail tiles miss the passes whose lines only lean into them"
