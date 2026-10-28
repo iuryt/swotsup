@@ -103,9 +103,9 @@ def distance(lat1, lon1, lat2, lon2):
     return 2 * EARTH_RADIUS * np.arcsin(np.sqrt(a))
 
 
-def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None, mask=None):
+def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None, mask=None, db=False):
     """Mean of `var` over the pixels within `radius` km of (lon, lat), one value per passage (with `mask`, a
-    quality flag: only where it is 0). Passages with fewer than `min_pixels` valid pixels there (nadir gap, swath
+    quality flag: only where it is 0; `db`: of its values in dB, as sigma0 is shown). Passages with fewer than `min_pixels` valid pixels there (nadir gap, swath
     edge) are dropped: by default a quarter of what the circle holds on the 2 km grid, at least 1 (5 km: 5)."""
     if min_pixels is None:
         min_pixels = max(1, round(np.pi * radius**2 / 4 / 4))
@@ -117,6 +117,8 @@ def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None,
     near = sub[var].where(distance(sub.latitude, sub.longitude, lat, lon) <= radius)
     if mask:
         near = near.where(sub[mask] == 0)
+    if db:
+        near = 10 * np.log10(near.where(near > 0))
     count = near.count(("along", "cross"))
     out = xr.Dataset({var: near.mean(("along", "cross")), "pixels": count})
     return out.isel(time=(count >= min_pixels).values)
@@ -160,23 +162,24 @@ sub = ds.sel(time=slice("{start}", "{end}"){lats})
 '''
 
 
-def series_snippet(lon, lat, names, radius=5.0, label="", target=STORE, mask=None, pixel=2.0, fine=None):
+def series_snippet(lon, lat, names, radius=5.0, label="", target=STORE, mask=None, pixel=2.0, fine=None, db=False,
+                   units="m"):
     """The code for the time series at a point (as `point_series`), with a figure: the mean within `radius` km of
     the product's `pixel` km pixels (with `mask`, a quality flag: only where it is 0). `fine`, a dict of the same for
     a finer product (target, names, radius, mask, pixel, label), adds its series to the figure."""
-    curves = [(target, names, radius, mask, pixel, "")] + ([(fine["target"], fine["names"], fine["radius"], fine.get("mask"),
-                                                              fine["pixel"], fine["label"])] if fine else [])
+    curves = [(target, names, radius, mask, pixel, "", db)] + ([(fine["target"], fine["names"], fine["radius"], fine.get("mask"),
+                                                                  fine["pixel"], fine["label"], fine.get("db", False))] if fine else [])
     calls = []
-    for k, (where, arrays, r, flag, size, name) in enumerate(curves):
+    for k, (where, arrays, r, flag, size, name, decibels) in enumerate(curves):
         if k == 0:
-            calls.append(f"series = point_series(ds, {list(arrays)}, {r:g}, {size:g}, {flag!r})")
+            calls.append(f"series = point_series(ds, {list(arrays)}, {r:g}, {size:g}, {flag!r}, {decibels!r})")
         else:
             library, _, repo = repository(where)
             calls.append(f"""
 # {name}: the same, within {r:g} km
 {"import " + library + chr(10) if library not in opening(target) else ""}repo = {repo}
 fine = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, chunks=None).set_xindex("lat")
-fine = point_series(fine, {list(arrays)}, {r:g}, {size:g}, {flag!r})""")
+fine = point_series(fine, {list(arrays)}, {r:g}, {size:g}, {flag!r}, {decibels!r})""")
     plots = (f"""series.plot(marker=".", label="{pixel:g} km pixels, within {radius:g} km")
 fine.plot(marker=".", label="{fine['label']}, within {fine['radius']:g} km")
 plt.legend()""" if fine else 'series.plot(marker=".")')
@@ -185,8 +188,9 @@ lon, lat = {lon:.4f}, {lat:.4f}
 km = 6371.0 * np.pi / 180
 
 
-def point_series(ds, names, radius, pixel, flag=None):
-    """The mean of the sum of `names` over the pixels within `radius` km of the point, one value per passage."""
+def point_series(ds, names, radius, pixel, flag=None, db=False):
+    """The mean of the sum of `names` over the pixels within `radius` km of the point, one value per passage (`db`:
+    of the values in dB)."""
     # every passage over the point (the lines near it)
     west, east = lon - radius / (km * np.cos(np.deg2rad(lat))), lon + radius / (km * np.cos(np.deg2rad(lat)))
     sub = ds.sel(lat=slice(lat - radius / km - 0.5, lat + radius / km + 0.5))  # swath edges lean ~0.3 deg off nadir
@@ -199,6 +203,8 @@ def point_series(ds, names, radius, pixel, flag=None):
     near = sum(sub[n] for n in names).where(d <= radius)
     if flag:  # only the pixels of good quality
         near = near.where(sub[flag] == 0)
+    if db:
+        near = 10 * np.log10(near.where(near > 0))
     count = near.count(("along", "cross"))
     # passages with too few pixels there (swath edge, nadir gap) are left out: a quarter of what the circle holds
     return near.mean(("along", "cross")).where(count >= max(1, round(np.pi * radius**2 / pixel**2 / 4))).dropna("time")
@@ -209,13 +215,13 @@ def point_series(ds, names, radius, pixel, flag=None):
 plt.figure(figsize=(9, 4))
 {plots}
 plt.title("{label}{"" if fine else f"mean within {radius:g} km of "}{lat:.2f}, {lon:.2f}")
-plt.ylabel("m")
+plt.ylabel("{units}")
 plt.show()
 '''
 
 
 def line_snippet(points, names, step=2.0, start=None, end=None, mean="time", label="", target=STORE, radius=1.5,
-                 mask=None):
+                 mask=None, db=False, units="m"):
     """The code for the values along a polyline: every `step` km along great circles, each passage's nearest
     pixel within `radius` km (its pass's grid is the same every cycle; with `mask`, a quality flag, only where it is 0). With `start`/`end`, the profile of the passages
     in those dates, one curve each; without, the Hovmöller of the whole mission (minus the mean over time at each
@@ -228,7 +234,7 @@ def line_snippet(points, names, step=2.0, start=None, end=None, mean="time", lab
 for (p, c, t), v in zip(passages, values):  # one curve per passage
     plt.plot(distance, v, label=f"pass {p}, cycle {c}, {str(t)[:16]}")
 plt.legend(fontsize=7)
-plt.ylabel("m")'''
+plt.ylabel("{units}")'''
     else:
         figure = ('''values = values - np.nanmean(values, axis=0)  # minus the mean over time at each point
 ''' if mean == "time" else "") + '''plt.figure(figsize=(9, 6))
@@ -237,7 +243,8 @@ k, j = np.nonzero(np.isfinite(values))  # a small square per value: each passage
 lim = np.nanpercentile(abs(values), 98)
 plt.scatter(distance[j], times[k], c=values[k, j], s=3, marker="s", linewidths=0, cmap="RdBu_r",
             vmin=-lim if np.nanmin(values) < 0 else np.nanpercentile(values, 2), vmax=lim)
-plt.colorbar(label="m")'''
+plt.colorbar(label="{units}")'''
+    figure = figure.replace("{units}", units)
     vertices = ", ".join(f"({x:.4f}, {y:.4f})" for x, y in points)
     return f'''{opening(target, "import numpy as np\nimport matplotlib.pyplot as plt\nfrom scipy.spatial import cKDTree\n")}
 points, step = [{vertices}], {step:g}  # (lon, lat) vertices, km between samples
@@ -278,7 +285,7 @@ for p in np.unique(sub.pass_id):
                 along=xr.DataArray(np.tile(row, len(times)), dims="pixel"),
                 cross=xr.DataArray(np.tile(col, len(times)), dims="pixel"))
     v = sum(sub[n].isel(pick).values for n in {list(names)}){f""" * np.where(sub["{mask}"].isel(pick).values == 0, 1, np.nan)""" if mask else ""}
-    v = v.reshape(len(times), len(hit))
+{"    v = 10 * np.log10(np.where(v > 0, v, np.nan))  # in dB" + chr(10) if db else ""}    v = v.reshape(len(times), len(hit))
     for k, i in enumerate(times):
         if np.isfinite(v[k]).any():
             line = np.full(len(samples), np.nan)

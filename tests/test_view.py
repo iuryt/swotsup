@@ -151,3 +151,14 @@ def test_written_passages_and_envelopes_from_the_nadir(store_path):
     np.testing.assert_array_equal(swot_view.passes_over(ds, 29, 31, -1, 1), [7, 20])
     np.testing.assert_array_equal(swot_view.passes_over(ds, 30.7, 31, -1, 1), [20])  # 7 ends at 30.0 + 60 km
     assert 7 in swot_view.passes_over(ds, 30.52, 30.6, -1, 1)  # ...which is east of 30.52 (the swath's edge: 30.5)
+
+
+
+def test_series_in_db(fine_store_path, monkeypatch):
+    """A point's series in dB (sigma0): the mean of the pixels' values in dB, from the app and from the code users copy."""
+    ds = swot_view.open_store(fine_store_path)
+    want = swot_view.point_series(ds, 30.1, 2.0, radius=5, db=True).ssha_filtered.values
+    np.testing.assert_allclose(want, 10 * np.log10([3600, 5600]), atol=0.01)  # data = cycle*1000 + line, line ~600
+    scope = run_snippet(swot_view.series_snippet(30.1, 2.0, ["ssha_filtered"], 5, target="s3://b/p", db=True, units="dB"),
+                        fine_store_path, monkeypatch)
+    np.testing.assert_allclose(scope["series"].values, want)

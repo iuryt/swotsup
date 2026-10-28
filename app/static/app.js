@@ -8,10 +8,15 @@ const BASEMAPS = {
   "Bathymetry, color": [NCEI.replace("{}", "GEBCO_basemap_NCEI"), 0.75],
   "Imagery": [ESRI.replace("{}", "World_Imagery"), 0.8],
 };
-const RDBU = ["#053061", "#2166ac", "#4393c3", "#92c5de", "#d1e5f0", "#f7f7f7", "#fddbc7", "#f4a582", "#d6604d", "#b2182b", "#67001f"];
 
-const state = { mode: "box", preset: "2", symmetric: true, data: null, drawing: false };
+const state = { mode: "box", preset: "2", symmetric: true, data: null, drawing: false, cmaps: {} };
 let info, map, timeline;
+try { state.cmaps = JSON.parse(localStorage.getItem("cmaps") || "{}"); } catch (e) {}
+// the variable shown: its colormap (chosen in this browser, else its own), its stops, its units and kind
+const cmapOf = () => (info.colormaps[state.cmaps[state.variable]] ? state.cmaps[state.variable] : info.looks[state.variable].cmap);
+const stops = () => info.colormaps[cmapOf()];
+const unit = () => info.looks[state.variable].units;
+const isAnomaly = () => info.looks[state.variable].kind === "anomaly";
 
 // --- small helpers
 async function api(path, params = {}) {
@@ -102,6 +107,31 @@ function watchDetail() {
   }
 }
 
+// --- the colormap, chosen in the Display menu: a strip and its name for each; the variable's kind first
+// (diverging for anomalies, sequential for levels); remembered per variable in this browser
+function cmapMenu() {
+  const strip = (name) => `<i style="background:linear-gradient(90deg, ${info.colormaps[name].join(", ")})"></i>`;
+  const own = info.looks[state.variable].cmap, names = Object.keys(info.colormaps);
+  const diverging = names.filter((n) => info.diverging.includes(n)), sequential = names.filter((n) => !info.diverging.includes(n));
+  const groups = isAnomaly() ? [diverging, sequential] : [sequential, diverging];
+  const item = (n) => `<button data-cmap="${n}" class="${n === cmapOf() ? "active" : ""}">${strip(n)}<span>${n}${n === own ? " (default)" : ""}</span></button>`;
+  $("#cmap .cmap-current").innerHTML = `${strip(cmapOf())}<span>${cmapOf()}</span>`;
+  $("#cmap .cmap-list").innerHTML = groups.map((g) => g.map(item).join("")).join("<hr>");
+}
+
+function setupCmap() {
+  $("#cmap .cmap-current").onclick = () => $("#cmap .cmap-list").classList.toggle("hidden");
+  $("#cmap .cmap-list").onclick = (e) => {
+    const b = e.target.closest("[data-cmap]");
+    if (!b) return;
+    state.cmaps[state.variable] = b.dataset.cmap;
+    try { localStorage.setItem("cmaps", JSON.stringify(state.cmaps)); } catch (err) {}
+    $("#cmap .cmap-list").classList.add("hidden");
+    setColors();
+    if (transect?.kind === "hovmoller") fillHovmoller();
+  };
+}
+
 // --- colors: from percentiles of the loaded values, or typed
 function setColors() {
   const q = state.data?.quantiles[state.mode] ?? [];
@@ -111,11 +141,15 @@ function setColors() {
     if (state.symmetric) [lo, hi] = [-Math.max(-lo, hi), Math.max(-lo, hi)];
     [state.vmin, state.vmax] = [+lo.toFixed(3), +hi.toFixed(3)];
   }
-  $("#colorbar").style.background = `linear-gradient(90deg, ${RDBU.join(", ")})`;
+  $("#colorbar").style.background = `linear-gradient(90deg, ${stops().join(", ")})`;
   $("#vmin").value = state.vmin;
   $("#vmax").value = state.vmax;
-  $("#vmin-text").textContent = `${state.vmin} m`;
-  $("#vmax-text").textContent = `${state.vmax} m`;
+  $("#vmin-text").textContent = `${state.vmin} ${unit()}`;
+  $("#vmax-text").textContent = `${state.vmax} ${unit()}`;
+  $("#vmin-label").textContent = `Min (${unit()})`;
+  $("#vmax-label").textContent = `Max (${unit()})`;
+  $("#zero-text").textContent = isAnomaly() || state.symmetric ? "0" : "";
+  cmapMenu();
   const pct = (v) => { // percentile of a value, from the quantiles
     let i = q.findIndex((x) => x >= v);
     return i < 0 ? 100 : i / 10;
@@ -128,7 +162,7 @@ function setColors() {
   $("#symmetric").checked = state.symmetric;
   if (!state.data) return;
   if (transect && transect.key !== lineKey()) fillLine();
-  const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}`;
+  const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}&cmap=${cmapOf()}`;
   const source = map.getSource("swot");
   if (source) source.setTiles([url]);
   else {
@@ -549,7 +583,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
   const bottom = card.offsetTop + card.offsetHeight;  // the text may take more lines: keep the edge near the point
   const mean = v.passages?.length > 1 ? ` (mean of ${v.passages.length} passages)` : "";
   card.querySelector(".hint").textContent = v.value == null ? "No data here on the selected dates"
-    : [`${v.value.toFixed(3)} m${mean} · ${$("#legend-variable").textContent}`,
+    : [`${v.value.toFixed(3)} ${unit()}${mean} · ${$("#legend-variable").textContent}`,
        ...v.passages.map((q) => `Pass ${q.pass_id} · cycle ${q.cycle} · ${timeText(q.time)}`)].join("\n");
   if (!below && !sheet) card.style.top = `${bottom - card.offsetHeight}px`;
   link();
@@ -585,7 +619,7 @@ async function fillSeries(card, lngLat, radius) {
   hint.textContent = `mean within ${radius} km`;
   const where = { lon: wrap(lngLat.lng), lat: lngLat.lat, variable: state.variable };
   // the 250 m series (a smaller circle of the detail product) comes later, drawn over the 2 km one when it arrives
-  const fine = info.detail ? api("/api/series", { ...where, radius: FINE_RADIUS, fine: true }).catch(() => null) : null;
+  const fine = info.looks[state.variable].fine ? api("/api/series", { ...where, radius: FINE_RADIUS, fine: true }).catch(() => null) : null;
   try {
     const s = await api("/api/series", { ...where, radius });
     if (card.classList.contains("sheet")) card.querySelector("h3").textContent = `${latText(lngLat.lat)} ${lonText(lngLat.lng)} · ${passages(s.time.length)}`;
@@ -607,7 +641,7 @@ function seriesLegend(card, curves, radius, fineNote = "reading…") {
   const hint = card.querySelector(".hint"), u = card.plot;
   const text = [`2 km pixels, within ${radius} km · ${passages(curves[0].time.length)}`,
                 `250 m pixels, within ${FINE_RADIUS} km · ${curves[1] ? passages(curves[1].time.length) : fineNote}`];
-  hint.innerHTML = (info.detail ? text : text.slice(0, 1)).map((t, k) =>
+  hint.innerHTML = (info.looks[state.variable].fine ? text : text.slice(0, 1)).map((t, k) =>
     `<span class="key${u && u.series[k + 1] && !u.series[k + 1].show ? " off" : ""}" data-k="${k}" title="Show or hide this series">` +
     `<i style="background:${SERIES[k].color}"></i>${t}</span>`).join("") + `<span class="key-note"> · click a point to see that date on the map</span>`;
   hint.querySelectorAll(".key").forEach((el) => el.onclick = (e) => {
@@ -651,14 +685,14 @@ function drawSeries(card, curves, radius) {
     tip.style.display = k < 0 ? "none" : "block";
     if (k < 0) return;
     const values = u.data.slice(1).map((y, j) => y[i] == null || !u.series[j + 1].show ? ""
-      : `${curves.length > 1 ? (j ? "250 m " : "2 km ") : ""}${y[i].toFixed(3)} m`).filter(Boolean);
+      : `${curves.length > 1 ? (j ? "250 m " : "2 km ") : ""}${y[i].toFixed(3)} ${unit()}`).filter(Boolean);
     tip.textContent = `${dayText(u.data[0][i] * 1000)} · ${values.join(" · ")}`;
     placeTip(tip, u, u.valToPos(u.data[0][i], "x"), u.valToPos(u.data[k + 1][i], "y"));
   }] } };
   card.plot = new uPlot({
     ...chartSize(card), plugins: [band, hover], legend: { show: false }, cursor: { points: { size: 7 } },
     scales: { x: { time: true } },
-    axes: [axis, { ...axis, label: "m", size: 45 }],
+    axes: [axis, { ...axis, label: unit(), size: 45 }],
     series: [{}, ...curves.map((_, k) => ({ stroke: SERIES[k].color, width: 1, spanGaps: true,
                                            points: { show: true, size: 4, fill: SERIES[k].color } }))],
   }, [xs.map((t) => t / 1000), ...ys], chart);
@@ -675,7 +709,7 @@ function setupCoords() {
     pending = setTimeout(async () => {  // at most a few value requests per second
       pending = null;
       const v = await api(`/api/value?${state.view}`, { lon: wrap(e.lngLat.lng), lat: e.lngLat.lat, mode: state.mode }).catch(() => ({}));
-      if (v.value != null && $("#coords").textContent.startsWith(where)) $("#coords").textContent = `${where} · ${v.value.toFixed(3)} m`;
+      if (v.value != null && $("#coords").textContent.startsWith(where)) $("#coords").textContent = `${where} · ${v.value.toFixed(3)} ${unit()}`;
     }, 150);
   });
   map.getCanvas().addEventListener("mouseleave", () => { $("#coords").textContent = ""; });
@@ -786,7 +820,12 @@ const transectSize = chartSize;
 // Hovmöller (the whole mission) on the variable and the mode only
 const lineKey = () => transect.kind === "profile" ? `${state.view}|${state.mode}|${transect.step}`
   : `hovmoller|${state.variable}|${transect.step}`;
-const fillLine = () => (transect.kind === "profile" ? fillTransect : fillHovmoller)();
+const fillLine = () => {  // a variable without 250 m (SWH, wind): the line at 2 km, and no 250 m to choose
+  const select = transect.card.querySelector(".step"), fine = info.looks[state.variable].fine;
+  select.querySelector('option[value="0.25"]').disabled = !fine;
+  if (!fine && transect.step < 1) { transect.step = 2; select.value = "2"; }
+  return (transect.kind === "profile" ? fillTransect : fillHovmoller)();
+};
 
 function setPath(t, points) {
   // the line through the points read (great circles), with longitudes continuous from the first vertex,
@@ -836,7 +875,7 @@ async function fillTransect() {
       const date = (d) => d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
       tip.innerHTML = `<b>${t.distance[i].toFixed(0)} km</b>` + (here.length ? `<table class="${on < 0 ? "" : "picked"}">
         <tr><th></th><th>value</th><th>dd/mm/yyyy</th><th>hh:mm UTC</th><th>pass</th><th>cycle</th></tr>` +
-        here.map((h, n) => `<tr class="${n === on ? "on" : ""}"><td><i style="background:${color(h.k)}"></i></td><td>${h.v.toFixed(3)} m</td>
+        here.map((h, n) => `<tr class="${n === on ? "on" : ""}"><td><i style="background:${color(h.k)}"></i></td><td>${h.v.toFixed(3)} ${unit()}</td>
           <td>${date(h.at)}</td><td>${h.at.toISOString().slice(11, 16)}</td><td>${h.q.pass_id}</td><td>${h.q.cycle}</td></tr>`).join("") +
         "</table>" : "<div>no data</div>");
       const r = u.over.getBoundingClientRect(), x = r.left + u.valToPos(t.distance[i], "x");  // right of the cursor, if it fits
@@ -846,7 +885,7 @@ async function fillTransect() {
     card.plot = new uPlot({
       ...transectSize(card), plugins: [hover], legend: { show: false }, cursor: { points: { size: 6 } },
       scales: { x: { time: false } },
-      axes: [{ ...axis, label: "km", labelSize: 16 }, { ...axis, label: "m", size: 45 }],
+      axes: [{ ...axis, label: "km", labelSize: 16 }, { ...axis, label: unit(), size: 45 }],
       series: [{}, ...t.passages.map((q, k) => ({ stroke: color(k), width: 1.5 }))],
     }, [t.distance, ...t.passages.map((q) => q.value)], chart);
   } catch (e) {
@@ -857,14 +896,14 @@ async function fillTransect() {
 // --- the Hovmöller of a line: distance and time, every passage of the mission at its own time. Like a pcolor
 // with holes: each passage's cell reaches halfway to the next passage at that point, at most 4 px, so the whole
 // mission looks filled and zooming in shows the passages apart.
-const LUT = (() => {  // the map's colors (RdBu), 256 steps, as pixels (RGBA in a little-endian uint32)
-  const rgb = RDBU.map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)));
+function lut(colors) {  // the map's colors, 256 steps, as pixels (RGBA in a little-endian uint32)
+  const rgb = colors.map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)));
   return Uint32Array.from({ length: 256 }, (_, k) => {
     const f = k / 255 * (rgb.length - 1), i = Math.min(Math.floor(f), rgb.length - 2), w = f - i;
     const [r, g, b] = rgb[i].map((c, j) => Math.round(c + (rgb[i + 1][j] - c) * w));
     return ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
   });
-})();
+}
 
 async function fillHovmoller() {
   const { card, points, step } = transect, chart = card.querySelector(".chart"), hint = card.querySelector(".hint");
@@ -906,7 +945,7 @@ async function fillHovmoller() {
     let [lo, hi] = [all[Math.floor(all.length * 0.02)], all[Math.floor(all.length * 0.98)]];
     if (mode !== "none") hi = -(lo = -Math.max(-lo, hi));
     if (!(hi > lo)) [lo, hi] = [lo - 0.1, lo + 0.1];
-    hint.textContent = `${passages(n)} · every ${distanceText(h.step)} · ${mode === "time" ? "minus the mean over time at each point" : "as stored"} · colors ${mode === "none" ? `${lo.toFixed(2)} to ${hi.toFixed(2)}` : `±${hi.toFixed(2)}`} m`;
+    hint.textContent = `${passages(n)} · every ${distanceText(h.step)} · ${mode === "time" ? "minus the mean over time at each point" : "as stored"} · colors ${mode === "none" ? `${lo.toFixed(2)} to ${hi.toFixed(2)}` : `±${hi.toFixed(2)}`} ${unit()}`;
     chart.title = "Drag a box to zoom (the wheel zooms the time), double-click to go back, click a passage to see its date on the map";
     const [t0, t1] = [timeline.full[0] / 1000, timeline.full[1] / 1000], [d0, d1] = [h.distance[0], h.distance.at(-1)];
     const column = (u) => {  // the point under the cursor
@@ -922,6 +961,7 @@ async function fillHovmoller() {
     const cells = { hooks: { draw: [(u) => {
       // painted pixel by pixel into an image, then drawn at once: a line across an ocean is a million cells
       const ctx = u.ctx, dpr = devicePixelRatio || 1, cap = 4 * dpr, min = 0.5 * dpr, { left, top, width, height } = u.bbox;
+      const colors = lut(stops());
       const [W, H] = [Math.round(width), Math.round(height)], img = new ImageData(W, H), px = new Uint32Array(img.data.buffer);
       const w = Math.abs(u.valToPos(h.step, "x", true) - u.valToPos(0, "x", true));
       cols.forEach((c, i) => {
@@ -934,7 +974,7 @@ async function fillHovmoller() {
           const up = Math.max(k < c.length - 1 ? Math.min((y[k] - y[k + 1]) / 2, cap) : cap, min);
           const down = Math.max(k > 0 ? Math.min((y[k - 1] - y[k]) / 2, cap) : cap, min);
           const y0 = Math.max(Math.floor(y[k] - up), 0), y1 = Math.min(Math.ceil(y[k] + down), H);
-          const color = LUT[Math.round(Math.min(Math.max((e.v - lo) / (hi - lo), 0), 1) * 255)];
+          const color = colors[Math.round(Math.min(Math.max((e.v - lo) / (hi - lo), 0), 1) * 255)];
           for (let yy = y0; yy < y1; yy++) px.fill(color, yy * W + x0, yy * W + x1);
         });
       });
@@ -979,7 +1019,7 @@ async function fillHovmoller() {
         if (!e) return;
         const at = new Date(e.t * 1000);
         tip.innerHTML = `<b>${h.distance[column(u)].toFixed(0)} km</b><table><tr><th>value</th><th>dd/mm/yyyy</th>
-          <th>hh:mm UTC</th><th>pass</th><th>cycle</th></tr><tr><td>${e.v.toFixed(3)} m</td><td>${date(at)}</td>
+          <th>hh:mm UTC</th><th>pass</th><th>cycle</th></tr><tr><td>${e.v.toFixed(3)} ${unit()}</td><td>${date(at)}</td>
           <td>${at.toISOString().slice(11, 16)}</td><td>${e.q.pass_id}</td><td>${e.q.cycle}</td></tr></table>`;
         placeTip(tip, u, u.cursor.left, u.cursor.top);
       }],
@@ -1111,7 +1151,13 @@ function setupMenus() {
   $("#tool-projection").onclick = () => setProjection(!document.body.classList.contains("globe"));
   $("#tool-code").onclick = showRegionCode;
   $("#tool-about").onclick = () => $("#about-dialog").showModal();
-  $("#variable").onchange = () => { state.variable = $("#variable").value; state.symmetric = state.variable !== "adt" || state.mode !== "none"; loadData(); };
+  $("#variable").onchange = () => {  // anomalies: a spatial mean subtracted, colors about zero; levels: as stored
+    const was = isAnomaly();
+    state.variable = $("#variable").value;
+    if (isAnomaly() !== was) state.mode = isAnomaly() ? "box" : "none";
+    state.symmetric = isAnomaly() && (state.variable !== "adt" || state.mode !== "none");
+    loadData();
+  };
   for (const [id, key] of [["#mode", "mode"], ["#preset", "preset"]]) {
     $(id).onclick = (e) => {
       if (!e.target.dataset.value) return;
@@ -1213,6 +1259,7 @@ async function main() {
     setupDrawing();
     setupCoords();
     watchDetail();
+    setupCmap();
     setBox({ west: d.west, east: d.east, south: d.south, north: d.north });
     drawOverview();
   });
