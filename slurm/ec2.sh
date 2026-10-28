@@ -16,6 +16,7 @@ cd "${SLURM_SUBMIT_DIR:-.}"
 
 NAME=swot-explorer WAKE=swot-explorer-wake TYPE=${TYPE:-c7i.2xlarge} BUCKET=iuryt-shared-east
 STORE=icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2 CODE=deploy/swot_explorer/app.tar.gz
+TELEMETRY=telemetry/swot-explorer  # where the instance writes the anonymous usage (write only)
 export AWS_REGION=us-east-1
 aws() { pixi exec --spec awscli aws --profile "${DEPLOY_PROFILE:-swot-deploy}" "$@"; }
 instance() {
@@ -29,12 +30,15 @@ send_code() {  # build context (Dockerfile at the root), the boot script, and th
   aws s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
 # what the instance may read: the S3 store, the app package, and the secrets under /swot-explorer/ in SSM
-# (the Arraylake token, put there by the user in the console)
+# (the Arraylake token, put there by the user in the console); and write: the anonymous usage, nothing else
 INSTANCE_POLICY="
     {\"Effect\":\"Allow\",\"Action\":\"s3:GetObject\",\"Resource\":[\"arn:aws:s3:::$BUCKET/$STORE/*\",\"arn:aws:s3:::$BUCKET/$CODE\"]},
     {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::$BUCKET\",
      \"Condition\":{\"StringLike\":{\"s3:prefix\":\"$STORE/*\"}}},
-    {\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameter\",\"Resource\":\"arn:aws:ssm:us-east-1:*:parameter/swot-explorer/*\"}"
+    {\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameter\",\"Resource\":\"arn:aws:ssm:us-east-1:*:parameter/swot-explorer/*\"},
+    {\"Effect\":\"Allow\",\"Action\":\"s3:PutObject\",\"Resource\":\"arn:aws:s3:::$BUCKET/$TELEMETRY/*\"},
+    {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::$BUCKET\",
+     \"Condition\":{\"StringLike\":{\"s3:prefix\":\"$TELEMETRY/*\"}}}"
 role() {  # name, service that assumes it, inline policy
   aws iam create-role --role-name "$1" --assume-role-policy-document \
     "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"$2\"},\"Action\":\"sts:AssumeRole\"}]}"
