@@ -79,3 +79,43 @@ def test_point_series_with_a_small_radius(tmp_path, make_file):
     session.commit("fine grid")
     out = swot_view.point_series(swot_view.open_store(path), 30.1, 2.0, radius=2)
     assert out.sizes["time"] == 1 and 1 <= int(out.pixels[0]) < 5
+
+
+
+def run_snippet(code, path, monkeypatch):
+    """Run a generated snippet on a local store, without showing its figure."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    monkeypatch.setattr(icechunk, "s3_storage", lambda **kw: icechunk.local_filesystem_storage(path))
+    scope = {}
+    exec(code, scope)
+    return scope
+
+
+def test_series_snippet_gives_the_app_series(fine_store_path, monkeypatch):
+    """The time series code users copy gives the app's series, for a 5 km and a 2 km radius, in the swath and near
+    its end (lat 10, where a circle of another size is cut on one side and its mean moves)."""
+    for lat, radius in ((2.0, 5), (2.0, 2), (9.97, 5)):
+        scope = run_snippet(swot_view.series_snippet(30.1, lat, ["ssha_filtered"], radius, target="s3://b/p"),
+                            fine_store_path, monkeypatch)
+        want = swot_view.point_series(swot_view.open_store(fine_store_path), 30.1, lat, radius=radius)
+        np.testing.assert_allclose(scope["series"].values, want.ssha_filtered.values)
+        assert len(want.time) == 2
+
+
+def test_line_snippet_gives_every_passage_or_those_of_the_dates(fine_store_path, monkeypatch):
+    """The line code: the Hovmöller has both passages, each with its own values (cycle*1000 + line 700-800 along
+    lat 4-6) and none off the swath (toward lon 28); the profile of 3-4 Jan has only cycle 3's."""
+    points = [(29.8, 4.0), (29.8, 6.0), (28.0, 6.0)]
+    hov = run_snippet(swot_view.line_snippet(points, ["ssha_filtered"], mean="none", target="s3://b/p"),
+                      fine_store_path, monkeypatch)
+    assert [(p, c) for p, c, _ in hov["passages"]] == [(7, 3), (7, 5)]
+    d, v = hov["distance"], hov["values"]
+    on, off = d <= 222.4, d > 222.4 + 40
+    for row, cycle in zip(v, (3, 5)):
+        assert np.isfinite(row[on]).mean() > 0.9 and np.isnan(row[off]).all()
+        assert cycle * 1000 + 699 <= np.nanmin(row[on]) and np.nanmax(row[on]) <= cycle * 1000 + 801
+    profile = run_snippet(swot_view.line_snippet(points, ["ssha_filtered"], start="2024-01-03", end="2024-01-04T23:59",
+                                                 target="s3://b/p"), fine_store_path, monkeypatch)
+    assert [(p, c) for p, c, _ in profile["passages"]] == [(7, 3)]

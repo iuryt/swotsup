@@ -44,6 +44,15 @@ with sync_playwright() as p:
             page.wait_for_selector(".card .uplot, .card .loading:not(:has(.spinner))", timeout=120_000)
             page.wait_for_timeout(1500)
             shot("series")
+            with page.expect_download() as png:  # the figure, then the code that draws it
+                page.click(".card [data-get=png]")
+            png.value.save_as(f"{prefix}-series-download.png")
+            print(f"{prefix}-series-download.png", flush=True)
+            page.click(".card [data-get=code]")
+            page.wait_for_selector("#code-dialog[open]")
+            page.wait_for_timeout(500)
+            shot("series-code")
+            page.click("#code-dialog .close")
             if page.query_selector(".pin .close"):
                 page.click(".pin .close")
         elif scenario == "line":
@@ -82,6 +91,11 @@ with sync_playwright() as p:
                 shot(f"hovmoller-{mode}")
             page.select_option(".card.transect .hov-mode", "time")
             page.wait_for_timeout(1000)
+            page.click(".card.transect [data-get=code]")
+            page.wait_for_selector("#code-dialog[open]")
+            page.wait_for_timeout(500)
+            shot("hovmoller-code")
+            page.click("#code-dialog .close")
             print("hovmoller tip:", page.inner_text(".tip.floating").replace("\n", " "), flush=True)
             page.mouse.move(box["x"] + box["width"] * 0.25, box["y"] + box["height"] * 0.35)  # a zoom box
             page.mouse.down()

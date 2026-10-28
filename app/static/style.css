@@ -235,3 +235,7 @@ button.icon svg { width: 17px; height: 17px; }
   .legend-title { display: none; }
   .card.sheet:not(.compact), .card.transect { height: calc(100vh - 220px) !important; }
 }
+
+.card .chart-buttons { display: inline-flex; gap: 0; }
+.card .chart-buttons button { padding: 4px 6px; }
+.card .chart-buttons svg { width: 16px; height: 16px; }
