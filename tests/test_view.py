@@ -104,6 +104,17 @@ def test_series_snippet_gives_the_app_series(fine_store_path, monkeypatch):
         assert len(want.time) == 2
 
 
+def test_series_snippet_with_a_finer_product(fine_store_path, monkeypatch):
+    """With a finer product the code draws both series: the second (here the same store, within 3 km) is the app's
+    series within that radius."""
+    fine = dict(target="s3://b/p", names=["ssha_filtered"], radius=3, mask=None, pixel=2.0, label="250 m pixels")
+    scope = run_snippet(swot_view.series_snippet(30.1, 2.0, ["ssha_filtered"], 5, target="s3://b/p", fine=fine),
+                        fine_store_path, monkeypatch)
+    for name, radius in (("series", 5), ("fine", 3)):
+        want = swot_view.point_series(swot_view.open_store(fine_store_path), 30.1, 2.0, radius=radius)
+        np.testing.assert_allclose(scope[name].values, want.ssha_filtered.values)
+
+
 def test_line_snippet_gives_every_passage_or_those_of_the_dates(fine_store_path, monkeypatch):
     """The line code: the Hovmöller has both passages, each with its own values (cycle*1000 + line 700-800 along
     lat 4-6) and none off the swath (toward lon 28); the profile of 3-4 Jan has only cycle 3's."""

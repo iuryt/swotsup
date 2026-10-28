@@ -398,3 +398,55 @@ def test_cells_as_points_where_smaller_than_a_pixel(fine_store_path, monkeypatch
         meshes = total / count
     both = np.isfinite(points) & np.isfinite(meshes)
     assert both.sum() > 200 and np.nanmedian(np.abs(points - meshes)[both]) <= 1.5
+
+
+
+def detail_server(path, monkeypatch, fine=None):
+    """The server with a detail store (`fine`, by default the same store) from zoom 6: what reads 250 m reads it."""
+    monkeypatch.setenv("SWOT_STORE", path)
+    monkeypatch.setenv("SWOT_DETAIL_STORE", fine or path)
+    monkeypatch.setenv("SWOT_DETAIL_PRODUCT", "l3")
+    monkeypatch.setenv("SWOT_DETAIL_ZOOM", "6")
+    sys.modules.pop("server", None)
+    import server
+
+    return server, TestClient(server.app)
+
+
+def test_fine_profile_from_the_detail_store(store_path, fine_store_path, monkeypatch):
+    """A line at 250 m reads the detail store (the 2 km one here, over a coarser base): each passage's nearest pixel
+    within 0.2 km. Along the meridian of a pixel column, only points that close to a line centre (every 0.02 degree)
+    have a value, that line's (data = cycle*1000 + line), with its time; the dates are the view's (cycle 3 only)."""
+    server, c = detail_server(store_path[0], monkeypatch, fine=fine_store_path)
+    t = c.get("/api/transect", params=PASS_7 | dict(points="30.0,2.0;30.0,2.4", step=0.25, mode="none")).json()
+    assert t["step"] == 0.25 and [(q["pass_id"], q["cycle"]) for q in t["passages"]] == [(7, 3)]
+    q, lat = t["passages"][0], np.array(t["lat"])
+    has = np.array([v is not None for v in q["value"]])
+    line = np.round((lat + 10) / 0.02)
+    off = np.abs((lat + 10) / 0.02 - line) * 0.02 * 111.2  # km from the nearest line centre
+    assert has.sum() > 10 and (off[has] <= 0.21).all() and has[off < 0.15].all()
+    np.testing.assert_allclose([v for v in q["value"] if v is not None], 3000 + line[has], atol=0.01)
+    seconds = (np.array([ms for ms in q["line_time"] if ms is not None]) - pd.Timestamp("2024-01-03T05:45:34.074").value // 10**6) / 1000
+    np.testing.assert_allclose(seconds, line[has], atol=0.01)  # one line a second
+
+
+def test_fine_series_reads_the_detail_store_as_point_series(fine_store_path, monkeypatch):
+    """The 250 m series of a point is the mean of the detail store's pixels within the radius, per passage, as
+    point_series: with the same store as detail, the same numbers, also near the swath's end (lat 9.9)."""
+    server, c = detail_server(fine_store_path, monkeypatch)
+    for lat in (2.0, 9.9):
+        q = dict(lon=30.1, lat=lat, variable="ssha_unfiltered", radius=5)
+        base, fine = c.get("/api/series", params=q).json(), c.get("/api/series", params=q | dict(fine=True)).json()
+        assert len(fine["time"]) == 2 and fine["time"] == base["time"]
+        np.testing.assert_allclose(fine["value"], base["value"], atol=1e-4)
+
+
+def test_fine_hovmoller_only_on_short_lines(store_path, fine_store_path, monkeypatch):
+    """The Hovmöller at 250 m reads the detail store (the 2 km one, over a coarser base: both cycles of pass 7, the
+    values of line 600, not pass 20 of the base) on lines up to 300 km."""
+    server, c = detail_server(store_path[0], monkeypatch, fine=fine_store_path)
+    h = c.get("/api/hovmoller", params=dict(points="29.6,2.0;30.4,2.0", step=0.25, variable="ssha_unfiltered")).json()
+    assert [(q["pass_id"], q["cycle"]) for q in h["passages"]] == [(7, 3), (7, 5)]
+    assert [{round(v) for v in q["value"] if v is not None} for q in h["passages"]] == [{3600}, {5600}]
+    long = c.get("/api/hovmoller", params=dict(points="29.6,0.0;29.6,4.0", step=0.25, variable="ssha_unfiltered"))
+    assert long.status_code == 413

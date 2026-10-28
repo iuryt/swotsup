@@ -46,26 +46,29 @@ def make_file(tmp_path):
     return lambda *args, **kw: fake_l3(tmp_path, *args, **kw)
 
 
-@pytest.fixture
-def store_path(tmp_path, make_file):
-    """Passes 7 (ascending) and 20 (descending) over lon 30, in two cycles; pass 150 far east."""
-    path = tmp_path / "store"
+@pytest.fixture(scope="session")
+def store_path(tmp_path_factory):
+    """Passes 7 (ascending) and 20 (descending) over lon 30, in two cycles; pass 150 far east. Built once for all the
+    tests (they only read it)."""
+    files_dir = tmp_path_factory.mktemp("files")
+    path = tmp_path_factory.mktemp("store")
     session = icechunk.Repository.create(icechunk.local_filesystem_storage(str(path))).writable_session("main")
-    files = [make_file(3, 7, day=3), make_file(3, 20, lon0=30.5, day=4), make_file(3, 150, lon0=200, day=5),
-             make_file(5, 7, day=6)]
+    files = [fake_l3(files_dir, 3, 7, day=3), fake_l3(files_dir, 3, 20, lon0=30.5, day=4),
+             fake_l3(files_dir, 3, 150, lon0=200, day=5), fake_l3(files_dir, 5, 7, day=6)]
     for f in files:
         append(session.store, f, along_chunk=50, time_chunk=2)
     session.commit("test")
     return str(path), files
 
 
-@pytest.fixture
-def fine_store_path(tmp_path, make_file):
+@pytest.fixture(scope="session")
+def fine_store_path(tmp_path_factory):
     """Pass 7 on a ~2 km grid like the real one (lines every 0.02 deg from lat -10, 51 pixels over lon 29.5-30.5),
-    cycles 3 (3 Jan) and 5 (6 Jan), data = cycle*1000 + line, one line a second."""
-    path = str(tmp_path / "fine")
+    cycles 3 (3 Jan) and 5 (6 Jan), data = cycle*1000 + line, one line a second. Built once (read only)."""
+    files_dir = tmp_path_factory.mktemp("fine_files")
+    path = str(tmp_path_factory.mktemp("fine"))
     session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
     for cycle, day in ((3, 3), (5, 6)):
-        append(session.store, make_file(cycle, 7, day=day, n_lines=1001, n_pixels=51), along_chunk=100, time_chunk=1)
+        append(session.store, fake_l3(files_dir, cycle, 7, day=day, n_lines=1001, n_pixels=51), along_chunk=100, time_chunk=1)
     session.commit("fine grid")
     return path
