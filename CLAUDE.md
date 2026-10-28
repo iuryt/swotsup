@@ -10,8 +10,9 @@ region and up to 21 days, see the swaths on a globe or a flat map, click a point
 whole-mission time series), draw a line (values along it), and copy the few lines of icechunk + xarray that
 give them the same data.
 
-Products: today the app reads **L3** LR SSH (AVISO/DUACS v3.0 Basic). For the meeting the plan is to show
-**L2** LR SSH only, and add L3 if AVISO allows it: the AVISO License (Issue 20, art. 3.2) forbids
+Products: without configuration the server reads **L2** LR SSH: Expert (2 km) as the base and Unsmoothed (250 m)
+from zoom 9 (`SWOT_STORE` + `SWOT_PRODUCT=l3` for **L3**, AVISO/DUACS v3.0 Basic). For the meeting the plan is to show
+L2 only, and add L3 if AVISO allows it: the AVISO License (Issue 20, art. 3.2) forbids
 redistributing the unmodified product through a web portal without CNES's written authorization; maps,
 series and lines are derived work, the NetCDF download is not (off on the public server, `SWOT_NETCDF=0`).
 Asking AVISO (aviso@altimetry.fr) is pending, on the user's word. Keep the code product-neutral where it is
@@ -147,7 +148,8 @@ truncated: load it again). Several jobs starting `pixi run` right after `pixi in
   server reads it when the token is in SSM Parameter Store (`/swot-explorer/arraylake-token`, put there by the
   user), else the S3 copy. From biomix it was slower than S3 (whole globe, one day: 16 s vs 5 s, 2026-10-20).
 - L2 Expert (2 km, the whole mission, envelopes) on Arraylake: `arraylake:computational-oceanography-udel/swot-l2-lr-ssh-
-  expert-d`, `SWOT_PRODUCT=expert`; with `SWOT_DETAIL_STORE=<the Unsmoothed one>` the map turns into 250 m from zoom 9.
+  expert-d`, the default (`SWOT_PRODUCT=expert`), with the Unsmoothed store as `SWOT_DETAIL_STORE`: the map turns into
+  250 m from zoom 9. The EC2 server reads them with the Arraylake token (`deploy/boot.sh`; without it, the L3 copy on S3).
   12 global days need `SWOT_MAX_PIXELS` ~250e6 (from biomix: read ~50-170 s, build ~30 s).
 - L2 Unsmoothed (250 m) on Arraylake, being uploaded (Oct 2026): `SWOT_STORE=arraylake:computational-oceanography-
   udel/swot-l2-lr-ssh-unsmoothed-d SWOT_PRODUCT=unsmoothed` (needs `pcodec`). The server pins the latest commit at start
