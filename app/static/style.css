@@ -120,7 +120,14 @@ body.globe #overview { display: none; }
   background: rgba(2, 6, 23, 0.9); border: 1px solid var(--orange); color: var(--fg); font-size: 11px; }
 .card .loading { height: 180px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .uplot { font-family: Inter, system-ui, sans-serif; }
-.card.transect { position: fixed; right: var(--gap); bottom: 170px; width: 600px; height: 320px; z-index: 3; }
+.card.transect { position: fixed; right: var(--gap); bottom: 170px; width: 600px; height: 360px; z-index: 3; }
+/* the line's card: the title on its own row, then its controls */
+.card.transect header { flex-wrap: wrap; row-gap: 4px; }
+.card.transect header > div:first-child { flex-basis: 100%; }
+.card.transect header .tools { flex: 1; gap: 6px; }
+.card.transect header .tools .close { margin-left: auto; }
+.card .segmented.kind { margin-right: 4px; }
+.card .segmented.kind button { padding: 2px 8px; font-size: 12px; flex: none; }
 .tip.floating { position: fixed; z-index: 10; display: none; }
 .tip table { border-collapse: collapse; margin-top: 2px; }
 .tip th { color: var(--orange); font-weight: 500; text-align: right; padding: 0 0 1px 10px; }
@@ -218,6 +225,7 @@ button.icon svg { width: 17px; height: 17px; }
   .card.sheet:not(.compact) .hint, .card.transect .hint { display: none; }
   .card.sheet h3, .card.transect h3 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card.sheet header > div, .card.transect header > div { min-width: 0; }
+
   #drawing { top: calc(var(--gap) + 52px); max-width: calc(100% - 2 * var(--gap)); }
 }
 @media (max-height: 500px) {  /* a phone held sideways: the icons in a row, the panels lower and thinner */

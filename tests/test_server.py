@@ -143,3 +143,34 @@ def test_transect_names_its_passages(client):
     at = np.array([np.nan if x is None else x for x in t["passages"][0]["line_time"]])
     line = pd.to_datetime(at[np.isfinite(v)], unit="ms") - pd.Timestamp("2024-01-03 05:45:34.074870274")
     assert np.allclose(line.total_seconds(), v[np.isfinite(v)] - 3000, atol=0.01)
+
+
+def test_hovmoller_has_every_passage_with_its_own_values_and_time(tmp_path, make_file, monkeypatch):
+    """Pass 7 on a ~2 km grid (lines every 0.02 deg from lat -10, pixels lon 29.5-30.5) in cycles 3 (3 Jan) and 5
+    (6 Jan), data = cycle*1000 + line, one line a second. Along lon 29.8 from lat 4 to 6, then to lon 28: each
+    passage has its own values (lines 700-800), the time of its own line at the middle, and none off the swath."""
+    import icechunk
+    from swot_cloud.store import append
+
+    path = str(tmp_path / "fine")
+    session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
+    for cycle, day in ((3, 3), (5, 6)):
+        append(session.store, make_file(cycle, 7, day=day, n_lines=1001, n_pixels=51), along_chunk=100, time_chunk=1)
+    session.commit("fine grid")
+    monkeypatch.setenv("SWOT_STORE", path)
+    sys.modules.pop("server", None)
+    import server
+
+    h = TestClient(server.app).get("/api/hovmoller", params=dict(points="29.8,4;29.8,6;28,6", variable="ssha_unfiltered")).json()
+    assert [(q["pass_id"], q["cycle"]) for q in h["passages"]] == [(7, 3), (7, 5)]
+    distance = np.array(h["distance"])
+    for q, cycle, day in zip(h["passages"], (3, 5), ("2024-01-03", "2024-01-06")):
+        v = np.full(len(distance), np.nan)
+        v[q["first"]:q["first"] + len(q["value"])] = [np.nan if x is None else x for x in q["value"]]
+        north = distance <= 222.4  # the first segment, on the swath
+        assert np.isfinite(v[north]).mean() > 0.9
+        assert np.nanmin(v[north]) >= cycle * 1000 + 699 and np.nanmax(v[north]) <= cycle * 1000 + 801
+        assert np.isnan(v[distance > 222.4 + 40]).all()  # toward lon 28, off the swath
+        middle = np.nanmedian(v) - cycle * 1000  # the line at the middle of the points hit
+        t = pd.to_datetime(q["time"], unit="ms") - pd.Timestamp(f"{day} 05:45:34.074870274")
+        assert abs(t.total_seconds() - middle) <= 3
