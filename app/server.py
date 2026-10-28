@@ -35,28 +35,34 @@ matplotlib.use("agg")
 zarr.config.set({"async.concurrency": 256})
 MAX_DAYS = 21
 # pixels in one view (passages x lines x pixels across): 60 M is ~2 days of the whole globe in L3, ~4 GB in memory
-MAX_PIXELS = float(os.environ.get("SWOT_MAX_PIXELS", 60e6))
 MAX_BYTES = float(os.environ.get("SWOT_CACHE_GB", 4)) * 1e9  # loaded views kept in memory, beyond the newest
 # the product the store holds (SWOT_PRODUCT): its name, variables (label, the arrays summed) and opening view
 PRODUCTS = {
-    "l3": dict(label="L3 LR SSH v3.0", variables={
+    "l3": dict(label="L3 LR SSH v3.0", credit="AVISO/DUACS, CNES", variables={
         "ssha_unfiltered": ("SSHA, unfiltered", ["ssha_unfiltered"]),
         "ssha_filtered": ("SSHA, filtered", ["ssha_filtered"]),
         "adt": ("ADT = SSHA + MDT", ["ssha_filtered", "mdt"])},
         # the whole globe on one day (kept in memory)
         default=dict(west=-180, east=180, south=-90, north=90, start="2024-11-02", days=1)),
     # the L2 product on the same 2 km grid as L3 (the whole mission, with envelopes)
-    "expert": dict(label="L2 LR SSH Expert, 2 km", mask="ssha_karin_2_qual", variables={
+    "expert": dict(label="L2 LR SSH Expert, 2 km", credit="NASA/JPL, CNES", mask="ssha_karin_2_qual",
+                   max_pixels=250e6, variables={
         "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
         "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
         default=dict(west=-180, east=180, south=-90, north=90, start="2026-10-01", days=1)),
     # 250 m, 64 times the pixels of L3: small regions only; being uploaded, so the passages with data only
-    "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", partial=True, mask="ssha_karin_2_qual", variables={
+    "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", credit="NASA/JPL, CNES", partial=True,
+                       mask="ssha_karin_2_qual", variables={
         "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
         "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
         default=None),  # the latest day with data, around a passage (below)
 }
-PRODUCT = PRODUCTS[os.environ.get("SWOT_PRODUCT", "l3")]
+# without configuration: L2 Expert, with L2 Unsmoothed from a zoom on (detail, below); a store named (SWOT_STORE)
+# is L3 unless SWOT_PRODUCT says otherwise
+L2 = "arraylake:computational-oceanography-udel/swot-l2-lr-ssh-"
+CONFIGURED = "SWOT_STORE" in os.environ
+PRODUCT = PRODUCTS[os.environ.get("SWOT_PRODUCT", "l3" if CONFIGURED else "expert")]
+MAX_PIXELS = float(os.environ.get("SWOT_MAX_PIXELS", PRODUCT.get("max_pixels", 60e6)))
 VARIABLES = PRODUCT["variables"]
 # L2: values kept only where their quality flag is 0 (over land and ice they reach kilometres; until #3 lets the
 # user choose how strict)
@@ -99,12 +105,12 @@ def open_product(target, partial=False, geometry=None):
     return SimpleNamespace(ds=ds, index=index, geometry=geometry, commit=commit)
 
 
-STORE = os.environ.get("SWOT_STORE", swot_view.STORE)
+STORE = os.environ.get("SWOT_STORE", L2 + "expert-d")
 base = open_product(STORE, PRODUCT.get("partial"))
 ds, index, geometry, COMMIT = base.ds, base.index, base.geometry, base.commit
 # a finer product over the same passages, drawn over the map from a zoom on (SWOT_DETAIL_STORE: e.g. L2 Unsmoothed
 # at 250 m over L2 Expert at 2 km); read tile by tile, a chunk at a time, never as a whole view
-DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE")
+DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE", None if CONFIGURED else L2 + "unsmoothed-d")
 DETAIL_PRODUCT = PRODUCTS[os.environ.get("SWOT_DETAIL_PRODUCT", "unsmoothed")]
 DETAIL_ZOOM = int(os.environ.get("SWOT_DETAIL_ZOOM", 9))
 detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial"), geometry) if DETAIL_STORE else None
@@ -473,7 +479,7 @@ def info():
     return dict(first=str(pd.Timestamp(ds.time.values[0])), last=str(pd.Timestamp(ds.time.values[-1])),
                 passages=ds.sizes["time"], passes=ds.sizes["pass_number"], max_days=MAX_DAYS, default=DEFAULT,
                 variables={k: v[0] for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
-                netcdf=NETCDF, product=PRODUCT["label"],
+                netcdf=NETCDF, product=PRODUCT["label"], credit=PRODUCT["credit"],
                 detail=None if detail is None else dict(zoom=DETAIL_ZOOM, product=DETAIL_PRODUCT["label"],
                                                         commit=detail.commit.id[:8]),
                 commit=dict(id=COMMIT.id[:8], time=str(pd.Timestamp(COMMIT.written_at).tz_convert(None)), message=COMMIT.message))
