@@ -65,3 +65,5 @@ mutate app/server.py 's/np.timedelta64(MAX_DAYS - 1, "D")/np.timedelta64(MAX_DAY
 mutate app/server.py 's/        self.sum\["passage"\] += add((v - per\[which\])\[inside\])/        self.sum["passage"] += add((v - per[0])[inside])/' "overview subtracts the median of the first passage from all"
 mutate app/server.py 's/        row = np.floor((y + WORLD \/ 2) \/ WORLD \* size).astype(int)/        row = np.floor((WORLD \/ 2 - y) \/ WORLD * size).astype(int)/' "overview rasters summed upside down"
 mutate app/server.py 's/    return dict(done=o.done, total=len(o.times),/    return dict(done=0, total=len(o.times),/' "progress stays at zero"
+mutate app/server.py 's/            except OSError as e:/            except ZeroDivisionError as e:/' "an overview that cannot be kept never gets ready"
+mutate app/server.py 's/                o.error = repr(e)/                o.error = None/' "a failed overview answers as if it were read"
