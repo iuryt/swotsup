@@ -65,9 +65,11 @@
     </div>
     <label class="check"><input type="checkbox" id="symmetric"> Symmetric about zero</label>
     <div class="grid2">
-      <label>Min (m)<input type="number" id="vmin" step="0.01"></label>
-      <label>Max (m)<input type="number" id="vmax" step="0.01"></label>
+      <label><span id="vmin-label">Min (m)</span><input type="number" id="vmin" step="0.01"></label>
+      <label><span id="vmax-label">Max (m)</span><input type="number" id="vmax" step="0.01"></label>
     </div>
+    <div class="label">Colormap</div>
+    <div id="cmap"><button class="cmap-current ghost" title="The colors of the map"></button><div class="cmap-list hidden"></div></div>
     <div class="label">Basemap</div>
     <select id="basemap"></select>
   </section>
@@ -78,7 +80,7 @@
     <div id="progress" class="hidden"><div class="progress-text"></div><div class="progress-bar"><i></i></div>
       <div class="progress-count"></div></div>
     <div id="colorbar"></div>
-    <div class="ticks"><span id="vmin-text"></span><span>0</span><span id="vmax-text"></span></div>
+    <div class="ticks"><span id="vmin-text"></span><span id="zero-text">0</span><span id="vmax-text"></span></div>
     <div class="hint" id="percentiles"></div>
     <div class="stats" id="stats"></div>
   </section>

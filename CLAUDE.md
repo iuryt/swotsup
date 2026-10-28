@@ -52,7 +52,12 @@ be resumed here (`claude --resume`).
     fetches one array and passage at a time, all at once: a vectorized read of a subset fetches its chunks nearly one
     by one (the Gulf Stream, 12 days of Expert: ~35 s -> 1.6 s from biomix). From AWS the stores read ~10x faster
     than from biomix (Unsmoothed, 2 days of the Gulf Stream, 644 MB: 0.6 s on a c7i.2xlarge in us-east-1);
-  - L2 products keep values only where `ssha_karin_2_qual == 0` (over land and ice they reach kilometres);
+  - variables (`Variable`: arrays summed, quality flag, dB or not, default colormap, kind, units): L2 SSHA (+ xover
+    or not), sigma0 (in dB), SWH and wind speed, each kept only where its own flag is 0 (over land and ice SSHA reaches
+    kilometres); only SSHA and sigma0 have 250 m (Unsmoothed). Colormaps (`COLORMAPS`, matplotlib and cmocean): each
+    variable has its own (SSHA RdBu_r, sigma0 cmo.gray, SWH cmo.dense, wind cmo.speed), and the Display menu offers
+    them all (remembered per variable in the browser; tiles take `cmap`). "level" variables open with nothing
+    subtracted and colors not about zero;
   - `/api/timeline` (days with passages over the region, from the per-pass geometry, no data read),
     `/api/load`, `/api/value` (at a click: the value and its passages, with the time of their nearest line),
     `/api/series`, `/api/transect` (along a drawn polyline: points every 2 km on great circles, each passage's
