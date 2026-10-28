@@ -159,6 +159,16 @@ def continuous(lon, center):
     return lon + 360 * np.round((center - np.median(lon)) / 360)
 
 
+def continuous_all(lon, center):
+    """`continuous` for each passage of a (passages, lines, pixels) array (lines without positions stay NaN)."""
+    out = np.full(lon.shape, np.nan)
+    for i in range(len(lon)):
+        ok = np.isfinite(lon[i]).all(1)
+        if ok.sum() > 1:
+            out[i][ok] = continuous(lon[i][ok], center)
+    return out
+
+
 def across(a):
     """Positions missing within a line (the nadir gap of L2 Unsmoothed, its edge pixels) interpolated across it from
     the nearest ones on each side: the grid is regular across, and a mesh needs every corner (the values there stay
@@ -188,12 +198,10 @@ def across(a):
 
 def coarse(a, k, mean=True):
     """A (passages, lines, pixels) array k x k times coarser: block means (NaN only where a whole block is), or for
-    positions the pixel where datashader draws each block in place: its last line (along the lines, datashader draws
-    a value between the previous position and its own: block centres put the blocks ~half a block, 16 km, north)
-    and its middle pixel (across, it draws around the position)."""
+    positions each block's centre pixel."""
     n, rows, cols = a.shape
     if not mean:
-        return a[:, k - 1::k, k // 2::k][:, :rows // k, :cols // k]
+        return a[:, k // 2::k, k // 2::k][:, :rows // k, :cols // k]
     b = a[:, :rows // k * k, :cols // k * k].reshape(n, rows // k, k, cols // k, k)
     with warnings.catch_warnings(action="ignore"):
         return np.nanmean(b, axis=(2, 4)).astype(a.dtype)
@@ -220,9 +228,10 @@ def build_meshes(values, lon, lat, center):
 
 class Loaded:
     """One subset in memory: the passages over a box in a time window, ready to draw. The values are kept once, as
-    float32; the modes subtract one number (the box's mean, or each passage's) when drawn. Coarser copies (4 x 4 and
-    16 x 16 block means) draw the views where a screen pixel holds many of the product's: the whole globe at 2 km is
-    hundreds of millions of cells."""
+    float32; the modes subtract one number (the box's median, or each passage's) when drawn. Where a screen pixel
+    holds many of the product's cells (the whole globe at 2 km is hundreds of millions), coarser copies (4 x 4 and
+    16 x 16 block means at their centres) are drawn as points, all passages in one go: as meshes, each passage's
+    would be its own call, and a world tile would take seconds."""
 
     LEVELS = (1, 4, 16)
 
@@ -251,18 +260,22 @@ class Loaded:
                           "passage": np.array([np.nanmedian(v) for v in per], "float32")}
         self.raw = values
         lon, lat = across(lon), across(lat)  # meshes need every corner; the nadir gap's are interpolated
-        self.levels = {}
-        for k in self.LEVELS:
-            if k > 1 and min(values.shape[1:]) < 2 * k:
+        self.levels = {1: (values, build_meshes(values, lon, lat, center))}
+        self.points = {}  # level -> x, y, value and passage of each block with data
+        for k in self.LEVELS[1:]:
+            if min(values.shape[1:]) < 2 * k:
                 continue
-            v = values if k == 1 else coarse(values, k)
-            self.levels[k] = (v, build_meshes(v, *((lon, lat) if k == 1 else (coarse(lon, k, False), coarse(lat, k, False))),
-                                             center))
-        # the product's spacing on the map (median, mercator m): which level a view needs
-        widths = [np.nanmedian(np.hypot(np.diff(m[2], axis=1), np.diff(m[3], axis=1))) for m in self.levels[1][1][:50]]
+            v = coarse(values, k)
+            x, y = mercator(continuous_all(coarse(lon, k, False), center), coarse(lat, k, False))
+            ok = np.isfinite(v) & np.isfinite(x) & np.isfinite(y)
+            self.points[k] = (x[ok], y[ok], v[ok], np.nonzero(ok)[0].astype("int32"))
+        # the product's spacing on the ground (median, m; mercator stretches it by 1 / cos(lat)): which level a
+        # view needs, at the view's latitude
+        widths = [np.nanmedian(np.hypot(np.diff(m[2], axis=1), np.diff(m[3], axis=1))
+                               * np.cos(2 * np.arctan(np.exp(m[3] / R)) - np.pi / 2)[:, 1:]) for m in self.levels[1][1][:50]]
         self.spacing = float(np.nanmedian(widths)) if widths else 2000.0
-        self.nbytes = (self.sub.nbytes + sum(v.nbytes + sum(m[2].nbytes + m[3].nbytes for m in meshes)
-                                             for v, meshes in self.levels.values()))
+        self.nbytes = (self.sub.nbytes + values.nbytes + sum(m[2].nbytes + m[3].nbytes for m in self.levels[1][1])
+                       + sum(a.nbytes for p in self.points.values() for a in p))
         # colors: quantiles of each mode from the sample (sorting all would take most of a load)
         ok = np.isfinite(sample)
         passage = idx[ok] // max(values[0].size if len(values) else 1, 1)
@@ -272,21 +285,18 @@ class Loaded:
             v = v[np.isfinite(v)]
             self.quantiles[mode] = np.quantile(v, np.linspace(0, 1, 1001)).round(4).tolist() if len(v) else []
 
-    def value(self, mode, i, level=1):
-        """A passage's values at a level, minus what the mode subtracts."""
-        return self.levels[level][0][i] - self.shift[mode][i]
+    def value(self, mode, i):
+        """A passage's values, minus what the mode subtracts."""
+        return self.raw[i] - self.shift[mode][i]
 
     @property
     def pixels(self):
         return int(np.isfinite(self.raw).sum())
 
-    def rasters(self, mode, x_range, y_range, width, height, finest=False):
-        """Each mesh in view on a width x height grid: (passage, first line of the block, its x and y, raster). At
-        the coarsest level whose cells are still smaller than a pixel of the grid, unless `finest`."""
-        pixel = (x_range[1] - x_range[0]) / width
-        level = 1 if finest else max(k for k in self.levels if k == 1 or k * self.spacing <= pixel)
+    def rasters(self, mode, x_range, y_range, width, height):
+        """Each mesh in view on a width x height grid: (passage, first line of the block, its x and y, raster)."""
         canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
-        for i, rows, x, y, line_y0, line_y1, (x0, x1, y0, y1) in self.levels[level][1]:
+        for i, rows, x, y, line_y0, line_y1, (x0, x1, y0, y1) in self.levels[1][1]:
             # lines run south to north: the first reaching the view from the south and the last from the north
             # (a small view can fall between two lines: then these two are the cell around it)
             above, below = np.flatnonzero(line_y1 >= y_range[0]), np.flatnonzero(line_y0 <= y_range[1])
@@ -294,7 +304,7 @@ class Loaded:
                 continue
             a, b = above[0], below[-1]
             block = slice(max(min(a, b) - 1, 0), max(a, b) + 2)  # one more line each side: whole cells
-            v = self.value(mode, i, level)[rows][block]
+            v = self.value(mode, i)[rows][block]
             for shift in (-WORLD, 0, WORLD):  # the map repeats the world east and west
                 if x1 + shift < x_range[0] or x0 + shift > x_range[1]:
                     continue
@@ -303,10 +313,24 @@ class Loaded:
                                     coords={"x": (("along", "cross"), xs), "y": (("along", "cross"), ys)})
                 yield i, rows.start + block.start, xs, ys, canvas.quadmesh(mesh, x="x", y="y").values
 
-    def mean_on(self, mode, x_range, y_range, width, height, finest=False):
-        """Mean of the passages on a width x height grid, NaN where none."""
+    def mean_on(self, mode, x_range, y_range, width, height):
+        """Mean of the passages on a width x height grid, NaN where none: from the coarsest level whose blocks are
+        still smaller than a pixel of the grid (as points), or the cells themselves (as meshes)."""
+        # a pixel on the ground at the view's middle latitude (on a world view, most of it is far wider)
+        pixel = (x_range[1] - x_range[0]) / width * np.cos(2 * np.arctan(np.exp(np.mean(y_range) / R)) - np.pi / 2)
+        level = max([k for k in self.points if k * self.spacing <= pixel], default=1)
+        if level > 1:
+            x, y, v, i = self.points[level]
+            v = v - self.shift[mode][i]
+            xs, ys, vs = [], [], []
+            for shift in (-WORLD, 0, WORLD):  # the map repeats the world east and west
+                keep = (x + shift >= x_range[0]) & (x + shift <= x_range[1]) & (y >= y_range[0]) & (y <= y_range[1])
+                xs.append(x[keep] + shift), ys.append(y[keep]), vs.append(v[keep])
+            canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+            frame = pd.DataFrame({"x": np.concatenate(xs), "y": np.concatenate(ys), "v": np.concatenate(vs)})
+            return canvas.points(frame, "x", "y", agg=dsh.mean("v")).values
         total, count = np.zeros((height, width)), np.zeros((height, width))
-        for *_, m in self.rasters(mode, x_range, y_range, width, height, finest):
+        for *_, m in self.rasters(mode, x_range, y_range, width, height):
             total, count = total + np.where(np.isfinite(m), m, 0), count + np.isfinite(m)
         with np.errstate(invalid="ignore"):
             return total / count
@@ -335,7 +359,7 @@ class Loaded:
     def passages_at(self, mode, x, y):
         """The passages with data on the ~1 km cell at (x, y): (value, passage, the line nearest the point)."""
         found = []
-        for i, first, xs, ys, m in self.rasters(mode, (x - 500, x + 500), (y - 500, y + 500), 1, 1, finest=True):
+        for i, first, xs, ys, m in self.rasters(mode, (x - 500, x + 500), (y - 500, y + 500), 1, 1):
             if np.isfinite(m[0, 0]):
                 found.append((m[0, 0], i, first + np.unravel_index(np.nanargmin((xs - x) ** 2 + (ys - y) ** 2), xs.shape)[0]))
         return found

@@ -237,9 +237,9 @@ def test_detail_tiles_take_the_base_colors(store_path, monkeypatch):
 
 
 def test_coarse_levels_draw_what_the_full_data_draws(fine_store_path, monkeypatch):
-    """A view of the world (one tile pixel ~40 km over 2 km cells) is drawn from 16 x 16 block means: each block at
-    its centre, so the tile's means match those of every cell (data = cycle*1000 + line: a block put at its corner
-    would be ~8 lines off); a click still reads the cells themselves."""
+    """A view of the world (one tile pixel ~40 km over 2 km cells) is drawn from 16 x 16 block means as points: each
+    block at its centre, so the tile's means are those of the cells (data = cycle*1000 + line: a block put at its
+    corner would be ~8 lines off); a click reads the cells themselves."""
     monkeypatch.setenv("SWOT_STORE", fine_store_path)
     sys.modules.pop("server", None)
     import server
@@ -248,17 +248,16 @@ def test_coarse_levels_draw_what_the_full_data_draws(fine_store_path, monkeypatc
     view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
     c.get("/api/load", params=view)
     data = server.load(**view)[0]
-    assert 16 in data.levels
+    assert 16 in data.points
     xr_, yr_ = server.tile_ranges(2, 2, 1)  # lon 0-90, lat 0-67: the swath from 0 to 10 N
     # the data grow linearly along the track (one per line, lines every 0.02 deg from -10): a block's mean is the
     # value at its centre, so each pixel should be, on average, the value at its own latitude
     y = yr_[1] - (np.arange(256) + 0.5) * (yr_[1] - yr_[0]) / 256  # pixel rows from north to south
     lat = np.rad2deg(2 * np.arctan(np.exp(y / server.R)) - np.pi / 2)
     expected = (3000 + (lat + 10) / 0.02)[::-1, None]  # rows south to north, as mean_on gives them
-    for finest in (False, True):
-        m = data.mean_on("none", xr_, yr_, 256, 256, finest=finest)
-        ok = np.isfinite(m)
-        assert ok.sum() >= 5 and abs(np.mean((m - expected)[ok])) < 3
+    m = data.mean_on("none", xr_, yr_, 256, 256)
+    ok = np.isfinite(m)
+    assert ok.sum() >= 5 and abs(np.mean((m - expected)[ok])) < 3
     # a click reads the cells themselves: the value of its latitude's line (603.5 at 2.07 N), not a block's mean
     assert abs(data.passages_at("none", *server.mercator(30.1, 2.07))[0][0] - (3000 + 12.07 / 0.02)) <= 1.5
 
@@ -297,3 +296,20 @@ def test_one_absurd_pixel_does_not_move_the_colors(client):
     data = server.Loaded(sub, ["v"], 29, 31)
     for mode in ("box", "passage"):
         assert np.nanmedian(np.abs(data.value(mode, 0))) < 0.01
+
+
+def test_level_follows_the_pixel_on_the_ground(fine_store_path, monkeypatch):
+    """The level a view is drawn from compares a screen pixel with the cells on the ground at the view's latitude:
+    the world tile takes the 16 x 16 blocks (35 km), a zoom 6 tile (~2.4 km pixels over 2.2 km cells) the cells."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
+    data = server.load(**view)[0]
+    assert 1800 < data.spacing < 2600  # 51 pixels over ~112 km
+    drawn = []
+    monkeypatch.setattr(server.dsh.Canvas, "points", lambda self, frame, *a, **k: drawn.append(len(frame)) or server.xr.DataArray(np.full((self.plot_height, self.plot_width), np.nan)))
+    data.mean_on("none", *server.tile_ranges(0, 0, 0), 256, 256)  # the world: ~156 km pixels at its middle (0 N)
+    data.mean_on("none", *server.tile_ranges(6, 37, 31), 256, 256)
+    assert len(drawn) == 1 and 0 < drawn[0] <= len(data.points[16][0])  # the world tile only, from the 16 x 16 blocks
