@@ -25,6 +25,7 @@ const deg = (v, neg, pos, digits = 2) => `${+Math.abs(v).toFixed(digits)}°${v <
 const lonText = (lon, digits) => deg(wrap(lon), "W", "E", digits);
 const latText = (lat, digits) => deg(lat, "S", "N", digits);
 const dayText = (t) => new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+const passages = (n) => `${n} passage${n === 1 ? "" : "s"}`;
 const isoDay = (t) => new Date(t).toISOString().slice(0, 10);
 const rangeText = (a, b) => {  // two days, without repeating their month and year: 4–24 Nov 2024, 28 Nov – 3 Dec 2024
   const [x, y] = [dayText(a).split(" "), dayText(b).split(" ")];
@@ -88,7 +89,7 @@ function setColors() {
   document.querySelectorAll("#mode button").forEach((b) => b.classList.toggle("active", b.dataset.value === state.mode));
   $("#symmetric").checked = state.symmetric;
   if (!state.data) return;
-  if (transect && transect.key !== `${state.view}|${state.mode}|${transect.step}`) fillTransect();
+  if (transect && transect.key !== lineKey()) fillLine();
   const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}`;
   const source = map.getSource("swot");
   if (source) source.setTiles([url]);
@@ -103,6 +104,7 @@ function setDates(start, days) {
   clearTimeout(nudge.timer);  // a drag after the buttons wins over what they left pending
   Object.assign(state, { start, days });
   timeline.setBand(start, days);
+  if (transect?.kind === "hovmoller") transect.card.plot?.redraw();  // its band of the selected dates
   pointCard?.plot?.redraw();  // its shaded band
   loadData();
 }
@@ -523,7 +525,7 @@ async function fillSeries(card, lngLat, radius) {
   try {
     const s = await api("/api/series", { lon: wrap(lngLat.lng), lat: lngLat.lat, variable: state.variable, radius });
     hint.textContent = `mean within ${radius} km · ${s.time.length} passages · click one to see that date on the map`;
-    if (card.classList.contains("sheet")) card.querySelector("h3").textContent = `${latText(lngLat.lat)} ${lonText(lngLat.lng)} · ${s.time.length} passages`;
+    if (card.classList.contains("sheet")) card.querySelector("h3").textContent = `${latText(lngLat.lat)} ${lonText(lngLat.lng)} · ${passages(s.time.length)}`;
     chart.innerHTML = "";
     if (!s.time.length) { chart.innerHTML = `<div class="loading">No passage here (outside the swaths, or in the nadir gap).</div>`; return; }
     const band = { hooks: { drawClear: [(u) => {  // the selected dates
@@ -642,30 +644,59 @@ function openTransect(points) {
   const card = document.createElement("section");
   card.className = "card transect";
   card.innerHTML = `<header><div><h3>Along the line</h3><p class="hint"><span class="spinner"></span></p></div>
-      <div class="tools"><select title="Distance between the points of the line">
+      <div class="tools"><div class="segmented kind"><button data-v="profile" class="active"
+          title="The values along the line on the selected dates">Profile</button><button data-v="hovmoller"
+          title="Distance and time: every passage of the mission along the line">Hovmöller</button></div>
+        <select class="hov-mode hidden" title="What is subtracted from the values">
+          <option value="time">minus time mean</option><option value="none">as stored</option></select>
+        <select class="step" title="Distance between the points of the line">
         ${[1, 2, 5, 10].map((k) => `<option value="${k}" ${k === 2 ? "selected" : ""}>every ${k} km</option>`).join("")}</select>
         <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
     <div class="chart"></div>`;
   document.body.appendChild(card);
   if (narrow()) grab(card);
   lucide.createIcons();
-  transect = { points, step: 2, card };
+  transect = { points, step: 2, card, kind: "profile", hovMode: "time" };
   updateSheets();
   card.querySelector(".close").onclick = () => {
     card.tip?.remove(); card.remove(); transect = null; showLine([]); showProbe(null); updateSheets();
   };
-  card.querySelector("select").onchange = (e) => { transect.step = Number(e.target.value); fillTransect(); };
+  card.querySelector(".step").onchange = (e) => { transect.step = Number(e.target.value); fillLine(); };
+  card.querySelector(".hov-mode").onchange = (e) => { transect.hovMode = e.target.value; fillHovmoller(); };
+  card.querySelector(".kind").onclick = (e) => {
+    if (!e.target.dataset.v || e.target.dataset.v === transect.kind) return;
+    transect.kind = e.target.dataset.v;
+    card.querySelectorAll(".kind button").forEach((b) => b.classList.toggle("active", b === e.target));
+    card.querySelector(".hov-mode").classList.toggle("hidden", transect.kind !== "hovmoller");
+    // time against distance needs room: a taller card (a tall sheet on a small screen)
+    if (transect.kind === "hovmoller") narrow() ? card.classList.add("tall") : (card.style.height = `${Math.max(card.offsetHeight, 520)}px`);
+    else card.querySelector(".chart").title = "";
+    fillLine();
+  };
   dragByHeader(card);
   new ResizeObserver(() => card.plot?.setSize(transectSize(card))).observe(card);
   showLine(points);
-  fillTransect();
+  fillLine();
 }
 
 const transectSize = chartSize;
+// what the line's card shows depends on: the profile on the view (box, dates, variable) and the mode; the
+// Hovmöller (the whole mission) on the variable and the mode only
+const lineKey = () => transect.kind === "profile" ? `${state.view}|${state.mode}|${transect.step}`
+  : `hovmoller|${state.variable}|${transect.step}`;
+const fillLine = () => (transect.kind === "profile" ? fillTransect : fillHovmoller)();
+
+function setPath(t, points) {
+  // the line through the points read (great circles), with longitudes continuous from the first vertex,
+  // so it and the marker are on the same copy of the world as the drawing
+  let prev = points[0][0];
+  transect.path = t.lon.map((x, i) => { prev = x + 360 * Math.round((prev - x) / 360); return [prev, t.lat[i]]; });
+  showLine(transect.path);
+}
 
 async function fillTransect() {
   const { card, points, step } = transect, chart = card.querySelector(".chart"), hint = card.querySelector(".hint");
-  transect.key = `${state.view}|${state.mode}|${step}`;
+  transect.key = lineKey();
   card.plot?.destroy();
   card.plot = null;
   card.tip?.remove();
@@ -673,14 +704,10 @@ async function fillTransect() {
   try {
     const t = await api(`/api/transect?${state.view}`, { mode: state.mode, step,
       points: points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";") });
-    // the line through the points read (great circles), with longitudes continuous from the first vertex,
-    // so it and the marker are on the same copy of the world as the drawing
-    let prev = points[0][0];
-    transect.path = t.lon.map((x, i) => { prev = x + 360 * Math.round((prev - x) / 360); return [prev, t.lat[i]]; });
-    showLine(transect.path);
+    setPath(t, points);
     card.querySelector("h3").textContent = `Along the line · ${t.distance.at(-1).toFixed(0)} km · ${$("#legend-variable").textContent}`;
-    hint.textContent = `${t.passages.length} passages · nearest pixel of each, every ${t.step} km`;
-    if (narrow()) card.querySelector("h3").textContent = `Line · ${t.distance.at(-1).toFixed(0)} km · ${t.passages.length} passages`;
+    hint.textContent = `${passages(t.passages.length)} · nearest pixel of each, every ${t.step} km`;
+    if (narrow()) card.querySelector("h3").textContent = `Line · ${t.distance.at(-1).toFixed(0)} km · ${passages(t.passages.length)}`;
     chart.innerHTML = "";
     if (!t.passages.length) {
       chart.innerHTML = `<div class="loading">No passage crosses the line on the selected dates.</div>`;
@@ -718,6 +745,153 @@ async function fillTransect() {
       axes: [{ ...axis, label: "km", labelSize: 16 }, { ...axis, label: "m", size: 45 }],
       series: [{}, ...t.passages.map((q, k) => ({ stroke: color(k), width: 1.5 }))],
     }, [t.distance, ...t.passages.map((q) => q.value)], chart);
+  } catch (e) {
+    chart.innerHTML = `<div class="loading">${e.message}</div>`;
+  }
+}
+
+// --- the Hovmöller of a line: distance and time, every passage of the mission at its own time. Like a pcolor
+// with holes: each passage's cell reaches halfway to the next passage at that point, at most 4 px, so the whole
+// mission looks filled and zooming in shows the passages apart.
+const LUT = (() => {  // the map's colors (RdBu), 256 steps, as pixels (RGBA in a little-endian uint32)
+  const rgb = RDBU.map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)));
+  return Uint32Array.from({ length: 256 }, (_, k) => {
+    const f = k / 255 * (rgb.length - 1), i = Math.min(Math.floor(f), rgb.length - 2), w = f - i;
+    const [r, g, b] = rgb[i].map((c, j) => Math.round(c + (rgb[i + 1][j] - c) * w));
+    return ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
+  });
+})();
+
+async function fillHovmoller() {
+  const { card, points, step } = transect, chart = card.querySelector(".chart"), hint = card.querySelector(".hint");
+  transect.key = lineKey();
+  card.plot?.destroy();
+  card.plot = null;
+  card.tip?.remove();
+  chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the whole mission along the line…
+    (a line across an ocean can take some 10-20 s)</div>`;
+  try {
+    // the values as stored, kept: changing what is subtracted does not read them again
+    const key = transect.key;
+    const h = transect.hov?.key === key ? transect.hov.h : await api("/api/hovmoller", { variable: state.variable, step,
+      points: points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";") });
+    if (transect?.card !== card || transect.kind !== "hovmoller") return;  // closed or switched meanwhile
+    transect.hov = { key, h };
+    setPath(h, points);
+    const km = h.distance.at(-1).toFixed(0), n = h.passages.length;
+    card.querySelector("h3").textContent = narrow() ? `Hovmöller · ${km} km · ${passages(n)}`
+      : `Along the line · ${km} km · whole mission · ${info.variables[state.variable]}`;
+    chart.innerHTML = "";
+    if (!n) { chart.innerHTML = `<div class="loading">No passage crosses the line.</div>`; return; }
+    // one column per point: the passages there in time order, minus (by default) the mean over time at that
+    // point, so what stays (the mean topography of the surface) leaves and what changes shows
+    const mode = transect.hovMode, avg = (v) => v.reduce((a, b) => a + b, 0) / v.length;
+    const cols = h.distance.map(() => []);
+    for (const q of h.passages) q.value.forEach((v, k) => { if (v != null) cols[q.first + k].push({ t: q.time / 1000, v, q }); });
+    // a point where few passages have data (a swath's edge, a coast) has no mean over time worth the name:
+    // it stays empty rather than a column of its own color
+    const typical = [...cols.map((c) => c.length)].sort((a, b) => a - b)[Math.floor(cols.length / 2)];
+    cols.forEach((c) => {
+      c.sort((a, b) => a.t - b.t);
+      if (mode !== "time") return;
+      if (c.length < Math.max(8, typical / 4)) c.length = 0;
+      else { const m = avg(c.map((e) => e.v)); c.forEach((e) => { e.v -= m; }); }
+    });
+    const all = cols.flat().map((c) => c.v).sort((a, b) => a - b);
+    // colors at the 2-98 % percentiles, symmetric about zero unless the values are as stored
+    let [lo, hi] = [all[Math.floor(all.length * 0.02)], all[Math.floor(all.length * 0.98)]];
+    if (mode !== "none") hi = -(lo = -Math.max(-lo, hi));
+    if (!(hi > lo)) [lo, hi] = [lo - 0.1, lo + 0.1];
+    hint.textContent = `${passages(n)} · ${mode === "time" ? "minus the mean over time at each point" : "as stored"} · colors ${mode === "none" ? `${lo.toFixed(2)} to ${hi.toFixed(2)}` : `±${hi.toFixed(2)}`} m`;
+    chart.title = "Drag a box to zoom (the wheel zooms the time), double-click to go back, click a passage to see its date on the map";
+    const [t0, t1] = [timeline.full[0] / 1000, timeline.full[1] / 1000], [d0, d1] = [h.distance[0], h.distance.at(-1)];
+    const column = (u) => {  // the point under the cursor
+      const d = u.posToVal(u.cursor.left, "x");
+      return Math.min(Math.max(Math.round(d / h.step), 0), h.distance.length - 1);
+    };
+    const pick = (u) => {  // the cell under the cursor (within 8 px of its passage's time)
+      if (u.cursor.left == null || u.cursor.left < 0) return null;
+      const c = cols[column(u)], px = (e) => Math.abs(u.valToPos(e.t, "y") - u.cursor.top);
+      const e = c.length ? c.reduce((a, b) => (px(b) < px(a) ? b : a)) : null;
+      return e && px(e) < 8 ? e : null;
+    };
+    const cells = { hooks: { draw: [(u) => {
+      // painted pixel by pixel into an image, then drawn at once: a line across an ocean is a million cells
+      const ctx = u.ctx, dpr = devicePixelRatio || 1, cap = 4 * dpr, min = 0.5 * dpr, { left, top, width, height } = u.bbox;
+      const [W, H] = [Math.round(width), Math.round(height)], img = new ImageData(W, H), px = new Uint32Array(img.data.buffer);
+      const w = Math.abs(u.valToPos(h.step, "x", true) - u.valToPos(0, "x", true));
+      cols.forEach((c, i) => {
+        if (!c.length) return;
+        const xc = u.valToPos(h.distance[i], "x", true) - left;
+        const x0 = Math.max(Math.floor(xc - w / 2), 0), x1 = Math.min(Math.max(Math.ceil(xc + w / 2), x0 + 1), W);
+        if (x1 <= 0 || x0 >= W) return;
+        const y = c.map((e) => u.valToPos(e.t, "y", true) - top);  // later is higher up: y decreases
+        c.forEach((e, k) => {
+          const up = Math.max(k < c.length - 1 ? Math.min((y[k] - y[k + 1]) / 2, cap) : cap, min);
+          const down = Math.max(k > 0 ? Math.min((y[k - 1] - y[k]) / 2, cap) : cap, min);
+          const y0 = Math.max(Math.floor(y[k] - up), 0), y1 = Math.min(Math.ceil(y[k] + down), H);
+          const color = LUT[Math.round(Math.min(Math.max((e.v - lo) / (hi - lo), 0), 1) * 255)];
+          for (let yy = y0; yy < y1; yy++) px.fill(color, yy * W + x0, yy * W + x1);
+        });
+      });
+      const sheet = document.createElement("canvas");  // through a canvas, so the grid shows where there is no data
+      [sheet.width, sheet.height] = [W, H];
+      sheet.getContext("2d").putImageData(img, 0, 0);
+      ctx.save();
+      ctx.drawImage(sheet, left, top);
+      // the selected dates: two orange lines
+      ctx.fillStyle = "#f97316";
+      for (const t of [state.start, state.start + state.days * DAY]) ctx.fillRect(left, u.valToPos(t / 1000, "y", true) - dpr / 2, width, dpr);
+      ctx.restore();
+    }] } };
+    const tip = document.createElement("div");  // on the page, not in the card
+    tip.className = "tip floating";
+    document.body.appendChild(tip);
+    card.tip = tip;
+    const date = (d) => d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
+    const hover = { hooks: {
+      init: [(u) => {
+        touchCursor(u);
+        let down = null;
+        u.over.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
+        u.over.addEventListener("click", (e) => {  // a click, not the end of a zoom box: that passage's date
+          const e2 = pick(u);
+          if (!e2 || !down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+          const day = Math.floor(e2.t * 1000 / DAY) * DAY;
+          setDates(Math.min(Math.max(day - Math.floor((state.days - 1) / 2) * DAY, timeline.full[0]),
+                            timeline.full[1] - state.days * DAY), state.days);
+        });
+        u.over.addEventListener("wheel", (e) => {  // the wheel zooms the time around the cursor
+          e.preventDefault();
+          const t = u.posToVal(e.offsetY, "y"), { min, max } = u.scales.y, f = e.deltaY > 0 ? 1.25 : 0.8;
+          u.setScale("y", { min: Math.max(t - (t - min) * f, t0), max: Math.min(t + (max - t) * f, t1) });
+        }, { passive: false });
+      }],
+      setCursor: [(u) => {
+        const e = pick(u);
+        showProbe(u.cursor.left == null || u.cursor.left < 0 ? null : transect.path[column(u)]);
+        u.over.style.cursor = e ? "pointer" : "crosshair";
+        tip.style.display = e ? "block" : "none";
+        if (!e) return;
+        const at = new Date(e.t * 1000);
+        tip.innerHTML = `<b>${h.distance[column(u)].toFixed(0)} km</b><table><tr><th>value</th><th>dd/mm/yyyy</th>
+          <th>hh:mm UTC</th><th>pass</th><th>cycle</th></tr><tr><td>${e.v.toFixed(3)} m</td><td>${date(at)}</td>
+          <td>${at.toISOString().slice(11, 16)}</td><td>${e.q.pass_id}</td><td>${e.q.cycle}</td></tr></table>`;
+        placeTip(tip, u, u.cursor.left, u.cursor.top);
+      }],
+    } };
+    const axis = { stroke: "#94a3b8", grid: { stroke: "rgba(148,163,184,0.12)" }, ticks: { stroke: "rgba(148,163,184,0.25)" } };
+    card.plot = new uPlot({
+      ...transectSize(card), plugins: [cells, hover], legend: { show: false },
+      cursor: { points: { show: false }, drag: { x: true, y: true, uni: 8 },
+                bind: { dblclick: (u) => () => { u.setScale("x", { min: d0, max: d1 }); u.setScale("y", { min: t0, max: t1 }); return null; } } },
+      scales: { x: { time: false, auto: false, range: (u, a, b) => (a == null || isNaN(a) ? [d0, d1] : [a, b]) },
+                y: { time: true, auto: false, range: (u, a, b) => (a == null || isNaN(a) ? [t0, t1] : [a, b]) } },
+      axes: [{ ...axis, label: "km", labelSize: 16 }, { ...axis, size: 70 }],
+      series: [{}, { stroke: "transparent" }],
+    }, [h.distance, h.distance.map(() => null)], chart);
+    card.plot.setScale("x", { min: d0, max: d1 });
+    card.plot.setScale("y", { min: t0, max: t1 });
   } catch (e) {
     chart.innerHTML = `<div class="loading">${e.message}</div>`;
   }

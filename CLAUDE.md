@@ -40,6 +40,9 @@ be resumed here (`claude --resume`).
     `/api/load`, `/api/value` (at a click: the value and its passages, with the time of their nearest line),
     `/api/series`, `/api/transect` (along a drawn polyline: points every 2 km on great circles, each passage's
     nearest pixel within 1.5 km, so the nadir gap stays empty; each value with its line's time),
+    `/api/hovmoller` (the same line over the whole mission: each passage's nearest pixels, found once per pass
+    since its grid and line times are the same every cycle, then every passage's pixels in one vectorized read,
+    each chunk fetched once: the equatorial Pacific, 12k passages, 18 s from biomix instead of 80 s),
     `/api/netcdf`, `/api/world.png`.
   Every request names its view (box, dates, variable); views are kept in memory up to `SWOT_CACHE_GB`
   and read again if they were pushed out. The opening view (whole globe, 2 Nov 2024, 1 day, `DEFAULT`) is
@@ -49,7 +52,11 @@ be resumed here (`claude --resume`).
   panels, a canvas timeline (orange band of up to 21 days; the dragged edge stops at the limit, moving keeps
   the length), an Equal Earth overview on the flat map, the mouse position, a card tied to a clicked point
   (value, passages, time series on request; clicking a passage moves the map to its date), and a card for a
-  drawn line (one curve per passage; the hover is a table, and a marker follows it along the line).
+  drawn line: its profile on the selected dates (one curve per passage; the hover is a table, a marker follows it
+  along the line) or its Hovmöller (distance x time over the whole mission, each passage a row at its own time,
+  reaching halfway to the next passage at most 4 px, so it looks filled until zoomed; minus the mean over time at
+  each point by default (points with few passages left empty), or as stored (done in the page, no new read);
+  box zoom, wheel on the time, double-click back; a click moves the map to that passage's date).
   Small screens (`max-width: 640px` or `max-height: 500px`, `narrow()` in app.js), after Windy: the name as a
   small label top left (with About; the full panel opens as a sheet from the layers icon), the options as icons
   bottom left, the color bar and the timeline at the bottom. The timeline has no grips there: a finger on the band
@@ -61,7 +68,7 @@ be resumed here (`claude --resume`).
   with the default environment, so the image runs the versions we test).
 - `deploy/boot.sh` (runs on the EC2 instance at every boot: build, serve behind Caddy, stop after 30 idle
   minutes) and `deploy/wake.py` (the Lambda link: starts the instance and shows a waiting page).
-- `scripts/screenshot.py` (scenarios: open, click, series, line, flat, dateline, phone), `scripts/bench_server.py`.
+- `scripts/screenshot.py` (scenarios: open, click, series, line, hovmoller, flat, dateline, phone), `scripts/bench_server.py`.
 
 Decisions worth keeping:
 - Dark only for now; basemap GEBCO grayscale from NOAA NCEI tiles (no key), darkened.

@@ -10,6 +10,7 @@ import time
 import tomllib
 import warnings
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 
@@ -324,6 +325,73 @@ def transect(points: str, mode: str = "box", step: float = 2.0, data=Depends(vie
                              line_time=[None if r < 0 else int(ms) for r, ms in zip(rows[i], times)]))
     return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
                 step=round(float(step), 3), passages=sorted(passages, key=lambda q: q["time"]))
+
+
+@app.get("/api/hovmoller")
+def hovmoller(points: str, variable: str, step: float = 2.0):
+    """A polyline's values over the whole mission: for each passage that crosses it, the values of its nearest
+    pixels within 1.5 km (as /api/transect), on the points every `step` km, and the time of its line at the middle.
+    The grid of a pass is the same in every cycle (a repeat orbit), and so is when each line is measured relative
+    to the passage's time: both are read once, on its first passage; then only the values of the lines near the
+    polyline are read, for all its passages."""
+    names = VARIABLES[variable][1]
+    lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
+    lon, lat, dist, step = along_line(lon, lat, max(step, 0.5))
+    pts = unit(lon, lat)
+    # passes over the line's box, with a swath's half width (~0.6 degrees) around it
+    ulon = np.unwrap(lon, period=360)
+    west, east = (-180.0, 180.0) if np.ptp(ulon) > 356 else (ulon.min() - 1, ulon.max() + 1)
+    south, north = max(lat.min() - 1, -90), min(lat.max() + 1, 90)
+    near = np.flatnonzero((ds.lat.values >= south - 1) & (ds.lat.values <= north + 1))  # lines run south to north
+    if not len(near):
+        return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
+                    step=round(float(step), 3), passages=[])
+    r0, r1 = near[0], near[-1] + 1
+
+    def nearest(p):  # a pass: its passages, and the line and pixel nearest each point it covers
+        times = np.flatnonzero(index.pass_id.values == p)
+        if not len(times):
+            return None
+        geo = ds[["latitude", "longitude", "line_time"]].isel(time=times[0], along=slice(r0, r1)).load()
+        la, lo = geo.latitude.values, geo.longitude.values
+        ok = np.isfinite(la) & np.isfinite(lo)
+        if not ok.any():
+            return None
+        d, j = cKDTree(unit(lo[ok], la[ok])).query(pts, distance_upper_bound=1.5 / swot_view.EARTH_RADIUS)
+        hit = np.flatnonzero(np.isfinite(d))
+        if not len(hit):
+            return None
+        row, col = np.unravel_index(np.flatnonzero(ok)[j[hit]], la.shape)
+        offset = geo.line_time.values[row] - index.time.values[times[0]]  # of each line hit, from its passage's time
+        return p, times, hit, r0 + row, col, offset
+
+    passes = swot_view.passes_over(ds, (west + 180) % 360 - 180, (east + 180) % 360 - 180, south, north)
+    with ThreadPoolExecutor(32) as pool:
+        found = [f for f in pool.map(nearest, passes) if f]
+    # the values of every passage at its pixels, in one read: zarr fetches each passage's chunk once, all at
+    # once (asking pass by pass cost ~10 ms of Python per chunk: 50-80 s for a line across the Pacific)
+    at = [np.repeat(times, len(hit)) for _, times, hit, *_ in found]
+    rows = [np.tile(row, len(times)) for _, times, _, row, *_ in found]
+    cols = [np.tile(col, len(times)) for _, times, _, _, col, _ in found]
+    if found:
+        where = {dim: xr.DataArray(np.concatenate(v), dims="pixel") for dim, v in (("time", at), ("along", rows), ("cross", cols))}
+        values = sum(ds[n].isel(where).values for n in names)
+    out, k0 = [], 0
+    for p, times, hit, row, col, offset in found:
+        v = values[k0:k0 + len(times) * len(hit)].reshape(len(times), len(hit))  # (passages, points hit)
+        k0 += v.size
+        for k, i in enumerate(times):
+            good = np.isfinite(v[k])
+            if not good.any():
+                continue
+            line = np.full(hit[-1] - hit[0] + 1, np.nan)
+            line[hit - hit[0]] = v[k]
+            middle = index.time.values[i] + offset[good][good.sum() // 2]
+            out.append(dict(pass_id=int(p), cycle=int(index.cycle.values[i]), first=int(hit[0]),
+                            time=int(middle.astype("datetime64[ms]").astype("int64")),
+                            value=[None if np.isnan(x) else round(float(x), 4) for x in line]))
+    return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
+                step=round(float(step), 3), passages=sorted(out, key=lambda q: q["time"]))
 
 
 @app.get("/api/series")
