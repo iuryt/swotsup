@@ -45,9 +45,19 @@ function toast(text) {
 // --- loading data for the region and dates
 async function loadData() {
   $("#busy").classList.remove("hidden");
+  // every later request (tiles, values, download) names this view, so the server can read it again
+  const view = new URLSearchParams({ ...state.box, start: isoDay(state.start), days: state.days, variable: state.variable });
+  // a view too big to keep is read in batches: how far, while it lasts
+  const where = isGlobe(state.box) ? "the whole globe" : "the region";
+  const poll = setInterval(async () => {
+    const p = await api("/api/progress", view).catch(() => ({}));
+    $("#progress").classList.toggle("hidden", !p.total);
+    if (!p.total) return;
+    $("#progress .progress-text").textContent = `Reading ${state.days} day${state.days > 1 ? "s" : ""} of ${where} from the cloud`;
+    $("#progress .progress-bar i").style.width = `${(100 * p.done / p.total).toFixed(1)}%`;
+    $("#progress .progress-count").textContent = `${p.done} of ${p.total} passages · ${Math.round(p.seconds)} s`;
+  }, 1000);
   try {
-    // every later request (tiles, values, download) names this view, so the server can read it again
-    const view = new URLSearchParams({ ...state.box, start: isoDay(state.start), days: state.days, variable: state.variable });
     const d = await api("/api/load", view);
     state.data = d;
     state.view = view.toString();
@@ -59,6 +69,8 @@ async function loadData() {
   } catch (e) {
     toast(e.message);
   } finally {
+    clearInterval(poll);
+    $("#progress").classList.add("hidden");
     $("#busy").classList.add("hidden");
   }
 }

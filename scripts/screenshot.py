@@ -7,6 +7,7 @@
   hovmoller  the line's Hovmöller (after `line`): the whole mission, a hover, a zoom box, a click on a passage
   dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
   wide   12 days of the whole globe (from 20 Sep 2026), timed until loaded and drawn, on the globe and flat map
+  progress  other 21 days of the globe: the progress bar, then the map
   zoom   zoom in step by step on a point (SCREENSHOT_ZOOM="lon,lat", default an Atlantic swath on 1 Oct 2026), timing
          each step until its tiles are in: with a detail product, the base turning into it
   phone  a phone (390x844, touch): the opening view, a tapped point and its series (small and tall), the menu sheet, a line
@@ -145,6 +146,18 @@ with sync_playwright() as p:
             print(f"wide flat: drawn in {time.perf_counter() - t:.1f} s", flush=True)
             shot("wide-flat")
             page.click("#projection")
+        elif scenario == "progress":  # other 21 days of the globe: the bar while they are read, then the map
+            import time
+            t = time.perf_counter()
+            page.evaluate("setDates(Date.UTC(2025, 2, 1), 21)")
+            page.wait_for_selector("#progress:not(.hidden)", timeout=60_000)
+            page.wait_for_timeout(8000)
+            print("progress:", page.inner_text("#progress").replace(chr(10), " | "), flush=True)
+            shot("progress")
+            page.wait_for_selector("#busy.hidden", state="attached", timeout=600_000)
+            page.wait_for_timeout(4000)
+            print(f"progress: read in {time.perf_counter() - t:.1f} s", flush=True)
+            shot("progress-done")
         elif scenario == "zoom":
             import os
             import time
