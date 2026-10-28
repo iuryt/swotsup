@@ -45,7 +45,8 @@ R = 6378137.0  # web mercator
 WORLD = 2 * np.pi * R
 CMAP = matplotlib.colormaps["RdBu_r"]
 
-ds = swot_view.open_store(os.environ.get("SWOT_STORE", swot_view.STORE))
+STORE = os.environ.get("SWOT_STORE", swot_view.STORE)
+ds = swot_view.open_store(STORE)
 index = ds[["cycle", "pass_id"]].reset_coords().load()  # when each passage was, for the timeline
 geometry = ds[["lon_min", "lon_max"]].load()  # which passes cross a box, without reading data
 
@@ -255,7 +256,8 @@ def page():
 def info():
     return dict(first=str(pd.Timestamp(ds.time.values[0])), last=str(pd.Timestamp(ds.time.values[-1])),
                 passages=ds.sizes["time"], passes=ds.sizes["pass_number"], max_days=MAX_DAYS, default=DEFAULT,
-                variables={k: v[0] for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE)
+                variables={k: v[0] for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
+                netcdf=NETCDF)
 
 
 @app.get("/api/timeline")
@@ -399,6 +401,72 @@ def series(lon: float, lat: float, variable: str, radius: float = 5):
     names = VARIABLES[variable][1]
     s = sum(swot_view.point_series(ds, lon, lat, n, radius)[n] for n in names)
     return dict(time=(s.time.to_index().astype("int64") // 10**6).tolist(), value=s.values.round(4).tolist())
+
+
+# --- each chart's numbers as NetCDF, and the code that reproduces it
+
+def as_netcdf(dataset, name):
+    if not NETCDF:
+        raise HTTPException(404)
+    buf = io.BytesIO()
+    dataset.to_netcdf(buf, engine="h5netcdf")
+    return Response(buf.getvalue(), media_type="application/x-netcdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.nc"'})
+
+
+def line_dataset(result, label):
+    """A profile's or a Hovmöller's passages as (passage, distance) values, with their time, pass and cycle."""
+    n = len(result["distance"])
+    values = np.full((len(result["passages"]), n), np.nan)
+    for k, q in enumerate(result["passages"]):
+        first = q.get("first", 0)
+        values[k, first:first + len(q["value"])] = [np.nan if v is None else v for v in q["value"]]
+    times = [pd.Timestamp(q["time"], unit="ms") if isinstance(q["time"], int) else pd.Timestamp(q["time"])
+             for q in result["passages"]]
+    return xr.Dataset(
+        {"value": (("passage", "distance"), values, {"long_name": label, "units": "m"})},
+        coords={"distance": ("distance", result["distance"], {"units": "km", "long_name": "along the line"}),
+                "lon": ("distance", result["lon"]), "lat": ("distance", result["lat"]),
+                "time": ("passage", times), "pass_number": ("passage", [q["pass_id"] for q in result["passages"]]),
+                "cycle": ("passage", [q["cycle"] for q in result["passages"]])},
+        attrs={"comment": "each passage's nearest pixel within 1.5 km of points every `step` km along great circles",
+               "step_km": result["step"]})
+
+
+@app.get("/api/series.nc")
+def series_nc(lon: float, lat: float, variable: str, radius: float = 5):
+    s = series(lon, lat, variable, radius)
+    return as_netcdf(xr.Dataset({"value": ("time", s["value"], {"long_name": VARIABLES[variable][0], "units": "m"})},
+                                coords={"time": pd.to_datetime(s["time"], unit="ms")},
+                                attrs={"lon": lon, "lat": lat, "radius_km": radius,
+                                       "comment": "mean of the pixels within radius_km of (lon, lat), per passage"}),
+                     "swot_series")
+
+
+@app.get("/api/transect.nc")
+def transect_nc(points: str, variable: str, mode: str = "box", step: float = 2.0, data=Depends(view)):
+    return as_netcdf(line_dataset(transect(points, mode, step, data), VARIABLES[variable][0]), "swot_profile")
+
+
+@app.get("/api/hovmoller.nc")
+def hovmoller_nc(points: str, variable: str, step: float = 2.0):
+    return as_netcdf(line_dataset(hovmoller(points, variable, step), VARIABLES[variable][0]), "swot_hovmoller")
+
+
+@app.get("/api/code/series")
+def series_code(lon: float, lat: float, variable: str, radius: float = 5):
+    label, names = VARIABLES[variable]
+    return dict(code=swot_view.series_snippet(lon, lat, names, radius, f"{label}, ", target=STORE))
+
+
+@app.get("/api/code/line")
+def line_code(points: str, variable: str, step: float = 2.0, start: str = None, days: int = 1, mean: str = "time"):
+    """The profile of the passages from `start` for `days` days, or (no start) the Hovmöller of the mission."""
+    label, names = VARIABLES[variable]
+    vertices = [tuple(map(float, p.split(","))) for p in points.split(";")]
+    end = None if start is None else str(pd.Timestamp(start) + pd.Timedelta(days=days) - pd.Timedelta(seconds=1))
+    title = f"{label}, " + (f"{start} to {end[:10]}" if start else "whole mission")
+    return dict(code=swot_view.line_snippet(vertices, names, step, start, end, mean, title, target=STORE))
 
 
 @app.get("/api/netcdf")
