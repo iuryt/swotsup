@@ -20,7 +20,8 @@ token=$(aws ssm get-parameter --region us-east-1 --name /swot-explorer/arraylake
 store=(-e SWOT_STORE=s3://iuryt-shared-east/icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2 -e SWOT_PRODUCT=l3)
 [ -n "$token" ] && store=(-e "ARRAYLAKE_TOKEN=$token")
 echo "store: $([ -n "$token" ] && echo "L2 on Arraylake" || echo "the L3 copy on S3")"
-mkdir -p /opt/cache
+install -d -o 1000 -g 1000 /opt/cache  # the server runs as user 1000 (Dockerfile)
+chown -R 1000:1000 /opt/cache
 docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=0 -e SWOT_CACHE_GB=6 \
   -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache "${store[@]}" swot
 set -x
