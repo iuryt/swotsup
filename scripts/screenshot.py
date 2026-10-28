@@ -8,6 +8,7 @@
   dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
   wide   12 days of the whole globe (from 20 Sep 2026), timed until loaded and drawn, on the globe and flat map
   progress  other 21 days of the globe: the progress bar, then the map
+  link   a page opened from a link: view, colors, point and line rebuilt
   variables  each variable over the Gulf Stream, the colormap menu, a colormap chosen
   zoom   zoom in step by step on a point (SCREENSHOT_ZOOM="lon,lat", default an Atlantic swath on 1 Oct 2026), timing
          each step until its tiles are in: with a detail product, the base turning into it
@@ -147,6 +148,20 @@ with sync_playwright() as p:
             print(f"wide flat: drawn in {time.perf_counter() - t:.1f} s", flush=True)
             shot("wide-flat")
             page.click("#projection")
+        elif scenario == "link":  # a page opened from a link: its view, colors, point with its series, and line
+            view = ("view=-75,-55,33,43,2026-10-01,21,sig0_karin_2&map=-66,37.5,5.5,flat&mode=none&cmap=viridis&range=5"
+                    "&point=-68,36,series&line=-72,39;-64,36/hovmoller/2/time")
+            page.goto(url + "#" + view, wait_until="networkidle", timeout=180_000)
+            page.wait_for_selector("#busy.hidden", state="attached", timeout=300_000)
+            page.wait_for_selector(".pin .card .uplot", timeout=600_000)  # the mission's series and Hovmöller: minutes the first time
+            page.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=600_000)
+            page.wait_for_timeout(3000)
+            print("link: legend |", page.inner_text("#legend").replace(chr(10), " | ")[:120], flush=True)
+            print("link: colormap |", page.inner_text("#cmap .cmap-current"), "| projection globe:",
+                  page.evaluate("document.body.classList.contains('globe')"), flush=True)
+            print("link: line |", page.inner_text(".card.transect h3"), flush=True)
+            print("link: address |", page.evaluate("location.hash"), flush=True)
+            shot("link")
         elif scenario == "variables":  # each variable over a region (the Gulf Stream, one day), and the colormaps
             page.evaluate("setBox({west: -75, east: -55, south: 33, north: 43})")
             page.wait_for_selector("#busy.hidden", state="attached", timeout=300_000)

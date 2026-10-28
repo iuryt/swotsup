@@ -23,7 +23,8 @@ echo "store: $([ -n "$token" ] && echo "L2 on Arraylake" || echo "the L3 copy on
 install -d -o 1000 -g 1000 /opt/cache  # the server runs as user 1000 (Dockerfile)
 chown -R 1000:1000 /opt/cache
 docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=0 -e SWOT_CACHE_GB=6 \
-  -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache "${store[@]}" swot
+  -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
+  -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" "${store[@]}" swot
 set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860

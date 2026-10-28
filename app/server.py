@@ -762,6 +762,7 @@ def info():
                 colormaps={name: ["#%02x%02x%02x" % tuple(int(255 * c) for c in cm(x)[:3]) for x in np.linspace(0, 1, 16)]
                            for name, cm in COLORMAPS.items()}, diverging=list(COLORMAPS)[:DIVERGING],
                 netcdf=NETCDF, product=PRODUCT["label"], credit=PRODUCT["credit"],
+                public_url=os.environ.get("SWOT_PUBLIC_URL"),  # what a copied link starts with (the EC2's wake link)
                 detail=None if detail is None else dict(zoom=DETAIL_ZOOM, product=DETAIL_PRODUCT["label"],
                                                         commit=detail.commit.id[:8]),
                 commit=dict(id=COMMIT.id[:8], time=str(pd.Timestamp(COMMIT.written_at).tz_convert(None)), message=COMMIT.message))

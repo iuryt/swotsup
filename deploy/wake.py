@@ -33,7 +33,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
   async function poll() {
     try {
       const s = await (await fetch("?status=1", { cache: "no-store" })).json();
-      if (s.ready) return location.replace(s.url);
+      if (s.ready) return location.replace(s.url + location.hash);  // a shared link's view comes along
       const sec = Math.round((Date.now() - t0) / 1000);
       document.getElementById("state").textContent =
         (s.state === "running" ? "Server on, loading the data" : "Starting the server") + ` (${sec} s)`;
