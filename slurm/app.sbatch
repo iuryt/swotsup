@@ -6,7 +6,7 @@
 #SBATCH --time=08:00:00
 #SBATCH --output=logs/app-%j.out
 # Serve the viewer on a compute node; open it through an ssh tunnel (command printed in the log).
-# Reloads when app/ changes. Usage: sbatch slurm/app.sbatch   (SWOT_STORE, AWS_PROFILE default swot-read)
+# Reloads when app/ changes. Usage: sbatch slurm/app.sbatch   (L2 Expert + Unsmoothed by default; SWOT_STORE + SWOT_PRODUCT=l3 for L3)
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 export AWS_PROFILE=${AWS_PROFILE:-swot-read} AWS_REGION=${AWS_REGION:-us-east-1}
