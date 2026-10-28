@@ -52,3 +52,4 @@ mutate app/server.py 's/        pixel = (x_range\[1\] - x_range\[0\]) \/ width \
 mutate app/server.py 's/vs.append(self.value(mode, i, lines).ravel())/vs.append(self.value(mode, i).ravel()[:x.size])/' "cells as points take values of the wrong lines"
 mutate app/server.py 's/    near = slice(max(near\[0\] - 1, 0), near\[-1\] + 2)/    near = slice(near[0], near[-1] + 1)/' "detail tiles without the cells across their edges"
 mutate app/server.py 's/(east + 180) % 360 - 180, south - 0.7, north + 0.7))/(east + 180) % 360 - 180, south, north))/' "detail tiles miss the passes whose lines only lean into them"
+mutate app/swot_view.py 's/        return np.flatnonzero(ds.written.values == 1)/        return np.flatnonzero(ds.written.values > 0)/' "passages skipped by the build (no position) taken as written"

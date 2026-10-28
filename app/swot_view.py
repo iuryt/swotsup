@@ -35,9 +35,12 @@ def open_store(target=STORE, branch="main"):
 
 
 def written(ds, store):
-    """The passages (time indices) of a store being filled that have data: those in a chunk of `line_time` that
-    exists. Listing the chunks reads no data (the store is created for every passage; an unwritten chunk is absent).
-    With chunks of several passages along time (not in the stores being filled), all of a written chunk count."""
+    """The passages (time indices) of a store being filled that have data: flagged 1 in its `written` (0: not yet,
+    2: skipped, no position), or in stores without it, those in a chunk of `line_time` that exists. Listing the chunks
+    reads no data (the store is created for every passage; an unwritten chunk is absent). With chunks of several
+    passages along time (not in the stores being filled), all of a written chunk count."""
+    if "written" in ds:
+        return np.flatnonzero(ds.written.values == 1)
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
