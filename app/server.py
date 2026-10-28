@@ -71,17 +71,19 @@ R = 6378137.0  # web mercator
 WORLD = 2 * np.pi * R
 CMAP = matplotlib.colormaps["RdBu_r"]
 
-def open_product(target, partial=False):
+def open_product(target, partial=False, geometry=None):
     """A store at its latest commit (kept: a store being written changes while people look): the dataset, when each
-    passage was (`index`) and the passes' envelopes (`geometry`, which passes cross a box without reading data).
-    A store being filled (`partial`) shows only the passages with data, and envelopes not written yet come from
-    each pass's nadir and the swath's half width."""
+    passage was (`index`) and the passes' envelopes (`geometry`, which passes cross a box without reading data; kept
+    in memory, a view would read them all again). A store being filled (`partial`) shows only the passages with data,
+    and envelopes not written yet come from each pass's nadir and the swath's half width. A product over the same
+    passes can take another's `geometry` (the Unsmoothed one, a line every 250 m, is 400 MB)."""
     repo = swot_view.open_repo(target)
     commit = next(iter(repo.ancestry(branch="main")))
     session = repo.readonly_session(snapshot_id=commit.id)
     ds = swot_view.dataset(session.store)
     if partial:
         ds = ds.isel(time=swot_view.written(ds, session.store))
+    if partial and geometry is None:
         have = np.isfinite(ds.lon_min.values).any(1, keepdims=True)
         missing = np.setdiff1d(np.unique(ds.pass_id.values), ds.pass_number.values[have[:, 0]])
         print(f"{target}: {ds.sizes['time']} passages with data, {len(missing)} passes without envelopes", flush=True)
@@ -90,7 +92,10 @@ def open_product(target, partial=False):
             ds = ds.assign_coords(lon_min=(ds.lon_min.dims, np.where(have, ds.lon_min.values, lon_min)),
                                   lon_max=(ds.lon_max.dims, np.where(have, ds.lon_max.values, lon_max)))
     index = ds[["cycle", "pass_id"]].reset_coords().load()
-    geometry = ds[["lon_min", "lon_max"]].load()
+    if geometry is None:
+        geometry = ds[["lon_min", "lon_max"]].load()
+        ds = ds.assign_coords(lon_min=geometry.lon_min, lon_max=geometry.lon_max)
+    ds = ds.assign_coords(cycle=index.cycle, pass_id=index.pass_id)
     return SimpleNamespace(ds=ds, index=index, geometry=geometry, commit=commit)
 
 
@@ -102,7 +107,7 @@ ds, index, geometry, COMMIT = base.ds, base.index, base.geometry, base.commit
 DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE")
 DETAIL_PRODUCT = PRODUCTS[os.environ.get("SWOT_DETAIL_PRODUCT", "unsmoothed")]
 DETAIL_ZOOM = int(os.environ.get("SWOT_DETAIL_ZOOM", 9))
-detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial")) if DETAIL_STORE else None
+detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial"), geometry) if DETAIL_STORE else None
 DEFAULT = PRODUCT["default"]
 if DEFAULT is None:  # the latest passage's day, 6 x 6 degrees around its nadir at the latitude nearest the equator
     last = int(np.argmax(index.time.values))
@@ -386,6 +391,23 @@ cache_lock = threading.Lock()  # guards `loaded` and `loading` (requests run in 
 loading = {}  # one lock per view being read: a second request for it waits instead of reading it again
 
 
+def read(sub, names):
+    """A subset's arrays `names` (passages x lines x pixels, not loaded yet) in memory, with their positions, and when
+    each line was: one read per array and passage, all at once. A read of the whole subset fetches its chunks nearly
+    one at a time (the Gulf Stream, 12 days of L2 Expert: 17-45 s from AWS, ~1 s this way)."""
+    n = sub.sizes["time"]
+    arrays = names + ["latitude", "longitude", "line_time"]
+    with ThreadPoolExecutor(64) as pool:
+        parts = list(pool.map(lambda job: sub[job[0]].isel(time=job[1]).values, [(a, k) for a in arrays for k in range(n)]))
+    out = {a: np.stack(parts[j * n:(j + 1) * n]) if n else sub[a].values for j, a in enumerate(arrays)}
+    data = sub[names]
+    data = data.drop_vars([c for c in data.coords if c not in data.indexes and c not in ("latitude", "longitude", "cycle", "pass_id")])
+    dims = data[names[0]].dims
+    data = data.copy(data={a: out[a] for a in names}).assign_coords(latitude=(dims, out["latitude"]),
+                                                                     longitude=(dims, out["longitude"]))
+    return data.load(), out["line_time"]
+
+
 def load(west, east, south, north, start, days, variable):
     """The view's data and the seconds spent reading it (0 if it was in memory)."""
     key = (west, east, south, north, start, days, variable)
@@ -404,7 +426,9 @@ def load(west, east, south, north, start, days, variable):
         sub = swot_view.subset(ds, west, east, south, north, start, end)
         if sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > MAX_PIXELS:
             raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
-        data = Loaded(sub[names + ([MASK] if MASK else [])].load(), names, west, east, sub.line_time.values, MASK)
+        values, line_time = read(sub, names + ([MASK] if MASK else []))
+        data = Loaded(values, names, west, east, line_time, MASK)
+        data.read_ahead = read_ahead(west, east, south, north, start, days, variable)
         with cache_lock:
             loaded[key] = data
             loading.pop(key, None)
@@ -503,7 +527,7 @@ def tile(z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2, vmax: fl
 
 # --- the detail product, tile by tile: each passage's lines near the tile, read a chunk at a time and kept
 
-@lru_cache(maxsize=int(os.environ.get("SWOT_DETAIL_BLOCKS", 256)))  # ~3.4 MB each at 512 x 551 (float32)
+@lru_cache(maxsize=int(os.environ.get("SWOT_DETAIL_BLOCKS", 1024)))  # ~3.4 MB each at 512 x 551 (float32)
 def detail_block(i, c, names):
     """A passage's (time index `i`) chunk `c` of lines of the detail store: its values (the sum of `names`) and
     positions, as float32."""
@@ -514,6 +538,35 @@ def detail_block(i, c, names):
     values = masked(sum(sub[k].values for k in names), sub[flag].values if flag else None)
     return (values.astype("float32"), sub.latitude.values.astype("float32"),
             sub.longitude.values.astype("float32"))
+
+
+def detail_lines(west, east, south, north, start, days):
+    """The detail store's passages (time indices) in the dates whose lines may reach the box, and those lines (their
+    nadir within 0.7 degree of its latitudes: a line's edges lean up to ~0.6 degree off its nadir, and a small tile can
+    hold only those of lines whose nadir is outside it), with the chunks they are in."""
+    t0 = np.datetime64(start)
+    times = np.flatnonzero((detail.index.time.values >= t0) & (detail.index.time.values < t0 + np.timedelta64(days, "D")))
+    over = np.isin(detail.index.pass_id.values[times], swot_view.passes_over(
+        detail.geometry, (west + 180) % 360 - 180, (east + 180) % 360 - 180, south - 0.7, north + 0.7))
+    rows = np.flatnonzero((detail.ds.lat.values >= south - 0.7) & (detail.ds.lat.values <= north + 0.7))
+    n = detail.ds.line_time.encoding["chunks"][1]
+    return times[over], rows, range(rows[0] // n, rows[-1] // n + 1) if len(rows) else range(0)
+
+
+READ_AHEAD = ThreadPoolExecutor(16)
+
+
+def read_ahead(west, east, south, north, start, days, variable):
+    """A region's detail, read in the background once its view is loaded, so zooming in finds it in memory: every
+    chunk of its passages over the box, if they fit in half the blocks kept (not a view of the world)."""
+    names = DETAIL_PRODUCT["variables"].get(variable, (None, None))[1] if detail is not None else None
+    if names is None:
+        return []
+    times, _, chunks = detail_lines(west, east, south, north, start, days)
+    jobs = [(int(i), c) for i in times for c in chunks]
+    if len(jobs) > detail_block.cache_info().maxsize // 2:
+        return []
+    return [READ_AHEAD.submit(detail_block, i, c, tuple(names)) for i, c in jobs]
 
 
 def offsets(data, mode):
@@ -539,18 +592,10 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
     lon = np.rad2deg(np.array(xr_) / R)
     lat = np.rad2deg(2 * np.arctan(np.exp(np.array(yr_) / R)) - np.pi / 2)
     west, east, south, north = lon[0], lon[1], lat[0], lat[1]
-    t0 = np.datetime64(start)
-    times = np.flatnonzero((detail.index.time.values >= t0) & (detail.index.time.values < t0 + np.timedelta64(days, "D")))
-    # the passes, and their lines, whose nadir is near the tile's latitudes: a line's edges lean up to ~0.6 degree
-    # off its nadir, and a small tile can hold only those of lines whose nadir is outside it
-    over = np.isin(detail.index.pass_id.values[times], swot_view.passes_over(
-        detail.geometry, (west + 180) % 360 - 180, (east + 180) % 360 - 180, south - 0.7, north + 0.7))
-    times = times[over]
-    rows = np.flatnonzero((detail.ds.lat.values >= south - 0.7) & (detail.ds.lat.values <= north + 0.7))
+    times, rows, chunks = detail_lines(west, east, south, north, start, days)
     if not len(times) or not len(rows):
         return Response(EMPTY.getvalue(), media_type="image/png")
     n = detail.ds.line_time.encoding["chunks"][1]
-    chunks = range(rows[0] // n, rows[-1] // n + 1)
     with ThreadPoolExecutor(16) as pool:  # each chunk is its own read from the cloud: all at once
         reads = [[pool.submit(detail_block, int(i), c, tuple(names)) for c in chunks] for i in times]
     blocks = [[r.result() for r in rs] for rs in reads]
