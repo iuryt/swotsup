@@ -37,11 +37,14 @@ be resumed here (`claude --resume`).
     here, so only images go to the browser; overlapping passages are averaged; tile URLs carry a hash of
     the server code, so browsers never keep tiles of an older version. A view is kept as float32 values
     (~28 B/pixel), the modes as one number subtracted (medians: a few L2 pixels pass their flag km off), colors
-    from a 4 M-pixel sample, and 4x4 / 16x16 block means drawn as datashader points (one call for all passages)
-    where a screen pixel holds many cells: 12 days of the whole globe in L2 Expert (228 M px) take ~7 GB;
+    from a 4 M-pixel sample. Where a screen pixel (on the ground) is wider than a cell, everything in view is drawn
+    as datashader points in one call: 4x4 / 16x16 block means (sorted by y, a tile takes its band), or the cells;
+    closer, each mesh in view (found from an array of their bounds) as a quadmesh. 12 days of the whole globe in
+    L2 Expert (228 M px) take ~7 GB; a tile ~0.06-0.2 s in process (a server busy with many is GIL-bound);
   - detail tiles (`/api/detail`, SWOT_DETAIL_STORE, e.g. Unsmoothed over Expert): from SWOT_DETAIL_ZOOM - 1 on,
-    read tile by tile, a chunk of lines per passage at a time (LRU cache), shifted by what the base view
-    subtracts so colors match; the page fades them in over a zoom level, the base showing where they have none;
+    read tile by tile, chunks of lines of every passage at once (LRU cache), only the lines whose latitudes reach
+    the tile, shifted by what the base view subtracts so colors match; the page fades them in over a zoom level,
+    the base showing where they have none. A first look at a place reads ~5 s from Arraylake, then ~0.2 s;
   - L2 products keep values only where `ssha_karin_2_qual == 0` (over land and ice they reach kilometres);
   - `/api/timeline` (days with passages over the region, from the per-pass geometry, no data read),
     `/api/load`, `/api/value` (at a click: the value and its passages, with the time of their nearest line),
