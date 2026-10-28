@@ -315,7 +315,7 @@ def test_l2_values_only_where_the_quality_flag_is_good(client):
     values[0, :, 3:], flag[0, :, 3:] = 2000.0, 132  # the east side: land, flagged
     dims = ("time", "along", "cross")
     sub = xr.Dataset({"v": (dims, values), "q": (dims, flag)}, coords={"latitude": (dims, lat), "longitude": (dims, lon)})
-    data = server.Loaded(sub, ["v"], 29, 31, mask="q")
+    data = server.Loaded(sub, server.Variable("", ["v"], "q"), 29, 31)
     assert data.quantiles["none"][-1] < 1  # the flagged values are not in the colors
     (x0, x1), (y0, y1) = server.mercator(np.array([29.75, 30.25]), np.array([-0.5, 0.5]))
     m = data.mean_on("none", (x0, x1), (y0, y1), 10, 4)
@@ -553,3 +553,30 @@ def test_an_overview_that_cannot_be_kept_or_read(store_path, tmp_path, monkeypat
     monkeypatch.setattr(server, "read", lambda *a: (_ for _ in ()).throw(RuntimeError("the cloud is down")))
     failed = c.get("/api/load", params=other)
     assert failed.status_code == 500 and "the cloud is down" in failed.json()["detail"]
+
+
+
+def test_a_variable_in_db_with_its_flag(client):
+    """A variable's values: its arrays summed, NaN where its flag is not 0, in dB if so (sigma0: 10 and 100 -> 10 and
+    20 dB; nothing for a value of 0 or below)."""
+    import server
+
+    arrays = {"s": np.array([10.0, 100.0, 50.0, 0.0]), "q": np.array([0, 0, 4, 0])}
+    v = server.Variable("Sigma0", ["s"], "q", db=True).values(arrays.__getitem__)
+    np.testing.assert_allclose(v[:2], [10, 20])
+    assert np.isnan(v[2:]).all()
+
+
+def test_tiles_in_the_colormap_asked_or_the_variable_own(client):
+    """A tile takes the colormap asked for; an unknown name gives the variable's own."""
+    import server
+
+    mean = np.full((2, 2), 0.25)
+    def color(cmap):
+        tile = np.asarray(Image.open(io.BytesIO(server.png(mean, 0, 1, cmap).body)).convert("RGB"))
+        return tile[0, 0].astype(int)
+    for name in ("cmo.speed", "viridis"):
+        assert np.abs(color(name) - np.array(server.COLORMAPS[name](0.25)[:3]) * 255).max() <= 1
+    monkeypatch_var = server.VARIABLES["ssha_unfiltered"]
+    assert server.colormap("no such map", "ssha_unfiltered") == monkeypatch_var.cmap == "RdBu_r"
+    assert server.colormap("cmo.gray", "ssha_unfiltered") == "cmo.gray"

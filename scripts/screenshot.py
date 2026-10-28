@@ -8,6 +8,7 @@
   dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
   wide   12 days of the whole globe (from 20 Sep 2026), timed until loaded and drawn, on the globe and flat map
   progress  other 21 days of the globe: the progress bar, then the map
+  variables  each variable over the Gulf Stream, the colormap menu, a colormap chosen
   zoom   zoom in step by step on a point (SCREENSHOT_ZOOM="lon,lat", default an Atlantic swath on 1 Oct 2026), timing
          each step until its tiles are in: with a detail product, the base turning into it
   phone  a phone (390x844, touch): the opening view, a tapped point and its series (small and tall), the menu sheet, a line
@@ -146,6 +147,26 @@ with sync_playwright() as p:
             print(f"wide flat: drawn in {time.perf_counter() - t:.1f} s", flush=True)
             shot("wide-flat")
             page.click("#projection")
+        elif scenario == "variables":  # each variable over a region (the Gulf Stream, one day), and the colormaps
+            page.evaluate("setBox({west: -75, east: -55, south: 33, north: 43})")
+            page.wait_for_selector("#busy.hidden", state="attached", timeout=300_000)
+            page.evaluate("map.fitBounds([[-75, 33], [-55, 43]], {duration: 0})")
+            for variable in page.eval_on_selector_all("#variable option", "o => o.map((e) => e.value)"):
+                page.select_option("#variable", variable)
+                page.wait_for_timeout(500)
+                page.wait_for_selector("#busy.hidden", state="attached", timeout=300_000)
+                page.wait_for_load_state("networkidle", timeout=180_000)
+                page.wait_for_timeout(2000)
+                print("variable:", variable, "|", page.inner_text("#legend").replace(chr(10), " | ")[:160], flush=True)
+                shot(f"variable-{variable}")
+            page.click("#display-button")
+            page.click("#cmap .cmap-current")
+            page.wait_for_timeout(500)
+            shot("colormaps")
+            page.click("#cmap [data-cmap=viridis]")
+            page.wait_for_load_state("networkidle", timeout=180_000)
+            page.wait_for_timeout(2000)
+            shot("colormap-viridis")
         elif scenario == "progress":  # other 21 days of the globe: the bar while they are read, then the map
             import time
             t = time.perf_counter()
