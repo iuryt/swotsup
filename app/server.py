@@ -457,12 +457,19 @@ class Overview:
         size = 256 * 2**self.ZOOM
         self.sum = {mode: np.zeros((size, size), "float32") for mode in ("none", "passage")}
         self.count = np.zeros((size, size), "float32")
-        self.shift = {mode: np.zeros(len(self.times), "float32") for mode in ("none", "box", "passage")}
+        self._shift = {mode: np.zeros(len(self.times), "float32") for mode in ("none", "box", "passage")}
         self.samples, self.quantiles, self.pixels, self.seconds = [], {}, 0, 0.0
         self.read_ahead = []
         box = "_".join(f"{view[k]:g}" for k in ("west", "east", "south", "north"))
         self.file = (os.path.join(CACHE_DIR, f"overview-{COMMIT.id}-{box}-{view['start']}-{view['days']}-{variable}.npz")
                      if CACHE_DIR else None)
+
+    @property
+    def shift(self):
+        """What each mode subtracts per passage: known once the whole view is read (tiles drawn before would keep
+        colors of their own)."""
+        self.ready.wait()
+        return self._shift
 
     @property
     def nbytes(self):
@@ -473,7 +480,7 @@ class Overview:
         rng = np.random.default_rng(len(self.samples))
         with warnings.catch_warnings(action="ignore"):
             per = np.array([np.nanmedian(v.ravel()[::7]) for v in values], "float32")
-        self.shift["passage"][at] = per
+        self._shift["passage"][at] = per
         ok = np.isfinite(values) & np.isfinite(lon) & np.isfinite(lat)
         x, y = mercator((lon[ok] + 180) % 360 - 180, lat[ok])
         v, which = values[ok], np.broadcast_to(np.arange(len(at))[:, None, None], values.shape)[ok]
@@ -491,8 +498,8 @@ class Overview:
         """What the box mode subtracts (the median), and the colors' quantiles, from the samples."""
         v = np.concatenate([a for a, _ in self.samples]) if self.samples else np.zeros(0, "float32")
         at = np.concatenate([b for _, b in self.samples]) if self.samples else np.zeros(0, int)
-        self.shift["box"][:] = np.median(v) if len(v) else np.nan
-        for mode, shift in self.shift.items():
+        self._shift["box"][:] = np.median(v) if len(v) else np.nan
+        for mode, shift in self._shift.items():
             w = v - shift[at]
             w = w[np.isfinite(w)]
             self.quantiles[mode] = np.quantile(w, np.linspace(0, 1, 1001)).round(4).tolist() if len(w) else []
@@ -502,7 +509,7 @@ class Overview:
                 if not old.name.startswith(f"overview-{COMMIT.id}-"):
                     old.unlink()
             np.savez(self.file, none=self.sum["none"], passage=self.sum["passage"], count=self.count,
-                     shift=self.shift["passage"], box=self.shift["box"][:1], pixels=self.pixels, seconds=self.seconds,
+                     shift=self._shift["passage"], box=self._shift["box"][:1], pixels=self.pixels, seconds=self.seconds,
                      quantiles=np.array([json.dumps(self.quantiles)]))
         self.ready.set()
 
@@ -512,8 +519,8 @@ class Overview:
             return False
         with np.load(self.file) as f:
             self.sum = {"none": f["none"], "passage": f["passage"]}
-            self.count, self.shift["passage"] = f["count"], f["shift"]
-            self.shift["box"][:] = f["box"][0]
+            self.count, self._shift["passage"] = f["count"], f["shift"]
+            self._shift["box"][:] = f["box"][0]
             self.pixels, self.seconds = int(f["pixels"]), float(f["seconds"])
             self.quantiles = json.loads(str(f["quantiles"][0]))
         self.ready.set()
@@ -538,7 +545,7 @@ class Overview:
         cut = lambda a: a[r0:r0 + 256 * k, c0:c0 + 256 * k].reshape(256, k, 256, k).sum((1, 3))  # noqa: E731
         with np.errstate(invalid="ignore", divide="ignore"):
             mean = cut(self.sum["passage" if mode == "passage" else "none"]) / cut(self.count)
-        return mean - (self.shift["box"][0] if mode == "box" else 0)
+        return mean - (self._shift["box"][0] if mode == "box" else 0)
 
     def near(self, west, east, south, north):
         """The passages over a box, a chunk at a time, as a small view in memory (the modes as the whole view's)."""
