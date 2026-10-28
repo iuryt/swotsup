@@ -50,21 +50,31 @@ def written(ds, store):
     return np.array(sorted(i for k in chunks for i in range(k * per, min((k + 1) * per, ds.sizes["time"]))), int)
 
 
-def nadir_envelope(ds, half_width=70.0):
+def nadir_envelope(ds, half_width=70.0, passes=None):
     """Each pass's west/east ends of its lines from its first passage's nadir and the swath's half width (km), for
-    stores whose envelopes (lon_min/lon_max) are not written yet: (pass_number, along) arrays like those."""
+    stores whose envelopes (lon_min/lon_max) are not written yet: (pass_number, along) arrays like those, NaN for
+    the passes not asked (`passes`: all by default). The nadirs are read in parallel."""
+    from concurrent.futures import ThreadPoolExecutor
+
     lon_min = np.full(ds.lon_min.shape, np.nan, "float32")
     lon_max = np.full(ds.lon_max.shape, np.nan, "float32")
     first = {}
     for i, p in enumerate(ds.pass_id.values):
         first.setdefault(int(p), i)
+    if passes is not None:
+        first = {p: i for p, i in first.items() if p in set(int(q) for q in passes)}
     numbers = list(ds.pass_number.values)
-    for p, i in first.items():
+
+    def one(item):
+        p, i = item
         nadir = ds[["latitude_nadir", "longitude_nadir"]].isel(time=i).load()
         dlon = half_width / (EARTH_RADIUS * np.pi / 180 * np.cos(np.deg2rad(nadir.latitude_nadir.values)))
         k = numbers.index(p)
         lon_min[k] = nadir.longitude_nadir.values - dlon
         lon_max[k] = nadir.longitude_nadir.values + dlon
+
+    with ThreadPoolExecutor(32) as pool:
+        list(pool.map(one, first.items()))
     return lon_min, lon_max
 
 
@@ -90,18 +100,20 @@ def distance(lat1, lon1, lat2, lon2):
     return 2 * EARTH_RADIUS * np.arcsin(np.sqrt(a))
 
 
-def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None):
-    """Mean of `var` over the pixels within `radius` km of (lon, lat), one value per passage.
-    Passages with fewer than `min_pixels` valid pixels there (nadir gap, swath edge) are dropped: by default a
-    quarter of what the circle holds on the 2 km grid, at least 1 (5 km: 5; 2 km: 1)."""
+def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None, mask=None):
+    """Mean of `var` over the pixels within `radius` km of (lon, lat), one value per passage (with `mask`, a
+    quality flag: only where it is 0). Passages with fewer than `min_pixels` valid pixels there (nadir gap, swath
+    edge) are dropped: by default a quarter of what the circle holds on the 2 km grid, at least 1 (5 km: 5)."""
     if min_pixels is None:
         min_pixels = max(1, round(np.pi * radius**2 / 4 / 4))
     km_per_deg = EARTH_RADIUS * np.pi / 180
     dlon = radius / (km_per_deg * np.cos(np.deg2rad(lat)))
     # lat(along) is the nadir latitude: swath edges lean up to ~0.3 deg away from it
     dlat = radius / km_per_deg + 0.5
-    sub = subset(ds, lon - dlon, lon + dlon, lat - dlat, lat + dlat)[[var, "latitude", "longitude"]].load()
+    sub = subset(ds, lon - dlon, lon + dlon, lat - dlat, lat + dlat)[[var, "latitude", "longitude"] + ([mask] if mask else [])].load()
     near = sub[var].where(distance(sub.latitude, sub.longitude, lat, lon) <= radius)
+    if mask:
+        near = near.where(sub[mask] == 0)
     count = near.count(("along", "cross"))
     out = xr.Dataset({var: near.mean(("along", "cross")), "pixels": count})
     return out.isel(time=(count >= min_pixels).values)

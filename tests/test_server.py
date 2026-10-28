@@ -207,3 +207,93 @@ def test_swath_drawn_where_the_nadir_gap_has_no_position(client):
     m = np.isfinite(data.mean_on("none", (x0, x1), (y0, y1), 14, 4))
     assert m[:, :3].all() and m[:, -3:].all()  # both sides of the gap
     assert not m[:, 6:8].any()  # not the gap itself
+
+
+def test_detail_tiles_take_the_base_colors(store_path, monkeypatch):
+    """A detail product (here the same store) is drawn from its zoom on, minus what the base view subtracts: where
+    both have the same data, a detail tile has the base tile's colors; off the swath it is transparent."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    monkeypatch.setenv("SWOT_DETAIL_STORE", store_path[0])
+    monkeypatch.setenv("SWOT_DETAIL_PRODUCT", "l3")
+    monkeypatch.setenv("SWOT_DETAIL_ZOOM", "6")
+    sys.modules.pop("server", None)
+    import server
+
+    c = TestClient(server.app)
+    view = PASS_7 | dict(mode="box", vmin=-0.05, vmax=0.05)  # values vary along the track: colors change
+    c.get("/api/load", params=PASS_7)
+    z, lon, lat = 6, 30.0, 5.0
+    fx = (lon + 180) / 360 * 2**z
+    fy = (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+    get = lambda kind: np.asarray(Image.open(io.BytesIO(c.get(f"/api/{kind}/{z}/{int(fx)}/{int(fy)}.png", params=view).content)).convert("RGBA"))  # noqa: E731
+    base, fine = get("tile"), get("detail")
+    on = base[..., 3] == 255
+    assert on.sum() > 100 and (fine[..., 3] == 255).sum() > 100
+    both = on & (fine[..., 3] == 255)
+    assert np.abs(base[both].astype(int) - fine[both].astype(int)).max() <= 2
+    assert (fine[~on][..., 3] == 0).all()  # nothing where the base has nothing
+    far = c.get(f"/api/detail/{z - 2}/{int(fx) // 4}/{int(fy) // 4}.png", params=view).content
+    assert (np.asarray(Image.open(io.BytesIO(far)).convert("RGBA"))[..., 3] == 0).all()  # not below its zoom - 1
+
+
+def test_coarse_levels_draw_what_the_full_data_draws(fine_store_path, monkeypatch):
+    """A view of the world (one tile pixel ~40 km over 2 km cells) is drawn from 16 x 16 block means: each block at
+    its centre, so the tile's means match those of every cell (data = cycle*1000 + line: a block put at its corner
+    would be ~8 lines off); a click still reads the cells themselves."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    c = TestClient(server.app)
+    view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
+    c.get("/api/load", params=view)
+    data = server.load(**view)[0]
+    assert 16 in data.levels
+    xr_, yr_ = server.tile_ranges(2, 2, 1)  # lon 0-90, lat 0-67: the swath from 0 to 10 N
+    # the data grow linearly along the track (one per line, lines every 0.02 deg from -10): a block's mean is the
+    # value at its centre, so each pixel should be, on average, the value at its own latitude
+    y = yr_[1] - (np.arange(256) + 0.5) * (yr_[1] - yr_[0]) / 256  # pixel rows from north to south
+    lat = np.rad2deg(2 * np.arctan(np.exp(y / server.R)) - np.pi / 2)
+    expected = (3000 + (lat + 10) / 0.02)[::-1, None]  # rows south to north, as mean_on gives them
+    for finest in (False, True):
+        m = data.mean_on("none", xr_, yr_, 256, 256, finest=finest)
+        ok = np.isfinite(m)
+        assert ok.sum() >= 5 and abs(np.mean((m - expected)[ok])) < 3
+    # a click reads the cells themselves: the value of its latitude's line (603.5 at 2.07 N), not a block's mean
+    assert abs(data.passages_at("none", *server.mercator(30.1, 2.07))[0][0] - (3000 + 12.07 / 0.02)) <= 1.5
+
+
+def test_l2_values_only_where_the_quality_flag_is_good(client):
+    """L2 values over land and ice reach kilometres: a product with a quality flag keeps only its pixels flagged 0,
+    for drawing, colors and clicks."""
+    import server
+    import xarray as xr
+
+    lat = np.repeat(np.linspace(-1, 1, 21)[:, None], 5, axis=1)[None]
+    lon = np.broadcast_to([29.8, 29.9, 30.0, 30.1, 30.2], lat.shape).copy()
+    values, flag = np.full(lat.shape, 0.1), np.zeros(lat.shape)
+    values[0, :, 3:], flag[0, :, 3:] = 2000.0, 132  # the east side: land, flagged
+    dims = ("time", "along", "cross")
+    sub = xr.Dataset({"v": (dims, values), "q": (dims, flag)}, coords={"latitude": (dims, lat), "longitude": (dims, lon)})
+    data = server.Loaded(sub, ["v"], 29, 31, mask="q")
+    assert data.quantiles["none"][-1] < 1  # the flagged values are not in the colors
+    (x0, x1), (y0, y1) = server.mercator(np.array([29.75, 30.25]), np.array([-0.5, 0.5]))
+    m = data.mean_on("none", (x0, x1), (y0, y1), 10, 4)
+    assert np.nanmax(m) < 1 and np.isfinite(m[:, :4]).all() and np.isnan(m[:, -2:]).all()
+
+
+def test_one_absurd_pixel_does_not_move_the_colors(client):
+    """What the modes subtract is a median: a pixel kilometres off (some L2 pixels pass their quality flag) leaves
+    the others near zero once the box's or the passage's middle is taken away."""
+    import server
+    import xarray as xr
+
+    lat = np.repeat(np.linspace(-1, 1, 21)[:, None], 5, axis=1)[None]
+    lon = np.broadcast_to([29.8, 29.9, 30.0, 30.1, 30.2], lat.shape).copy()
+    values = np.full(lat.shape, 0.1)
+    values[0, 7, 0] = 3000.0  # pixel 35 of the passage: in its sample (every 7th)
+    dims = ("time", "along", "cross")
+    sub = xr.Dataset({"v": (dims, values)}, coords={"latitude": (dims, lat), "longitude": (dims, lon)})
+    data = server.Loaded(sub, ["v"], 29, 31)
+    for mode in ("box", "passage"):
+        assert np.nanmedian(np.abs(data.value(mode, 0))) < 0.01

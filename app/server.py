@@ -12,6 +12,7 @@ import warnings
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+from types import SimpleNamespace
 from pathlib import Path
 
 import datashader as dsh
@@ -33,7 +34,8 @@ matplotlib.use("agg")
 # (whole globe, 1 day: 15 s -> 5 s with 8 CPUs; scripts/bench_server.py)
 zarr.config.set({"async.concurrency": 256})
 MAX_DAYS = 21
-MAX_PIXELS = 60e6  # ~2 days of the whole globe; keeps a load under ~1 GB of memory
+# pixels in one view (passages x lines x pixels across): 60 M is ~2 days of the whole globe in L3, ~4 GB in memory
+MAX_PIXELS = float(os.environ.get("SWOT_MAX_PIXELS", 60e6))
 MAX_BYTES = float(os.environ.get("SWOT_CACHE_GB", 4)) * 1e9  # loaded views kept in memory, beyond the newest
 # the product the store holds (SWOT_PRODUCT): its name, variables (label, the arrays summed) and opening view
 PRODUCTS = {
@@ -43,34 +45,64 @@ PRODUCTS = {
         "adt": ("ADT = SSHA + MDT", ["ssha_filtered", "mdt"])},
         # the whole globe on one day (kept in memory)
         default=dict(west=-180, east=180, south=-90, north=90, start="2024-11-02", days=1)),
+    # the L2 product on the same 2 km grid as L3 (the whole mission, with envelopes)
+    "expert": dict(label="L2 LR SSH Expert, 2 km", mask="ssha_karin_2_qual", variables={
+        "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
+        "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
+        default=dict(west=-180, east=180, south=-90, north=90, start="2026-10-01", days=1)),
     # 250 m, 64 times the pixels of L3: small regions only; being uploaded, so the passages with data only
-    "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", partial=True, variables={
+    "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", partial=True, mask="ssha_karin_2_qual", variables={
         "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
         "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
         default=None),  # the latest day with data, around a passage (below)
 }
 PRODUCT = PRODUCTS[os.environ.get("SWOT_PRODUCT", "l3")]
 VARIABLES = PRODUCT["variables"]
+# L2: values kept only where their quality flag is 0 (over land and ice they reach kilometres; until #3 lets the
+# user choose how strict)
+MASK = PRODUCT.get("mask")
+
+
+def masked(values, flag):
+    """Values where the quality flag is 0 (good), NaN elsewhere; unchanged without a flag."""
+    return values if flag is None else np.where(flag == 0, values, np.nan)
 MODES = ("box", "passage", "none")  # spatial mean subtracted: of the box, of each passage, nothing
 R = 6378137.0  # web mercator
 WORLD = 2 * np.pi * R
 CMAP = matplotlib.colormaps["RdBu_r"]
 
+def open_product(target, partial=False):
+    """A store at its latest commit (kept: a store being written changes while people look): the dataset, when each
+    passage was (`index`) and the passes' envelopes (`geometry`, which passes cross a box without reading data).
+    A store being filled (`partial`) shows only the passages with data, and envelopes not written yet come from
+    each pass's nadir and the swath's half width."""
+    repo = swot_view.open_repo(target)
+    commit = next(iter(repo.ancestry(branch="main")))
+    session = repo.readonly_session(snapshot_id=commit.id)
+    ds = swot_view.dataset(session.store)
+    if partial:
+        ds = ds.isel(time=swot_view.written(ds, session.store))
+        have = np.isfinite(ds.lon_min.values).any(1, keepdims=True)
+        missing = np.setdiff1d(np.unique(ds.pass_id.values), ds.pass_number.values[have[:, 0]])
+        print(f"{target}: {ds.sizes['time']} passages with data, {len(missing)} passes without envelopes", flush=True)
+        if len(missing):
+            lon_min, lon_max = swot_view.nadir_envelope(ds, passes=missing)
+            ds = ds.assign_coords(lon_min=(ds.lon_min.dims, np.where(have, ds.lon_min.values, lon_min)),
+                                  lon_max=(ds.lon_max.dims, np.where(have, ds.lon_max.values, lon_max)))
+    index = ds[["cycle", "pass_id"]].reset_coords().load()
+    geometry = ds[["lon_min", "lon_max"]].load()
+    return SimpleNamespace(ds=ds, index=index, geometry=geometry, commit=commit)
+
+
 STORE = os.environ.get("SWOT_STORE", swot_view.STORE)
-# the latest commit when the server starts, kept: a store being written changes while people look
-repo = swot_view.open_repo(STORE)
-COMMIT = next(iter(repo.ancestry(branch="main")))
-session = repo.readonly_session(snapshot_id=COMMIT.id)
-ds = swot_view.dataset(session.store)
-if PRODUCT.get("partial"):
-    ds = ds.isel(time=swot_view.written(ds, session.store))  # the passages with data, all the app sees
-    # passes whose envelopes are not written yet: from their nadir (the swath's half width around it)
-    lon_min, lon_max = swot_view.nadir_envelope(ds)
-    have = np.isfinite(ds.lon_min.values).any(1, keepdims=True)
-    ds = ds.assign_coords(lon_min=(ds.lon_min.dims, np.where(have, ds.lon_min.values, lon_min)),
-                          lon_max=(ds.lon_max.dims, np.where(have, ds.lon_max.values, lon_max)))
-index = ds[["cycle", "pass_id"]].reset_coords().load()  # when each passage was, for the timeline
-geometry = ds[["lon_min", "lon_max"]].load()  # which passes cross a box, without reading data
+base = open_product(STORE, PRODUCT.get("partial"))
+ds, index, geometry, COMMIT = base.ds, base.index, base.geometry, base.commit
+# a finer product over the same passages, drawn over the map from a zoom on (SWOT_DETAIL_STORE: e.g. L2 Unsmoothed
+# at 250 m over L2 Expert at 2 km); read tile by tile, a chunk at a time, never as a whole view
+DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE")
+DETAIL_PRODUCT = PRODUCTS[os.environ.get("SWOT_DETAIL_PRODUCT", "unsmoothed")]
+DETAIL_ZOOM = int(os.environ.get("SWOT_DETAIL_ZOOM", 9))
+detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial")) if DETAIL_STORE else None
 DEFAULT = PRODUCT["default"]
 if DEFAULT is None:  # the latest passage's day, 6 x 6 degrees around its nadir at the latitude nearest the equator
     last = int(np.argmax(index.time.values))
@@ -154,46 +186,107 @@ def across(a):
     return a
 
 
-class Loaded:
-    """One subset in memory: the passages over a box in a time window, ready to draw."""
+def coarse(a, k, mean=True):
+    """A (passages, lines, pixels) array k x k times coarser: block means (NaN only where a whole block is), or for
+    positions the pixel where datashader draws each block in place: its last line (along the lines, datashader draws
+    a value between the previous position and its own: block centres put the blocks ~half a block, 16 km, north)
+    and its middle pixel (across, it draws around the position)."""
+    n, rows, cols = a.shape
+    if not mean:
+        return a[:, k - 1::k, k // 2::k][:, :rows // k, :cols // k]
+    b = a[:, :rows // k * k, :cols // k * k].reshape(n, rows // k, k, cols // k, k)
+    with warnings.catch_warnings(action="ignore"):
+        return np.nanmean(b, axis=(2, 4)).astype(a.dtype)
 
-    def __init__(self, sub, names, west, east, line_time=None):
-        self.sub, self.names = sub, names
+
+def build_meshes(values, lon, lat, center):
+    """Each run of consecutive lines with all corners (a mesh needs them) and some data: (passage, its lines, x, y,
+    each line's lowest and highest y, the mesh's bounds). Joining runs across the lines between them (land, missing
+    lines) would draw long thin quads over the gap."""
+    meshes = []
+    for i in range(len(values)):
+        usable = np.isfinite(lon[i]).all(1) & np.isfinite(lat[i]).all(1) & np.isfinite(values[i]).any(1)
+        edges = np.flatnonzero(np.diff(np.r_[0, usable.astype(int), 0]))
+        for a, b in zip(edges[::2], edges[1::2]):
+            if b - a < 2:  # one line has no cells
+                continue
+            rows = slice(a, b)
+            xi, yi = mercator(continuous(lon[i][rows], center), lat[i][rows])  # float64: datashader draws float32
+            # cells (or unevenly rounded ones) with their edges at the outer centres, half a cell short
+            # lines run south to north: a view needs only the block of lines across its latitudes
+            meshes.append((i, rows, xi, yi, yi.min(1), yi.max(1), (xi.min(), xi.max(), yi.min(), yi.max())))
+    return meshes
+
+
+class Loaded:
+    """One subset in memory: the passages over a box in a time window, ready to draw. The values are kept once, as
+    float32; the modes subtract one number (the box's mean, or each passage's) when drawn. Coarser copies (4 x 4 and
+    16 x 16 block means) draw the views where a screen pixel holds many of the product's: the whole globe at 2 km is
+    hundreds of millions of cells."""
+
+    LEVELS = (1, 4, 16)
+
+    def __init__(self, sub, names, west, east, line_time=None, mask=None):
+        self.names = names
         self.line_time = line_time  # (time, along): when each line was measured
-        values = sum(sub[n] for n in names).values
-        lon = sub.longitude.values
+        values = masked(sum(sub[n].values for n in names), None if mask is None else sub[mask].values).astype("float32")
+        # positions as float32 (~1 m), the arrays summed dropped: what the clicks and lines need
+        self.sub = sub.drop_vars(list(names) + ([mask] if mask else [])).assign_coords(latitude=sub.latitude.astype("float32"),
+                                                      longitude=sub.longitude.astype("float32"))
+        lon, lat = sub.longitude.values, sub.latitude.values
         w, e = box_lons(west, east)
-        inside = np.where((lon - w) % 360 <= e - w, values, np.nan)
         center = (w + e) / 2
-        with warnings.catch_warnings(action="ignore"):  # all-NaN passages give NaN means
-            self.values = {"none": values, "box": values - np.nanmean(inside),
-                           "passage": values - np.nanmean(inside, axis=(1, 2), keepdims=True)}
-        # meshes: each run of consecutive lines with all corners (a mesh needs them) and some data. Joining
-        # runs across the lines between them (land, missing lines) would draw long thin quads over the gap.
-        self.meshes = []
-        lat = sub.latitude.values
+        # what the modes subtract: medians (robust: a few L2 pixels that pass the quality flag are kilometres off,
+        # and one of them moves a mean by decimetres), of the box (from a sample) and of each passage (every 7th
+        # pixel of its part in the box)
+        rng = np.random.default_rng(0)
+        idx = rng.integers(0, max(values.size, 1), min(values.size, 4_000_000))
+        in_box = lambda lo: (lo - w) % 360 <= e - w  # noqa: E731
+        sample = values.ravel()[idx]
+        inside = sample[in_box(lon.ravel()[idx]) & np.isfinite(sample)]
+        per = [np.where(in_box(lon[i].ravel()[::7]), values[i].ravel()[::7], np.nan) for i in range(len(values))]
+        with warnings.catch_warnings(action="ignore"):  # passages without data in the box: NaN
+            self.shift = {"none": np.zeros(len(values), "float32"),
+                          "box": np.full(len(values), np.median(inside) if len(inside) else np.nan, "float32"),
+                          "passage": np.array([np.nanmedian(v) for v in per], "float32")}
+        self.raw = values
         lon, lat = across(lon), across(lat)  # meshes need every corner; the nadir gap's are interpolated
-        for i in range(len(values)):
-            usable = np.isfinite(lon[i]).all(1) & np.isfinite(lat[i]).all(1) & np.isfinite(values[i]).any(1)
-            edges = np.flatnonzero(np.diff(np.r_[0, usable.astype(int), 0]))
-            for a, b in zip(edges[::2], edges[1::2]):
-                if b - a < 2:  # one line has no cells
-                    continue
-                rows = slice(a, b)
-                xi, yi = mercator(continuous(lon[i][rows], center), lat[i][rows])
-                # lines run south to north: a view needs only the block of lines across its latitudes
-                self.meshes.append((i, rows, xi, yi, yi.min(1), yi.max(1), (xi.min(), xi.max(), yi.min(), yi.max())))
-        self.nbytes = (sub.nbytes + sum(v.nbytes for v in self.values.values())
-                       + sum(m[2].nbytes + m[3].nbytes for m in self.meshes))
+        self.levels = {}
+        for k in self.LEVELS:
+            if k > 1 and min(values.shape[1:]) < 2 * k:
+                continue
+            v = values if k == 1 else coarse(values, k)
+            self.levels[k] = (v, build_meshes(v, *((lon, lat) if k == 1 else (coarse(lon, k, False), coarse(lat, k, False))),
+                                             center))
+        # the product's spacing on the map (median, mercator m): which level a view needs
+        widths = [np.nanmedian(np.hypot(np.diff(m[2], axis=1), np.diff(m[3], axis=1))) for m in self.levels[1][1][:50]]
+        self.spacing = float(np.nanmedian(widths)) if widths else 2000.0
+        self.nbytes = (self.sub.nbytes + sum(v.nbytes + sum(m[2].nbytes + m[3].nbytes for m in meshes)
+                                             for v, meshes in self.levels.values()))
+        # colors: quantiles of each mode from the sample (sorting all would take most of a load)
+        ok = np.isfinite(sample)
+        passage = idx[ok] // max(values[0].size if len(values) else 1, 1)
         self.quantiles = {}
-        for mode, v in self.values.items():
+        for mode, shift in self.shift.items():
+            v = sample[ok] - shift[passage]
             v = v[np.isfinite(v)]
             self.quantiles[mode] = np.quantile(v, np.linspace(0, 1, 1001)).round(4).tolist() if len(v) else []
 
-    def rasters(self, mode, x_range, y_range, width, height):
-        """Each mesh in view on a width x height grid: (passage, first line of the block, its x and y, raster)."""
+    def value(self, mode, i, level=1):
+        """A passage's values at a level, minus what the mode subtracts."""
+        return self.levels[level][0][i] - self.shift[mode][i]
+
+    @property
+    def pixels(self):
+        return int(np.isfinite(self.raw).sum())
+
+    def rasters(self, mode, x_range, y_range, width, height, finest=False):
+        """Each mesh in view on a width x height grid: (passage, first line of the block, its x and y, raster). At
+        the coarsest level whose cells are still smaller than a pixel of the grid, unless `finest`."""
+        pixel = (x_range[1] - x_range[0]) / width
+        level = 1 if finest else max(k for k in self.levels if k == 1 or k * self.spacing <= pixel)
         canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
-        for i, rows, x, y, line_y0, line_y1, (x0, x1, y0, y1) in self.meshes:
+        for i, rows, x, y, line_y0, line_y1, (x0, x1, y0, y1) in self.levels[level][1]:
             # lines run south to north: the first reaching the view from the south and the last from the north
             # (a small view can fall between two lines: then these two are the cell around it)
             above, below = np.flatnonzero(line_y1 >= y_range[0]), np.flatnonzero(line_y0 <= y_range[1])
@@ -201,19 +294,19 @@ class Loaded:
                 continue
             a, b = above[0], below[-1]
             block = slice(max(min(a, b) - 1, 0), max(a, b) + 2)  # one more line each side: whole cells
-            v = self.values[mode][i][rows][block]
+            v = self.value(mode, i, level)[rows][block]
             for shift in (-WORLD, 0, WORLD):  # the map repeats the world east and west
                 if x1 + shift < x_range[0] or x0 + shift > x_range[1]:
                     continue
+                xs, ys = x[block] + shift, y[block]
                 mesh = xr.DataArray(v, name="v", dims=("along", "cross"),
-                                    coords={"x": (("along", "cross"), x[block] + shift),
-                                            "y": (("along", "cross"), y[block])})
-                yield i, rows.start + block.start, x[block] + shift, y[block], canvas.quadmesh(mesh, x="x", y="y").values
+                                    coords={"x": (("along", "cross"), xs), "y": (("along", "cross"), ys)})
+                yield i, rows.start + block.start, xs, ys, canvas.quadmesh(mesh, x="x", y="y").values
 
-    def mean_on(self, mode, x_range, y_range, width, height):
+    def mean_on(self, mode, x_range, y_range, width, height, finest=False):
         """Mean of the passages on a width x height grid, NaN where none."""
         total, count = np.zeros((height, width)), np.zeros((height, width))
-        for *_, m in self.rasters(mode, x_range, y_range, width, height):
+        for *_, m in self.rasters(mode, x_range, y_range, width, height, finest):
             total, count = total + np.where(np.isfinite(m), m, 0), count + np.isfinite(m)
         with np.errstate(invalid="ignore"):
             return total / count
@@ -225,8 +318,8 @@ class Loaded:
         near = (self.sub.lat.values >= lat.min() - 2) & (self.sub.lat.values <= lat.max() + 2)  # lines near them
         lines = np.flatnonzero(near)
         values, rows = [], []
-        for i in range(len(self.values[mode])):
-            v = self.values[mode][i][near]
+        for i in range(len(self.raw)):
+            v = self.value(mode, i)[near]
             ok = np.isfinite(v) & np.isfinite(self.sub.latitude.values[i][near])
             out, row = np.full(len(pts), np.nan), np.full(len(pts), -1)
             if ok.any():
@@ -242,7 +335,7 @@ class Loaded:
     def passages_at(self, mode, x, y):
         """The passages with data on the ~1 km cell at (x, y): (value, passage, the line nearest the point)."""
         found = []
-        for i, first, xs, ys, m in self.rasters(mode, (x - 500, x + 500), (y - 500, y + 500), 1, 1):
+        for i, first, xs, ys, m in self.rasters(mode, (x - 500, x + 500), (y - 500, y + 500), 1, 1, finest=True):
             if np.isfinite(m[0, 0]):
                 found.append((m[0, 0], i, first + np.unravel_index(np.nanargmin((xs - x) ** 2 + (ys - y) ** 2), xs.shape)[0]))
         return found
@@ -271,7 +364,7 @@ def load(west, east, south, north, start, days, variable):
         sub = swot_view.subset(ds, west, east, south, north, start, end)
         if sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > MAX_PIXELS:
             raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
-        data = Loaded(sub[names].load(), names, west, east, sub.line_time.values)
+        data = Loaded(sub[names + ([MASK] if MASK else [])].load(), names, west, east, sub.line_time.values, MASK)
         with cache_lock:
             loaded[key] = data
             loading.pop(key, None)
@@ -317,6 +410,8 @@ def info():
                 passages=ds.sizes["time"], passes=ds.sizes["pass_number"], max_days=MAX_DAYS, default=DEFAULT,
                 variables={k: v[0] for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
                 netcdf=NETCDF, product=PRODUCT["label"],
+                detail=None if detail is None else dict(zoom=DETAIL_ZOOM, product=DETAIL_PRODUCT["label"],
+                                                        commit=detail.commit.id[:8]),
                 commit=dict(id=COMMIT.id[:8], time=str(pd.Timestamp(COMMIT.written_at).tz_convert(None)), message=COMMIT.message))
 
 
@@ -336,7 +431,7 @@ def load_view(west: float, east: float, south: float, north: float, start: str, 
     data, seconds = load(west, east, south, north, start, days, variable)
     end = pd.Timestamp(start) + pd.Timedelta(days=days - 1)
     return dict(passages=data.sub.sizes["time"], seconds=round(seconds, 2),
-                pixels=int(np.isfinite(data.values["none"]).sum()), quantiles=data.quantiles,
+                pixels=data.pixels, quantiles=data.quantiles,
                 code=swot_view.snippet(west, east, south, north, start, str(end.date()), data.names[0]))
 
 
@@ -344,11 +439,8 @@ EMPTY = io.BytesIO()
 Image.new("RGBA", (256, 256)).save(EMPTY, format="png")
 
 
-@app.get("/api/tile/{z}/{x}/{y}.png")
-def tile(z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2, data=Depends(view)):
-    size = WORLD / 2**z
-    x0, y1 = -WORLD / 2 + x * size, WORLD / 2 - y * size
-    mean = data.mean_on(mode, (x0, x0 + size), (y1 - size, y1), 256, 256)
+def png(mean, vmin, vmax):
+    """A tile's means as a PNG (transparent where NaN), or the empty tile."""
     if not np.isfinite(mean).any():
         return Response(EMPTY.getvalue(), media_type="image/png")
     rgba = (CMAP(np.clip((mean - vmin) / (vmax - vmin), 0, 1)) * 255).astype(np.uint8)
@@ -356,6 +448,79 @@ def tile(z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2, vmax: fl
     out = io.BytesIO()
     Image.fromarray(rgba[::-1]).save(out, format="png")  # rows from north to south
     return Response(out.getvalue(), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
+def tile_ranges(z, x, y):
+    size = WORLD / 2**z
+    x0, y1 = -WORLD / 2 + x * size, WORLD / 2 - y * size
+    return (x0, x0 + size), (y1 - size, y1)
+
+
+@app.get("/api/tile/{z}/{x}/{y}.png")
+def tile(z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2, data=Depends(view)):
+    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256), vmin, vmax)
+
+
+# --- the detail product, tile by tile: each passage's lines near the tile, read a chunk at a time and kept
+
+@lru_cache(maxsize=int(os.environ.get("SWOT_DETAIL_BLOCKS", 256)))  # ~3.4 MB each at 512 x 551 (float32)
+def detail_block(i, c, names):
+    """A passage's (time index `i`) chunk `c` of lines of the detail store: its values (the sum of `names`) and
+    positions, as float32."""
+    n = detail.ds.line_time.encoding["chunks"][1]
+    flag = DETAIL_PRODUCT.get("mask")
+    sub = detail.ds[list(names) + ["latitude", "longitude"] + ([flag] if flag else [])].isel(
+        time=i, along=slice(c * n, (c + 1) * n)).load()
+    values = masked(sum(sub[k].values for k in names), sub[flag].values if flag else None)
+    return (values.astype("float32"), sub.latitude.values.astype("float32"),
+            sub.longitude.values.astype("float32"))
+
+
+def offsets(data, mode):
+    """What the base view subtracts (mode): one number for the box, or one per passage ((cycle, pass) -> mean), so
+    the detail tiles take the same colors as the base's."""
+    if mode == "none":
+        return 0.0, {}
+    shift = data.shift[mode]
+    box = float(np.nanmean(shift))
+    keys = zip(data.sub.cycle.values.tolist(), data.sub.pass_id.values.tolist())
+    return box, {k: float(v) for k, v in zip(keys, shift) if np.isfinite(v)}
+
+
+@app.get("/api/detail/{z}/{x}/{y}.png")
+def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mode: str = "box",
+                vmin: float = -0.2, vmax: float = 0.2, data=Depends(view)):
+    """A tile of the detail product (from DETAIL_ZOOM - 1 on), over the base's: its passages in the view's dates
+    that cross the tile, minus what the base subtracts. Transparent where it has no data, so the base shows."""
+    names = DETAIL_PRODUCT["variables"].get(variable, (None, None))[1]
+    if detail is None or z < DETAIL_ZOOM - 1 or names is None:
+        return Response(EMPTY.getvalue(), media_type="image/png")
+    xr_, yr_ = tile_ranges(z, x, y)
+    lon = np.rad2deg(np.array(xr_) / R)
+    lat = np.rad2deg(2 * np.arctan(np.exp(np.array(yr_) / R)) - np.pi / 2)
+    west, east, south, north = lon[0], lon[1], lat[0], lat[1]
+    t0 = np.datetime64(start)
+    times = np.flatnonzero((detail.index.time.values >= t0) & (detail.index.time.values < t0 + np.timedelta64(days, "D")))
+    over = np.isin(detail.index.pass_id.values[times], swot_view.passes_over(detail.geometry, (west + 180) % 360 - 180,
+                                                                              (east + 180) % 360 - 180, south, north))
+    times = times[over]
+    # the lines whose nadir is near the tile's latitudes (a swath leans ~0.6 degree off its nadir)
+    rows = np.flatnonzero((detail.ds.lat.values >= south - 0.7) & (detail.ds.lat.values <= north + 0.7))
+    if not len(times) or not len(rows):
+        return Response(EMPTY.getvalue(), media_type="image/png")
+    n = detail.ds.line_time.encoding["chunks"][1]
+    chunks = range(rows[0] // n, rows[-1] // n + 1)
+    blocks = [[detail_block(int(i), c, tuple(names)) for c in chunks] for i in times]
+    first = rows[0] - chunks[0] * n
+    cut = lambda k: np.stack([np.concatenate([b[k] for b in bs])[first:first + len(rows)] for bs in blocks])  # noqa: E731
+    dims = ("time", "along", "cross")
+    sub = xr.Dataset({"v": (dims, cut(0))}, coords={"latitude": (dims, cut(1)), "longitude": (dims, cut(2))})
+    tiles = Loaded(sub, ["v"], west, east)
+    box, per = offsets(data, mode)
+    cycles, passes = detail.index.cycle.values[times], detail.index.pass_id.values[times]
+    shift = np.array([per.get((int(c), int(p)), box) for c, p in zip(cycles, passes)], "float32")
+    tiles.shift["shifted"] = shift
+    return png(tiles.mean_on("shifted", xr_, yr_, 256, 256), vmin, vmax)
 
 
 @app.get("/api/value")
@@ -437,7 +602,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
     cols = [np.tile(col, len(times)) for _, times, _, _, col, _ in found]
     if found:
         where = {dim: xr.DataArray(np.concatenate(v), dims="pixel") for dim, v in (("time", at), ("along", rows), ("cross", cols))}
-        values = sum(ds[n].isel(where).values for n in names)
+        values = masked(sum(ds[n].isel(where).values for n in names), ds[MASK].isel(where).values if MASK else None)
     out, k0 = [], 0
     for p, times, hit, row, col, offset in found:
         v = values[k0:k0 + len(times) * len(hit)].reshape(len(times), len(hit))  # (passages, points hit)
@@ -459,7 +624,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
 @app.get("/api/series")
 def series(lon: float, lat: float, variable: str, radius: float = 5):
     names = VARIABLES[variable][1]
-    s = sum(swot_view.point_series(ds, lon, lat, n, radius)[n] for n in names)
+    s = sum(swot_view.point_series(ds, lon, lat, n, radius, mask=MASK)[n] for n in names)
     return dict(time=(s.time.to_index().astype("int64") // 10**6).tolist(), value=s.values.round(4).tolist())
 
 

@@ -136,4 +136,5 @@ def test_written_passages_and_envelopes_from_the_nadir(store_path):
     assert len(swot_view.passes_over(ds, 29, 31, -1, 1)) == 0  # without envelopes, nothing
     ds = ds.assign_coords(lon_min=(ds.lon_min.dims, lon_min), lon_max=(ds.lon_max.dims, lon_max))
     np.testing.assert_array_equal(swot_view.passes_over(ds, 29, 31, -1, 1), [7, 20])
-    np.testing.assert_array_equal(swot_view.passes_over(ds, 30.7, 31, -1, 1), [20])  # 7 ends at 30.5 + 60 km
+    np.testing.assert_array_equal(swot_view.passes_over(ds, 30.7, 31, -1, 1), [20])  # 7 ends at 30.0 + 60 km
+    assert 7 in swot_view.passes_over(ds, 30.52, 30.6, -1, 1)  # ...which is east of 30.52 (the swath's edge: 30.5)
