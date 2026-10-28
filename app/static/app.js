@@ -51,11 +51,8 @@ async function loadData() {
   const where = isGlobe(state.box) ? "the whole globe" : "the region";
   const poll = setInterval(async () => {
     const p = await api("/api/progress", view).catch(() => ({}));
-    $("#progress").classList.toggle("hidden", !p.total);
-    if (!p.total) return;
-    $("#progress .progress-text").textContent = `Reading ${state.days} day${state.days > 1 ? "s" : ""} of ${where} from the cloud`;
-    $("#progress .progress-bar i").style.width = `${(100 * p.done / p.total).toFixed(1)}%`;
-    $("#progress .progress-count").textContent = `${p.done} of ${p.total} passages · ${Math.round(p.seconds)} s`;
+    if (p.total) showProgress("view", `Reading ${state.days} day${state.days > 1 ? "s" : ""} of ${where} from the cloud`,
+                              p.done / p.total, `${p.done} of ${p.total} passages · ${Math.round(p.seconds)} s`);
   }, 1000);
   try {
     const d = await api("/api/load", view);
@@ -70,8 +67,38 @@ async function loadData() {
     toast(e.message);
   } finally {
     clearInterval(poll);
-    $("#progress").classList.add("hidden");
+    showProgress("view", null);
     $("#busy").classList.add("hidden");
+  }
+}
+
+// the progress bar under the legend's title: of a view read in batches, or of the 250 m tiles in view (`kind`);
+// without a text, it goes (if it is still that kind's)
+function showProgress(kind, text, fraction, count) {
+  const el = $("#progress");
+  if (text == null) {
+    if (el.dataset.kind === kind) el.classList.add("hidden");
+    return;
+  }
+  el.dataset.kind = kind;
+  el.classList.remove("hidden");
+  $("#progress .progress-text").textContent = text;
+  $("#progress .progress-bar i").style.width = `${(100 * fraction).toFixed(1)}%`;
+  $("#progress .progress-count").textContent = count;
+}
+
+// the 250 m tiles in view: how many were asked and how many came (or were dropped); a bar while some are coming
+function watchDetail() {
+  let asked = new Set(), came = new Set();
+  const update = () => {
+    if (came.size >= asked.size) { asked = new Set(); came = new Set(); showProgress("detail", null); return; }
+    showProgress("detail", "Reading the 250 m here from the cloud", came.size / asked.size, `${came.size} of ${asked.size} tiles`);
+  };
+  const id = (e) => e.sourceId === "detail" && e.tile ? e.tile.tileID.key : null;
+  map.on("dataloading", (e) => { const k = id(e); if (k != null) { asked.add(k); update(); } });
+  for (const done of ["sourcedata", "dataabort", "error"]) {
+    map.on(done, (e) => { const k = id(e); if (k != null && asked.has(k) && (done !== "sourcedata" || e.tile.state === "loaded"
+      || e.tile.state === "errored")) { came.add(k); update(); } });
   }
 }
 
@@ -1185,6 +1212,7 @@ async function main() {
     setupLine();
     setupDrawing();
     setupCoords();
+    watchDetail();
     setBox({ west: d.west, east: d.east, south: d.south, north: d.north });
     drawOverview();
   });
