@@ -68,6 +68,10 @@ async function loadData() {
     state.code = d.code;
     if ($("#download")) $("#download").href = `/api/netcdf?${state.view}`;  // absent where SWOT_NETCDF=0
     setColors();
+    const after = state.afterLoad;  // a link's point and line, once its view is in
+    state.afterLoad = null;
+    after?.();
+    linkSoon();
   } catch (e) {
     toast(e.message);
   } finally {
@@ -160,6 +164,7 @@ function setColors() {
   document.querySelectorAll("#preset button").forEach((b) => b.classList.toggle("active", b.dataset.value === state.preset));
   document.querySelectorAll("#mode button").forEach((b) => b.classList.toggle("active", b.dataset.value === state.mode));
   $("#symmetric").checked = state.symmetric;
+  linkSoon();
   if (!state.data) return;
   if (transect && transect.key !== lineKey()) fillLine();
   const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}&cmap=${cmapOf()}`;
@@ -496,6 +501,7 @@ function closePoint() {
   pointCard?.remove();
   pin = pointCard = null;
   updateSheets();
+  linkSoon();
 }
 
 // on a small screen a card is a sheet in the color bar's place (hidden meanwhile), small; its grab bar (a tap,
@@ -535,6 +541,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
       <div class="chart"></div></div>`;
   const card = pointCard = el.querySelector(".card");
   card.lngLat = lngLat;
+  linkSoon();
   wireChart(card);
   if (sheet) {
     card.classList.add("sheet");
@@ -568,6 +575,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
     card.querySelector("h3").textContent += ` · ${info.variables[state.variable]}`;
     card.querySelector(".chart-buttons").classList.remove("hidden");
     fillSeries(card, lngLat, RADIUS);
+    linkSoon();
   };
   new ResizeObserver(() => {
     link();
@@ -793,15 +801,17 @@ function openTransect(points) {
   wireChart(card);
   lucide.createIcons();
   transect = { points, step: 2, card, kind: "profile", hovMode: "time" };
+  linkSoon();
   updateSheets();
   card.querySelector(".close").onclick = () => {
-    card.tip?.remove(); card.remove(); transect = null; showLine([]); showProbe(null); updateSheets();
+    card.tip?.remove(); card.remove(); transect = null; showLine([]); showProbe(null); updateSheets(); linkSoon();
   };
-  card.querySelector(".step").onchange = (e) => { transect.step = Number(e.target.value); fillLine(); };
-  card.querySelector(".hov-mode").onchange = (e) => { transect.hovMode = e.target.value; fillHovmoller(); };
+  card.querySelector(".step").onchange = (e) => { transect.step = Number(e.target.value); fillLine(); linkSoon(); };
+  card.querySelector(".hov-mode").onchange = (e) => { transect.hovMode = e.target.value; fillHovmoller(); linkSoon(); };
   card.querySelector(".kind").onclick = (e) => {
     if (!e.target.dataset.v || e.target.dataset.v === transect.kind) return;
     transect.kind = e.target.dataset.v;
+    linkSoon();
     card.querySelectorAll(".kind button").forEach((b) => b.classList.toggle("active", b === e.target));
     card.querySelector(".hov-mode").classList.toggle("hidden", transect.kind !== "hovmoller");
     // time against distance needs room: a taller card (a tall sheet on a small screen)
@@ -1196,15 +1206,97 @@ function setProjection(globe) {
   lucide.createIcons();
   try { localStorage.setItem("projection", globe ? "globe" : "mercator"); } catch (e) {}
   drawOverview();
+  linkSoon();
+}
+
+// --- the link: the address keeps what is on screen, after the # (kept up to date as people move, without a reload
+// or history entries), and opening it rebuilds it all. view=W,E,S,N,start,days,variable & map=lon,lat,zoom,globe|flat
+// & mode & cmap & range=1|2|5|vmin,vmax & point=lon,lat[,series] & line=lon,lat;lon,lat/profile|hovmoller/step/hovMode
+function linkNow() {
+  if (!map || !state.box) return;
+  const f = (x, n = 4) => +Number(x).toFixed(n), b = state.box, c = map.getCenter();
+  const parts = [`view=${[b.west, b.east, b.south, b.north].map((x) => f(x, 3)).join(",")},${isoDay(state.start)},${state.days},${state.variable}`,
+    `map=${f(c.lng)},${f(c.lat)},${f(map.getZoom(), 2)},${document.body.classList.contains("globe") ? "globe" : "flat"}`,
+    `mode=${state.mode}`, `cmap=${cmapOf()}`, `range=${state.preset === "custom" ? `${state.vmin},${state.vmax}` : state.preset}`];
+  if (pointCard?.lngLat) parts.push(`point=${f(pointCard.lngLat.lng)},${f(pointCard.lngLat.lat)}${pointCard.classList.contains("compact") ? "" : ",series"}`);
+  if (transect) parts.push(`line=${transect.points.map(([x, y]) => `${f(x)},${f(y)}`).join(";")}/${transect.kind}/${transect.step}/${transect.hovMode}`);
+  history.replaceState(null, "", "#" + parts.join("&"));
+}
+function linkSoon() { clearTimeout(linkSoon.timer); linkSoon.timer = setTimeout(linkNow, 300); }
+
+function readLink() {  // what the address after the # asks for (anything malformed is left out)
+  const out = {};
+  for (const part of location.hash.slice(1).split("&")) {
+    const [key, value] = [part.slice(0, part.indexOf("=")), decodeURIComponent(part.slice(part.indexOf("=") + 1))];
+    try {
+      if (key === "view") {
+        const v = value.split(",");
+        const box = Object.fromEntries(["west", "east", "south", "north"].map((k, i) => [k, Number(v[i])]));
+        if (Object.values(box).every(Number.isFinite) && info.variables[v[6]] && !isNaN(Date.parse(v[4])))
+          out.view = { box, start: Date.parse(v[4] + "T00:00:00Z"), days: Math.min(Math.max(Number(v[5]) || 1, 1), info.max_days), variable: v[6] };
+      } else if (key === "map") {
+        const v = value.split(",");
+        if ([0, 1, 2].every((i) => Number.isFinite(Number(v[i])))) out.map = { center: [Number(v[0]), Number(v[1])], zoom: Number(v[2]), globe: v[3] !== "flat" };
+      } else if (key === "mode" && ["box", "passage", "none"].includes(value)) out.mode = value;
+      else if (key === "cmap" && info.colormaps[value]) out.cmap = value;
+      else if (key === "range") {
+        const v = value.split(",").map(Number);
+        if (v.length === 2 && v.every(Number.isFinite)) out.range = { vmin: v[0], vmax: v[1] };
+        else if (["1", "2", "5"].includes(value)) out.range = { preset: value };
+      } else if (key === "point") {
+        const v = value.split(",");
+        if (Number.isFinite(Number(v[0])) && Number.isFinite(Number(v[1]))) out.point = { lngLat: new maplibregl.LngLat(Number(v[0]), Number(v[1])), series: v[2] === "series" };
+      } else if (key === "line") {
+        const [pts, kind, step, hovMode] = value.split("/");
+        const points = pts.split(";").map((xy) => xy.split(",").map(Number)).filter((xy) => xy.length === 2 && xy.every(Number.isFinite));
+        if (points.length > 1) out.line = { points, kind: kind === "hovmoller" ? "hovmoller" : "profile", step: Number(step) === 0.25 ? 0.25 : 2,
+                                            hovMode: hovMode === "none" ? "none" : "time" };
+      }
+    } catch (e) {}
+  }
+  return out;
+}
+
+function restoreLink(link) {  // the point and the line of a link, once its view is loaded
+  if (link.point) {
+    openPoint(link.point.lngLat);
+    if (link.point.series) pointCard?.querySelector(".expand")?.click();
+  }
+  if (link.line) {
+    openTransect(link.line.points);
+    transect.hovMode = link.line.hovMode;
+    transect.card.querySelector(".hov-mode").value = link.line.hovMode;
+    if (link.line.step === 0.25 && info.looks[state.variable].fine) {
+      transect.step = 0.25;
+      transect.card.querySelector(".step").value = "0.25";
+    }
+    if (link.line.kind === "hovmoller") transect.card.querySelector('.kind [data-v="hovmoller"]').click();
+    else fillLine();
+  }
+}
+
+async function copyLink() {  // the public address (on the EC2: the link that wakes it) with the view
+  linkNow();
+  const url = (info.public_url || location.origin + location.pathname) + location.hash;
+  try { await navigator.clipboard.writeText(url); toast("Link copied: it opens this view"); }
+  catch (e) { prompt("Copy this link:", url); }
 }
 
 // --- start
 async function main() {
   info = await api("/api/info");
-  const d = info.default;
-  Object.assign(state, { variable: d.variable, start: Date.parse(d.start + "T00:00:00Z"), days: d.days });
+  const link = readLink();
+  const d = link.view ? { ...link.view.box, variable: link.view.variable } : info.default;
+  Object.assign(state, { variable: d.variable, start: Date.parse(info.default.start + "T00:00:00Z"), days: info.default.days });
+  if (link.view) Object.assign(state, { start: link.view.start, days: link.view.days });
+  if (!isAnomaly()) Object.assign(state, { mode: "none", symmetric: false });
+  if (link.mode) state.mode = link.mode;
+  if (link.cmap) state.cmaps[state.variable] = link.cmap;
+  if (link.range?.preset) state.preset = link.range.preset;
+  if (link.range?.vmin != null) Object.assign(state, { preset: "custom", vmin: link.range.vmin, vmax: link.range.vmax });
   $("#variable").innerHTML = Object.entries(info.variables).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
   $("#variable").value = state.variable;
+  $("#link-button").onclick = copyLink;
   document.querySelectorAll(".max-days").forEach((e) => (e.textContent = info.max_days));
   $("#about-coverage").textContent = `${dayText(Date.parse(info.first))} to ${dayText(Date.parse(info.last))}, ` +
     `${info.passages.toLocaleString("en")} passages over ${info.passes} passes of the 21-day orbit`;
@@ -1220,14 +1312,14 @@ async function main() {
   try { saved = localStorage.getItem("projection"); } catch (e) {}
   // on a small screen the panels cover the bottom and the top: the map centers in the room left between them
   const padding = narrow() ? { top: 56, bottom: $("#time").offsetHeight + $("#legend").offsetHeight + 24 } : { top: 0, bottom: 0 };
-  const globe = saved !== "mercator", room = Math.min(innerWidth, innerHeight - padding.top - padding.bottom - (narrow() ? 20 : 160));
+  const globe = link.map ? link.map.globe : saved !== "mercator", room = Math.min(innerWidth, innerHeight - padding.top - padding.bottom - (narrow() ? 20 : 160));
   const zoom = Math.min(2.3, Math.log2(room * 0.95 * Math.PI / 512)) - (globe ? 0 : 0.7);
   document.body.classList.toggle("globe", globe);
   // the opening region in view: the world, or a smaller default box (a product of small regions) filling the room
   const box = isGlobe(d) ? null : d, span = box && Math.max(((d.east - d.west) % 360 + 360) % 360, d.north - d.south);
   map = new maplibregl.Map({
-    container: "map", center: box ? [d.west + (((d.east - d.west) % 360 + 360) % 360) / 2, (d.south + d.north) / 2] : [20, 5],
-    zoom: box ? Math.log2(room * 360 / 512 / span) - 0.3 : zoom, minZoom: 0, maxZoom: 11, attributionControl: false,
+    container: "map", center: link.map ? link.map.center : box ? [d.west + (((d.east - d.west) % 360 + 360) % 360) / 2, (d.south + d.north) / 2] : [20, 5],
+    zoom: link.map ? link.map.zoom : box ? Math.log2(room * 360 / 512 / span) - 0.3 : zoom, minZoom: 0, maxZoom: 11, attributionControl: false,
     style: { version: 8, projection: { type: globe ? "globe" : "mercator" }, sources: { basemap: { type: "raster", tiles: [url], tileSize: 256, maxzoom: 9,
                                                 attribution: `GEBCO, NOAA NCEI · SWOT: ${info.credit}` } },
              layers: [{ id: "basemap", type: "raster", source: "basemap",
@@ -1260,10 +1352,12 @@ async function main() {
     setupCoords();
     watchDetail();
     setupCmap();
+    if (link.point || link.line) state.afterLoad = () => restoreLink(link);
     setBox({ west: d.west, east: d.east, south: d.south, north: d.north });
     drawOverview();
   });
   map.on("move", drawOverview);
+  map.on("moveend", linkSoon);
   map.on("click", (e) => {
     if (document.body.classList.contains("sheet")) document.body.classList.remove("sheet");  // a tap outside closes it
     else if (!state.drawing && !state.lining && !state.justDrew) openPoint(e.lngLat);

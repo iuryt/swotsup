@@ -85,6 +85,11 @@ be resumed here (`claude --resume`).
   reaching halfway to the next passage at most 4 px, so it looks filled until zoomed; minus the mean over time at
   each point by default (points with few passages left empty), or as stored (done in the page, no new read);
   box zoom, wheel on the time, double-click back; a click moves the map to that passage's date).
+  The address keeps the view after the # (`linkNow`/`readLink`: region, dates, variable, map position and projection,
+  mode, colormap, color range, the clicked point and whether its series is open, the drawn line with its kind and
+  step), updated as people move (replaceState); opening it rebuilds it all. "Link" copies it with the public address
+  (`SWOT_PUBLIC_URL`; on the EC2 the Lambda link, written into the package by `slurm/ec2.sh`; the waiting page passes
+  the # on).
   Each chart card has buttons for its figure (PNG, from the chart's canvas), its numbers (NetCDF:
   `/api/series.nc`, `/api/transect.nc`, `/api/hovmoller.nc`, under the same switch as the region's NetCDF) and the
   code that reproduces it (`/api/code/series`, `/api/code/line`: `swot_view.series_snippet` / `line_snippet`,
