@@ -16,7 +16,7 @@ $PIXI uvicorn server:app --app-dir app --port $PORT > logs/shot-server-$SLURM_JO
 for i in $(seq 120); do curl -sf -o /dev/null "http://localhost:$PORT/api/info" && break; sleep 5; done
 [ $# -ge 2 ] && $PIXI python scripts/screenshot.py "$1" "$2"
 rm -f img/app-*.png  # this run's only (img/history keeps every version): a scenario gone must not be copied again
-$PIXI python scripts/screenshot.py "http://localhost:$PORT/" img/app open click series line hovmoller flat dateline phone
+$PIXI python scripts/screenshot.py "http://localhost:$PORT/" img/app open click series line hovmoller flat dateline  # phone: run it on its own
 kill %1; grep -v "WARN cache" logs/shot-server-$SLURM_JOB_ID.log | tail -40
 # keep every version: a dated copy (with the commit, + if there are uncommitted changes) in img/history
 STAMP=$(date -u +%Y-%m-%dT%H%M)_$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- app || echo +)

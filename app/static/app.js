@@ -45,9 +45,19 @@ function toast(text) {
 // --- loading data for the region and dates
 async function loadData() {
   $("#busy").classList.remove("hidden");
+  // every later request (tiles, values, download) names this view, so the server can read it again
+  const view = new URLSearchParams({ ...state.box, start: isoDay(state.start), days: state.days, variable: state.variable });
+  // a view too big to keep is read in batches: how far, while it lasts
+  const where = isGlobe(state.box) ? "the whole globe" : "the region";
+  const poll = setInterval(async () => {
+    const p = await api("/api/progress", view).catch(() => ({}));
+    $("#progress").classList.toggle("hidden", !p.total);
+    if (!p.total) return;
+    $("#progress .progress-text").textContent = `Reading ${state.days} day${state.days > 1 ? "s" : ""} of ${where} from the cloud`;
+    $("#progress .progress-bar i").style.width = `${(100 * p.done / p.total).toFixed(1)}%`;
+    $("#progress .progress-count").textContent = `${p.done} of ${p.total} passages · ${Math.round(p.seconds)} s`;
+  }, 1000);
   try {
-    // every later request (tiles, values, download) names this view, so the server can read it again
-    const view = new URLSearchParams({ ...state.box, start: isoDay(state.start), days: state.days, variable: state.variable });
     const d = await api("/api/load", view);
     state.data = d;
     state.view = view.toString();
@@ -59,6 +69,8 @@ async function loadData() {
   } catch (e) {
     toast(e.message);
   } finally {
+    clearInterval(poll);
+    $("#progress").classList.add("hidden");
     $("#busy").classList.add("hidden");
   }
 }
@@ -456,12 +468,11 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
     <div class="card compact">
       <header><div><h3>${latText(lngLat.lat)} ${lonText(lngLat.lng)}</h3>
         <p class="hint"><span class="spinner"></span></p></div>
-        <div class="tools"><span class="chart-buttons hidden">${chartButtons()}</span><select class="hidden" title="Mean of the pixels within this distance">
-          ${[2, 5, 10, 20].map((r) => `<option value="${r}" ${r === 5 ? "selected" : ""}>${r} km</option>`).join("")}</select>
+        <div class="tools"><span class="chart-buttons hidden">${chartButtons()}</span>
           <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
       <button class="expand" title="Mean around this point, every passage of the mission"><i data-lucide="chart-line"></i>Time series</button>
       <div class="chart"></div></div>`;
-  const card = pointCard = el.querySelector(".card"), radius = card.querySelector("select");
+  const card = pointCard = el.querySelector(".card");
   card.lngLat = lngLat;
   wireChart(card);
   if (sheet) {
@@ -472,7 +483,6 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
   }
   for (const ev of ["mousedown", "mouseup", "click", "dblclick", "wheel", "pointerdown"]) card.addEventListener(ev, (e) => e.stopPropagation());
   card.querySelector(".close").onclick = closePoint;
-  radius.onchange = () => fillSeries(card, lngLat, Number(radius.value));
   // the line goes from the point to the card's nearest corner; the card can be moved (by its header) and resized
   const line = el.querySelector("line");
   const link = () => {
@@ -495,9 +505,8 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
     card.classList.remove("compact");
     if (!sheet) Object.assign(card.style, { width: `${w}px`, height: `${h}px` });
     card.querySelector("h3").textContent += ` · ${info.variables[state.variable]}`;
-    radius.classList.remove("hidden");
     card.querySelector(".chart-buttons").classList.remove("hidden");
-    fillSeries(card, lngLat, 5);
+    fillSeries(card, lngLat, RADIUS);
   };
   new ResizeObserver(() => {
     link();
@@ -537,7 +546,7 @@ function chartSize(card) {  // the chart fills the card below its header (and gr
   return { width: card.clientWidth - 24, height: card.clientHeight - card.querySelector(".chart").offsetTop - 12 };
 }
 
-const FINE_RADIUS = 1;  // km: the 250 m series' circle (~50 pixels)
+const RADIUS = 5, FINE_RADIUS = 1;  // km: the series' circles (2 km pixels: ~20; 250 m pixels: ~50)
 const SERIES = [{ color: "#3b82f6" }, { color: "#f97316" }];  // 2 km, 250 m
 
 async function fillSeries(card, lngLat, radius) {
@@ -984,7 +993,7 @@ const chartButtons = () => `<button class="ghost icon" data-get="png" title="Dow
 
 function chartQuery(card) {  // what the card shows, as the server's endpoints name it
   if (card === pointCard) {
-    const [lon, lat, radius] = [wrap(card.lngLat.lng), card.lngLat.lat, Number(card.querySelector("select").value)];
+    const [lon, lat, radius] = [wrap(card.lngLat.lng), card.lngLat.lat, RADIUS];
     return { kind: "series", params: { lon, lat, radius, variable: state.variable }, title: card.querySelector("h3").textContent };
   }
   const points = transect.points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";");
