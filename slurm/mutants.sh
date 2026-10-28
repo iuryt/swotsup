@@ -22,7 +22,7 @@ one() {  # index, file, sed expression, label: in a fresh copy
     local d=$BASE/$1
     cp -r "$BASE/src" "$d" && cd "$d" && sed -i "$3" "$2"
     if cmp -s "$2" "$BASE/src/$2"; then echo "NOT APPLIED: $4"
-    elif PYTHONPATH=$d "$PYTHON" -m pytest -q -x -p no:cacheprovider tests >/dev/null 2>&1; then echo "SURVIVED: $4"
+    elif PYTHONPATH=$d timeout 300 "$PYTHON" -m pytest -q -x -p no:cacheprovider tests >/dev/null 2>&1; then echo "SURVIVED: $4"
     else echo "caught: $4"; fi
     rm -rf "$d"
 }
