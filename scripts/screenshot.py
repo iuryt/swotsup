@@ -6,6 +6,8 @@
   flat   switch to the flat map
   hovmoller  the line's Hovmöller (after `line`): the whole mission, a hover, a zoom box, a click on a passage
   dateline  drag a box across 180 degrees, on the globe and on the flat map (the region it gives is printed)
+  zoom   zoom in step by step on a point (SCREENSHOT_ZOOM="lon,lat", default an Atlantic swath on 1 Oct 2026), timing
+         each step until its tiles are in: with a detail product, the base turning into it
   phone  a phone (390x844, touch): the opening view, a tapped point and its series (small and tall), the menu sheet, a line
          drawn with taps and Done (profile and Hovmöller), the date buttons, a new band and moving it, and the opening view held sideways
 A scenario that fails (an older version without that feature) does not stop the others. Browser errors are
@@ -114,6 +116,18 @@ with sync_playwright() as p:
             page.wait_for_timeout(5000)
             print("hovmoller click, dates:", page.inner_text("#selection"), flush=True)
             shot("hovmoller-click")
+        elif scenario == "zoom":
+            import os
+            import time
+            lon, lat = map(float, os.environ.get("SCREENSHOT_ZOOM", "-11.2,0.07").split(","))
+            for z in (3, 6, 7.5, 8, 8.5, 9, 10, 11, 12):
+                t = time.perf_counter()
+                page.evaluate(f"map.jumpTo({{center: [{lon}, {lat}], zoom: {z}}})")
+                page.wait_for_timeout(300)
+                page.wait_for_load_state("networkidle", timeout=180_000)
+                page.wait_for_function("map.areTilesLoaded()", timeout=180_000)
+                print(f"zoom {z}: tiles in {time.perf_counter() - t:.1f} s", flush=True)
+                shot(f"zoom-{z}")
         elif scenario == "dateline":
             for projection in ("globe", "flat"):
                 if page.evaluate("document.body.classList.contains('globe')") != (projection == "globe"):

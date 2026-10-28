@@ -96,6 +96,16 @@ function setColors() {
     map.addSource("swot", { type: "raster", tiles: [url], tileSize: 256 });
     map.addLayer({ id: "swot", type: "raster", source: "swot", paint: { "raster-fade-duration": 0, "raster-resampling": "nearest" } }, "box");
   }
+  if (!info.detail) return;
+  // the finer product over it, from a zoom on: it fades in over one zoom level, and where it has no data (passages
+  // not there yet, its gaps) the base still shows, so zooming in turns one into the other
+  const detail = url.replace("/api/tile/", "/api/detail/"), z = info.detail.zoom;
+  if (map.getSource("detail")) map.getSource("detail").setTiles([detail]);
+  else {
+    map.addSource("detail", { type: "raster", tiles: [detail], tileSize: 256, minzoom: z - 1 });
+    map.addLayer({ id: "detail", type: "raster", source: "detail", minzoom: z - 1, paint: { "raster-fade-duration": 0,
+      "raster-resampling": "nearest", "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z, 1] } }, "box");
+  }
 }
 
 // --- the dates: from the timeline, or a click on a time series
@@ -1064,8 +1074,8 @@ async function main() {
     `${info.passages.toLocaleString("en")} passages over ${info.passes} passes of the 21-day orbit`;
   $("#version").textContent = `${info.release} (code ${info.version})`;
   const at = new Date(info.commit.time + "Z");
-  $("#product").textContent = `Sea surface height · ${info.product} · commit ${info.commit.id}, ` +
-    `${dayText(at)} ${at.toISOString().slice(11, 16)} UTC`;
+  $("#product").textContent = `Sea surface height · ${info.product}` + (info.detail ? ` · ${info.detail.product} from zoom ${info.detail.zoom}` : "") +
+    ` · commit ${info.commit.id}, ${dayText(at)} ${at.toISOString().slice(11, 16)} UTC`;
   $("#product").title = `The store as of this commit (the latest when the server started): ${info.commit.message}`;
   const [url, brightness] = BASEMAPS["Bathymetry, gray"];
   // the projection remembered in this browser (globe by default), set before the first frame, and a zoom where
