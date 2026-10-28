@@ -217,7 +217,7 @@ with sync_playwright() as p:
                 print("phone drawing:", phone.inner_text("#drawing-text"), flush=True)
                 phone.screenshot(path=f"{prefix}-phone-drawing.png")
                 phone.tap("#done")
-                phone.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=60_000)
+                phone.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=180_000)
                 phone.wait_for_timeout(1500)
                 print("phone line:", phone.inner_text(".card.transect .hint"), flush=True)
                 phone.screenshot(path=f"{prefix}-phone-line.png")
