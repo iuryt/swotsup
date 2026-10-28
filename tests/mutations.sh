@@ -71,3 +71,4 @@ mutate app/server.py 's/    rgba = (COLORMAPS\[cmap\](np.clip/    rgba = (COLORM
 mutate app/server.py 's/    return name if name in COLORMAPS else VARIABLES\[variable\].cmap/    return name if name in COLORMAPS else "viridis"/' "a variable without its own colormap"
 mutate app/swot_view.py 's/        near = 10 \* np.log10(near.where(near > 0))$/        pass/' "a series in dB averaged in linear units"
 mutate app/swot_view.py 's/            calls.append(f"series = point_series(ds, {list(arrays)}, {r:g}, {size:g}, {flag!r}, {decibels!r})")/            calls.append(f"series = point_series(ds, {list(arrays)}, {r:g}, {size:g}, {flag!r}, False)")/' "series code without dB"
+mutate app/server.py 's/                public_url=os.environ.get("SWOT_PUBLIC_URL"),/                public_url=None,/' "copied links without the public address"

@@ -23,8 +23,9 @@ instance() {
     --filters Name=tag:Name,Values=$NAME Name=instance-state-name,Values=pending,running,stopping,stopped
 }
 address() { aws ec2 describe-addresses --filters Name=tag:Name,Values=$NAME --query "Addresses[0].$1" --output text; }
-send_code() {  # build context (Dockerfile at the root) and the boot script
-  tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh
+send_code() {  # build context (Dockerfile at the root), the boot script, and the link to share (copied links start with it)
+  aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text > logs/public_url 2>/dev/null || : > logs/public_url
+  tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh -C ../logs public_url
   aws s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
 # what the instance may read: the S3 store, the app package, and the secrets under /swot-explorer/ in SSM

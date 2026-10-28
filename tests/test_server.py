@@ -580,3 +580,14 @@ def test_tiles_in_the_colormap_asked_or_the_variable_own(client):
     monkeypatch_var = server.VARIABLES["ssha_unfiltered"]
     assert server.colormap("no such map", "ssha_unfiltered") == monkeypatch_var.cmap == "RdBu_r"
     assert server.colormap("cmo.gray", "ssha_unfiltered") == "cmo.gray"
+
+
+
+def test_copied_links_start_with_the_public_address(store_path, monkeypatch):
+    """The address copied links start with (on the EC2, the link that wakes it) comes from SWOT_PUBLIC_URL."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    monkeypatch.setenv("SWOT_PUBLIC_URL", "https://wake.example/")
+    sys.modules.pop("server", None)
+    import server
+
+    assert TestClient(server.app).get("/api/info").json()["public_url"] == "https://wake.example/"
