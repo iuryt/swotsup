@@ -550,3 +550,28 @@ def test_progress_of_an_overview_being_built(store_path, monkeypatch):
     assert c.get("/api/progress", params=PASS_7).json() == {}
     over.ready.set()
     assert c.get("/api/progress", params=big).json() == {}
+
+
+
+def test_an_overview_that_cannot_be_kept_or_read(store_path, tmp_path, monkeypatch):
+    """An overview that cannot be kept on disk (a directory it may not write) is still ready; one whose reading fails
+    answers with the error instead of keeping the page waiting."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    sys.modules.pop("server", None)
+    import server
+
+    monkeypatch.setitem(server.PRODUCT, "overview", True)
+    monkeypatch.setattr(server, "OVERVIEW_PIXELS", 5000)
+    blocked = tmp_path / "blocked"
+    blocked.write_text("a file, not a directory")
+    monkeypatch.setattr(server, "CACHE_DIR", str(blocked))
+    big = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    both = [server.Overview(big, variable) for variable in ("ssha_unfiltered", "ssha_filtered")]  # as the opening's
+    server.build_overviews(big, both)
+    assert all(o.ready.is_set() and o.error is None and o.quantiles["none"] for o in both)
+    c = TestClient(server.app)
+    assert c.get("/api/load", params=big).json()["passages"] == 4
+    other = big | dict(start="2024-01-04", days=3)
+    monkeypatch.setattr(server, "read", lambda *a: (_ for _ in ()).throw(RuntimeError("the cloud is down")))
+    failed = c.get("/api/load", params=other)
+    assert failed.status_code == 500 and "the cloud is down" in failed.json()["detail"]

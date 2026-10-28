@@ -454,6 +454,7 @@ class Overview:
         self._shift = {mode: np.zeros(len(self.times), "float32") for mode in ("none", "box", "passage")}
         self.samples, self.quantiles, self.pixels, self.seconds = [], {}, 0, 0.0
         self.done, self.started = 0, None  # passages read so far, and when the build started (progress)
+        self.error = None  # why the build failed, if it did (then it is "ready", with nothing to show)
         self.read_ahead = []
         box = "_".join(f"{view[k]:g}" for k in ("west", "east", "south", "north"))
         self.file = (os.path.join(CACHE_DIR, f"overview-{COMMIT.id}-{box}-{view['start']}-{view['days']}-{variable}.npz")
@@ -503,14 +504,17 @@ class Overview:
             w = w[np.isfinite(w)]
             self.quantiles[mode] = np.quantile(w, np.linspace(0, 1, 1001)).round(4).tolist() if len(w) else []
         self.samples = []
-        if self.file:  # kept for a restart; those of older commits or cycles go
-            for old in Path(CACHE_DIR).glob(f"overview-*-{self.variable}.npz"):
-                if not old.name.startswith(f"overview-{COMMIT.id}-"):
-                    old.unlink()
-            np.savez(self.file, none=self.sum["none"], passage=self.sum["passage"], count=self.count,
-                     shift=self._shift["passage"], box=self._shift["box"][:1], pixels=self.pixels, seconds=self.seconds,
-                     quantiles=np.array([json.dumps(self.quantiles)]))
         self.ready.set()
+        if self.file:  # kept for a restart (those of older commits go); if it cannot be, it is only not kept
+            try:
+                for old in Path(CACHE_DIR).glob(f"overview-*-{self.variable}.npz"):
+                    if not old.name.startswith(f"overview-{COMMIT.id}-"):
+                        old.unlink()
+                np.savez(self.file, none=self.sum["none"], passage=self.sum["passage"], count=self.count,
+                         shift=self._shift["passage"], box=self._shift["box"][:1], pixels=self.pixels,
+                         quantiles=np.array([json.dumps(self.quantiles)]))
+            except OSError as e:
+                print(f"overview not kept on disk: {e}", flush=True)
 
     def restore(self):
         """The rasters kept on disk, if any: True if read."""
@@ -559,7 +563,22 @@ def lonlat_box(x_range, y_range):
 
 
 def build_overviews(view, overviews):
-    """Read a view's passages a batch at a time (every variable's arrays at once) into its overviews."""
+    """Read a view's passages a batch at a time (every variable's arrays at once) into its overviews. If that fails,
+    each says why (and is ready): requests waiting for it get the error instead of waiting forever."""
+    try:
+        build(view, overviews)
+    except Exception as e:
+        print(f"overview failed: {e!r}", flush=True)
+        for o in overviews:
+            if not o.ready.is_set():
+                o.error = repr(e)
+                o.ready.set()
+        with cache_lock:  # read again on the next request
+            for key in [k for k, o in OVERVIEWS.items() if o.error and k not in OPENING]:
+                del OVERVIEWS[key]
+
+
+def build(view, overviews):
     t0 = time.perf_counter()
     todo = [o for o in overviews if not o.restore()]
     if not todo:
@@ -729,6 +748,8 @@ def load_view(west: float, east: float, south: float, north: float, start: str, 
     data, seconds = load(west, east, south, north, start, days, variable)
     if isinstance(data, Overview):  # being built: its colors come at the end
         data.ready.wait()
+        if data.error:
+            raise HTTPException(500, f"Reading this view failed: {data.error}")
         seconds = data.seconds
     end = pd.Timestamp(start) + pd.Timedelta(days=days - 1)
     return dict(passages=data.sub.sizes["time"], seconds=round(seconds, 2),
