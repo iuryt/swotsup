@@ -48,6 +48,13 @@ def test_tiles_of_a_view_that_left_memory(client, monkeypatch):
     assert alpha(client, PASS_7, 30.0, 5.0) == 255
 
 
+def test_swath_east_of_180_where_the_map_shows_it(client):
+    """A box across 180 (170 to -150) keeps its passage at lon 200 (continuous, x past the map's east edge); the map
+    shows it at -160: drawn there from the world's copy."""
+    pass_150 = PASS_7 | dict(west=170, east=-150, start="2024-01-05")
+    assert alpha(client, pass_150, -160.0, 5.0) == 255
+
+
 def test_timeline_days_over_the_box(client):
     days = client.get("/api/timeline", params=dict(west=29, east=31, south=-1, north=1)).json()["day"]
     assert [np.datetime64(d, "ms").astype("datetime64[D]").astype(str) for d in days] == \
@@ -187,3 +194,207 @@ def test_chart_netcdf_has_the_chart_numbers(fine_store_path, monkeypatch):
         row = nc.value.values[k, q["first"]:q["first"] + len(q["value"])]
         np.testing.assert_allclose(row, [np.nan if v is None else v for v in q["value"]])
         assert np.isnan(nc.value.values[k, :q["first"]]).all()
+
+
+def test_swath_drawn_where_the_nadir_gap_has_no_position(client):
+    """L2 Unsmoothed has no latitude/longitude in its nadir gap: the meshes interpolate them across each line, so
+    the pixels with values on both sides are drawn (a line needs all its corners), across 180 too."""
+    import server
+    import xarray as xr
+
+    lat = np.repeat(np.linspace(-1, 1, 21)[:, None], 7, axis=1)[None]  # one passage, 21 lines, 7 pixels
+    lon = np.broadcast_to([179.7, 179.8, 179.9, 180.0, -179.9, -179.8, -179.7], lat.shape).copy()
+    values = np.ones(lat.shape)
+    values[0, :, 2:5] = np.nan  # the gap: no value...
+    lat[0, :, 2:5] = lon[0, :, 2:5] = np.nan  # ...and no position
+    dims = ("time", "along", "cross")
+    sub = xr.Dataset({"ssha_unfiltered": (dims, values)}, coords={"latitude": (dims, lat), "longitude": (dims, lon)})
+    data = server.Loaded(sub, ["ssha_unfiltered"], 179, -179)
+    (x0, x1), (y0, y1) = server.mercator(np.array([179.65, 180.35]), np.array([-0.5, 0.5]))
+    m = np.isfinite(data.mean_on("none", (x0, x1), (y0, y1), 14, 4))
+    assert m[:, :3].all() and m[:, -3:].all()  # both sides of the gap
+    assert not m[:, 6:8].any()  # not the gap itself
+
+
+def test_detail_tiles_take_the_base_colors(store_path, monkeypatch):
+    """A detail product (here the same store) is drawn from its zoom on, minus what the base view subtracts: where
+    both have the same data, a detail tile has the base tile's colors; off the swath it is transparent."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    monkeypatch.setenv("SWOT_DETAIL_STORE", store_path[0])
+    monkeypatch.setenv("SWOT_DETAIL_PRODUCT", "l3")
+    monkeypatch.setenv("SWOT_DETAIL_ZOOM", "6")
+    sys.modules.pop("server", None)
+    import server
+
+    c = TestClient(server.app)
+    view = PASS_7 | dict(mode="box", vmin=-0.05, vmax=0.05)  # values vary along the track: colors change
+    c.get("/api/load", params=PASS_7)
+    lon, lat = 30.0, 5.0
+    for z in (6, 9):  # at 9 a line (2 km) is ~7 pixels: one missing at a tile's edge shows
+        fx = (lon + 180) / 360 * 2**z
+        fy = (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+        get = lambda kind: np.asarray(Image.open(io.BytesIO(c.get(f"/api/{kind}/{z}/{int(fx)}/{int(fy)}.png", params=view).content)).convert("RGBA"))  # noqa: E731
+        base, fine = get("tile"), get("detail")
+        on = base[..., 3] == 255
+        assert on.sum() > 100 and (fine[..., 3] == 255).sum() > 100
+        both = on & (fine[..., 3] == 255)
+        assert np.abs(base[both].astype(int) - fine[both].astype(int)).max() <= 2
+        assert (fine[~on][..., 3] == 0).all()  # nothing where the base has nothing
+        assert (on & (fine[..., 3] == 0)).sum() <= 0.002 * on.sum()  # and every line up to the tile's edges
+    z = 4
+    fx, fy = (lon + 180) / 360 * 2**z, (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+    far = c.get(f"/api/detail/{z}/{int(fx)}/{int(fy)}.png", params=view).content
+    assert (np.asarray(Image.open(io.BytesIO(far)).convert("RGBA"))[..., 3] == 0).all()  # not below its zoom - 1
+
+
+def test_a_region_detail_is_read_ahead(store_path, monkeypatch):
+    """Once a region's view is loaded, its detail is read in the background: zooming in then reads nothing more."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    monkeypatch.setenv("SWOT_DETAIL_STORE", store_path[0])
+    monkeypatch.setenv("SWOT_DETAIL_PRODUCT", "l3")
+    monkeypatch.setenv("SWOT_DETAIL_ZOOM", "6")
+    sys.modules.pop("server", None)
+    import server
+
+    c = TestClient(server.app)
+    c.get("/api/load", params=PASS_7)
+    for f in server.load(**PASS_7)[0].read_ahead:
+        f.result()
+    misses = server.detail_block.cache_info().misses
+    assert misses > 0
+    z, lon, lat = 9, 30.0, 5.0
+    fx, fy = (lon + 180) / 360 * 2**z, (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+    tile = c.get(f"/api/detail/{z}/{int(fx)}/{int(fy)}.png", params=PASS_7 | dict(mode="box")).content
+    assert (np.asarray(Image.open(io.BytesIO(tile)).convert("RGBA"))[..., 3] == 255).sum() > 100
+    assert server.detail_block.cache_info().misses == misses
+
+
+def test_detail_tile_with_only_the_edges_of_lines(tmp_path, make_file, monkeypatch):
+    """The track leans, so do its lines: north of the last nadir (lat 10), a zoom 11 tile holds only the west edges
+    of the last lines. The detail tile draws them like the base does (the passes are found from lines near it)."""
+    import icechunk
+    from swot_cloud.store import append
+
+    path = str(tmp_path / "tilted")
+    session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
+    append(session.store, make_file(3, 7, day=3, tilt=0.5, n_lines=1001, n_pixels=51), along_chunk=100, time_chunk=1)
+    session.commit("tilted")
+    monkeypatch.setenv("SWOT_STORE", path)
+    monkeypatch.setenv("SWOT_DETAIL_STORE", path)
+    monkeypatch.setenv("SWOT_DETAIL_PRODUCT", "l3")
+    monkeypatch.setenv("SWOT_DETAIL_ZOOM", "6")
+    sys.modules.pop("server", None)
+    import server
+
+    c = TestClient(server.app)
+    view = dict(west=33, east=37, south=8, north=12, start="2024-01-03", days=1, variable="ssha_unfiltered",
+                mode="none", vmin=3500, vmax=4100)
+    z, lon, lat = 11, 34.65, 10.17  # the west edge of the last lines: lon ~34.55-35, lat up to 10.22
+    fx = (lon + 180) / 360 * 2**z
+    fy = (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+    south = server.tile_ranges(z, int(fx), int(fy))[1][0]
+    assert np.rad2deg(2 * np.arctan(np.exp(south / server.R)) - np.pi / 2) > 10  # all north of the last nadir
+    get = lambda kind: np.asarray(Image.open(io.BytesIO(c.get(f"/api/{kind}/{z}/{int(fx)}/{int(fy)}.png", params=view).content)).convert("RGBA"))  # noqa: E731
+    on = get("tile")[..., 3] == 255
+    assert on.sum() > 100 and (on & (get("detail")[..., 3] == 0)).sum() <= 0.002 * on.sum()
+
+
+def test_coarse_levels_draw_what_the_full_data_draws(fine_store_path, monkeypatch):
+    """A view of the world (one tile pixel ~40 km over 2 km cells) is drawn from 16 x 16 block means as points: each
+    block at its centre, so the tile's means are those of the cells (data = cycle*1000 + line: a block put at its
+    corner would be ~8 lines off); a click reads the cells themselves."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    c = TestClient(server.app)
+    view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
+    c.get("/api/load", params=view)
+    data = server.load(**view)[0]
+    assert 16 in data.points
+    xr_, yr_ = server.tile_ranges(0, 0, 0)  # the world: pixels of ~150 km at the equator, the 16 x 16 blocks
+    # the data grow linearly along the track (one per line, lines every 0.02 deg from -10): a block's mean is the
+    # value at its centre, so each pixel should be, on average, the value at its own latitude
+    y = yr_[1] - (np.arange(256) + 0.5) * (yr_[1] - yr_[0]) / 256  # pixel rows from north to south
+    lat = np.rad2deg(2 * np.arctan(np.exp(y / server.R)) - np.pi / 2)
+    expected = (3000 + (lat + 10) / 0.02)[::-1, None]  # rows south to north, as mean_on gives them
+    m = data.mean_on("none", xr_, yr_, 256, 256)
+    ok = np.isfinite(m)
+    assert ok.sum() >= 10 and abs(np.mean((m - expected)[ok])) < 3
+    # a click reads the cells themselves: the value of its latitude's line (603.5 at 2.07 N), not a block's mean
+    assert abs(data.passages_at("none", *server.mercator(30.1, 2.07))[0][0] - (3000 + 12.07 / 0.02)) <= 1.5
+
+
+def test_l2_values_only_where_the_quality_flag_is_good(client):
+    """L2 values over land and ice reach kilometres: a product with a quality flag keeps only its pixels flagged 0,
+    for drawing, colors and clicks."""
+    import server
+    import xarray as xr
+
+    lat = np.repeat(np.linspace(-1, 1, 21)[:, None], 5, axis=1)[None]
+    lon = np.broadcast_to([29.8, 29.9, 30.0, 30.1, 30.2], lat.shape).copy()
+    values, flag = np.full(lat.shape, 0.1), np.zeros(lat.shape)
+    values[0, :, 3:], flag[0, :, 3:] = 2000.0, 132  # the east side: land, flagged
+    dims = ("time", "along", "cross")
+    sub = xr.Dataset({"v": (dims, values), "q": (dims, flag)}, coords={"latitude": (dims, lat), "longitude": (dims, lon)})
+    data = server.Loaded(sub, ["v"], 29, 31, mask="q")
+    assert data.quantiles["none"][-1] < 1  # the flagged values are not in the colors
+    (x0, x1), (y0, y1) = server.mercator(np.array([29.75, 30.25]), np.array([-0.5, 0.5]))
+    m = data.mean_on("none", (x0, x1), (y0, y1), 10, 4)
+    assert np.nanmax(m) < 1 and np.isfinite(m[:, :4]).all() and np.isnan(m[:, -2:]).all()
+
+
+def test_one_absurd_pixel_does_not_move_the_colors(client):
+    """What the modes subtract is a median: a pixel kilometres off (some L2 pixels pass their quality flag) leaves
+    the others near zero once the box's or the passage's middle is taken away."""
+    import server
+    import xarray as xr
+
+    lat = np.repeat(np.linspace(-1, 1, 21)[:, None], 5, axis=1)[None]
+    lon = np.broadcast_to([29.8, 29.9, 30.0, 30.1, 30.2], lat.shape).copy()
+    values = np.full(lat.shape, 0.1)
+    values[0, 7, 0] = 3000.0  # pixel 35 of the passage: in its sample (every 7th)
+    dims = ("time", "along", "cross")
+    sub = xr.Dataset({"v": (dims, values)}, coords={"latitude": (dims, lat), "longitude": (dims, lon)})
+    data = server.Loaded(sub, ["v"], 29, 31)
+    for mode in ("box", "passage"):
+        assert np.nanmedian(np.abs(data.value(mode, 0))) < 0.01
+
+
+def test_level_follows_the_pixel_on_the_ground(fine_store_path, monkeypatch):
+    """The level a view is drawn from compares a screen pixel with the cells on the ground at the view's latitude:
+    the world tile takes the 16 x 16 blocks (35 km) as points; a zoom 7 tile (1.2 km pixels over 2.2 km cells), the
+    cells as meshes."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
+    data = server.load(**view)[0]
+    assert 1800 < data.spacing < 2600  # 51 pixels over ~112 km
+    drawn = []
+    monkeypatch.setattr(server.dsh.Canvas, "points", lambda self, frame, *a, **k: drawn.append(len(frame)) or server.xr.DataArray(np.full((self.plot_height, self.plot_width), np.nan)))
+    data.mean_on("none", *server.tile_ranges(0, 0, 0), 256, 256)  # the world: ~156 km pixels at its middle (0 N)
+    data.mean_on("none", *server.tile_ranges(7, 74, 62), 256, 256)  # lon 30, lat 5
+    assert len(drawn) == 1 and 0 < drawn[0] <= len(data.points[16][0])  # the world tile only, from the 16 x 16 blocks
+
+
+
+def test_cells_as_points_where_smaller_than_a_pixel(fine_store_path, monkeypatch):
+    """At zoom 6 (2.4 km pixels over 2.2 km cells) the cells in view are drawn as points in one go: the same
+    picture as their meshes, within a cell's value."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
+    data = server.load(**view)[0]
+    ranges = server.tile_ranges(6, 37, 31)  # lon 28-34, lat 0-6
+    points = data.mean_on("none", *ranges, 256, 256)
+    total, count = np.zeros((256, 256)), np.zeros((256, 256))
+    for *_, m in data.rasters("none", *ranges, 256, 256):
+        total, count = total + np.nan_to_num(m), count + np.isfinite(m)
+    with np.errstate(invalid="ignore"):
+        meshes = total / count
+    both = np.isfinite(points) & np.isfinite(meshes)
+    assert both.sum() > 200 and np.nanmedian(np.abs(points - meshes)[both]) <= 1.5

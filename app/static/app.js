@@ -96,6 +96,16 @@ function setColors() {
     map.addSource("swot", { type: "raster", tiles: [url], tileSize: 256 });
     map.addLayer({ id: "swot", type: "raster", source: "swot", paint: { "raster-fade-duration": 0, "raster-resampling": "nearest" } }, "box");
   }
+  if (!info.detail) return;
+  // the finer product over it, from a zoom on: it fades in over one zoom level, and where it has no data (passages
+  // not there yet, its gaps) the base still shows, so zooming in turns one into the other
+  const detail = url.replace("/api/tile/", "/api/detail/"), z = info.detail.zoom;
+  if (map.getSource("detail")) map.getSource("detail").setTiles([detail]);
+  else {
+    map.addSource("detail", { type: "raster", tiles: [detail], tileSize: 256, minzoom: z - 1 });
+    map.addLayer({ id: "detail", type: "raster", source: "detail", minzoom: z - 1, paint: { "raster-fade-duration": 0,
+      "raster-resampling": "nearest", "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z, 1] } }, "box");
+  }
 }
 
 // --- the dates: from the timeline, or a click on a time series
@@ -247,7 +257,17 @@ class Timeline {
     ctx.font = "11px Inter, sans-serif";
     ctx.textAlign = "center";
     const perMonth = this.x(30 * DAY) - this.x(0), step = [1, 2, 3, 6, 12].find((s) => s * perMonth > 70) ?? 12;
-    const d = new Date(this.view[0]);
+    const perDay = this.x(DAY) - this.x(0);
+    if (perMonth > 2 * w) {  // a few weeks only (a store being filled): days, as many as fit
+      const every = [1, 2, 5, 7, 14].find((s) => s * perDay > 60) ?? 14;
+      for (let t = Math.ceil(this.view[0] / DAY) * DAY; t < this.view[1]; t += every * DAY) {
+        const x = this.x(t);
+        if (x < 15 || x > w - 15) continue;
+        ctx.fillRect(x, bar[1], 1, 4);
+        ctx.fillText(new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }), x, h - 3);
+      }
+    }
+    const d = new Date(perMonth > 2 * w ? 8.64e15 : this.view[0]);  // (no months then)
     for (let m = new Date(Date.UTC(d.getUTCFullYear(), 0, 1)); m < this.view[1]; m.setUTCMonth(m.getUTCMonth() + step)) {
       const x = this.x(m.getTime());
       if (x < 15 || x > w - 15) continue;
@@ -1053,6 +1073,10 @@ async function main() {
   $("#about-coverage").textContent = `${dayText(Date.parse(info.first))} to ${dayText(Date.parse(info.last))}, ` +
     `${info.passages.toLocaleString("en")} passages over ${info.passes} passes of the 21-day orbit`;
   $("#version").textContent = `${info.release} (code ${info.version})`;
+  const at = new Date(info.commit.time + "Z");
+  $("#product").textContent = `Sea surface height · ${info.product}` + (info.detail ? ` · ${info.detail.product} from zoom ${info.detail.zoom}` : "") +
+    ` · commit ${info.commit.id}, ${dayText(at)} ${at.toISOString().slice(11, 16)} UTC`;
+  $("#product").title = `The store as of this commit (the latest when the server started): ${info.commit.message}`;
   const [url, brightness] = BASEMAPS["Bathymetry, gray"];
   // the projection remembered in this browser (globe by default), set before the first frame, and a zoom where
   // the globe fills the room between the panels (the flat world, at 0.7 less, looks as big)
@@ -1063,8 +1087,11 @@ async function main() {
   const globe = saved !== "mercator", room = Math.min(innerWidth, innerHeight - padding.top - padding.bottom - (narrow() ? 20 : 160));
   const zoom = Math.min(2.3, Math.log2(room * 0.95 * Math.PI / 512)) - (globe ? 0 : 0.7);
   document.body.classList.toggle("globe", globe);
+  // the opening region in view: the world, or a smaller default box (a product of small regions) filling the room
+  const box = isGlobe(d) ? null : d, span = box && Math.max(((d.east - d.west) % 360 + 360) % 360, d.north - d.south);
   map = new maplibregl.Map({
-    container: "map", center: [20, 5], zoom, minZoom: 0, maxZoom: 11, attributionControl: false,
+    container: "map", center: box ? [d.west + (((d.east - d.west) % 360 + 360) % 360) / 2, (d.south + d.north) / 2] : [20, 5],
+    zoom: box ? Math.log2(room * 360 / 512 / span) - 0.3 : zoom, minZoom: 0, maxZoom: 11, attributionControl: false,
     style: { version: 8, projection: { type: globe ? "globe" : "mercator" }, sources: { basemap: { type: "raster", tiles: [url], tileSize: 256, maxzoom: 9,
                                                 attribution: "GEBCO, NOAA NCEI · SWOT: AVISO/DUACS, CNES" } },
              layers: [{ id: "basemap", type: "raster", source: "basemap",
