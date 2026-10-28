@@ -247,28 +247,6 @@ def test_detail_tiles_take_the_base_colors(store_path, monkeypatch):
     assert (np.asarray(Image.open(io.BytesIO(far)).convert("RGBA"))[..., 3] == 0).all()  # not below its zoom - 1
 
 
-def test_a_region_detail_is_read_ahead(store_path, monkeypatch):
-    """Once a region's view is loaded, its detail is read in the background: zooming in then reads nothing more."""
-    monkeypatch.setenv("SWOT_STORE", store_path[0])
-    monkeypatch.setenv("SWOT_DETAIL_STORE", store_path[0])
-    monkeypatch.setenv("SWOT_DETAIL_PRODUCT", "l3")
-    monkeypatch.setenv("SWOT_DETAIL_ZOOM", "6")
-    sys.modules.pop("server", None)
-    import server
-
-    c = TestClient(server.app)
-    c.get("/api/load", params=PASS_7)
-    for f in server.load(**PASS_7)[0].read_ahead:
-        f.result()
-    misses = server.detail_block.cache_info().misses
-    assert misses > 0
-    z, lon, lat = 9, 30.0, 5.0
-    fx, fy = (lon + 180) / 360 * 2**z, (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
-    tile = c.get(f"/api/detail/{z}/{int(fx)}/{int(fy)}.png", params=PASS_7 | dict(mode="box")).content
-    assert (np.asarray(Image.open(io.BytesIO(tile)).convert("RGBA"))[..., 3] == 255).sum() > 100
-    assert server.detail_block.cache_info().misses == misses
-
-
 def test_detail_tile_with_only_the_edges_of_lines(tmp_path, make_file, monkeypatch):
     """The track leans, so do its lines: north of the last nadir (lat 10), a zoom 11 tile holds only the west edges
     of the last lines. The detail tile draws them like the base does (the passes are found from lines near it)."""

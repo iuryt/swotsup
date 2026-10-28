@@ -44,7 +44,6 @@ mutate app/server.py 's/    near = slice(max(near\[0\] - 1, 0), near\[-1\] + 2)/
 mutate app/server.py 's/(east + 180) % 360 - 180, south - 0.7, north + 0.7))/(east + 180) % 360 - 180, south, north))/' "detail tiles miss the passes whose lines only lean into them"
 mutate app/swot_view.py 's/        return np.flatnonzero(ds.written.values == 1)/        return np.flatnonzero(ds.written.values > 0)/' "passages skipped by the build (no position) taken as written"
 mutate app/server.py 's/    out = {a: np.stack(parts\[j \* n:(j + 1) \* n\]) if n else/    out = {a: np.stack(parts[:n]) if n else/' "a view read in parallel takes the first array for every one"
-mutate app/server.py 's/    return \[READ_AHEAD.submit(detail_block, i, c, tuple(names)) for i, c in jobs\]/    return []/' "the detail of a region not read ahead"
 mutate app/server.py 's/        value\[hit\] = values\[k\].ravel()\[flat\] - per.get((cycle, pass_id), box)/        value[hit] = values[k].ravel()[flat[::-1]] - per.get((cycle, pass_id), box)/' "250 m profile takes the pixels in the wrong order"
 mutate app/server.py 's/query(pts, distance_upper_bound=FINE_RADIUS \/ swot_view.EARTH_RADIUS)/query(pts, distance_upper_bound=1.5 \/ swot_view.EARTH_RADIUS)/' "250 m profile takes pixels 1.5 km away"
 mutate app/server.py 's/    times, rows, chunks = detail_lines(\*line_box(lon, lat), start, days)/    times, rows, chunks = detail_lines(*line_box(lon, lat), "2024-01-01", 30)/' "250 m profile ignores the dates of the view"

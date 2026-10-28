@@ -455,7 +455,6 @@ class Overview:
         self.samples, self.quantiles, self.pixels, self.seconds = [], {}, 0, 0.0
         self.done, self.started = 0, None  # passages read so far, and when the build started (progress)
         self.error = None  # why the build failed, if it did (then it is "ready", with nothing to show)
-        self.read_ahead = []
         box = "_".join(f"{view[k]:g}" for k in ("west", "east", "south", "north"))
         self.file = (os.path.join(CACHE_DIR, f"overview-{COMMIT.id}-{box}-{view['start']}-{view['days']}-{variable}.npz")
                      if CACHE_DIR else None)
@@ -653,7 +652,6 @@ def load(west, east, south, north, start, days, variable):
             raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
         values, line_time = read(sub, names + ([MASK] if MASK else []))
         data = Loaded(values, names, west, east, line_time, MASK)
-        data.read_ahead = read_ahead(west, east, south, north, start, days, variable)
         with cache_lock:
             loaded[key] = data
             loading.pop(key, None)
@@ -840,22 +838,6 @@ def detail_lines(west, east, south, north, start, days):
     t0 = np.datetime64(start)
     times = np.flatnonzero((detail.index.time.values >= t0) & (detail.index.time.values < t0 + np.timedelta64(days, "D")))
     return lines_over(detail, times, west, east, south, north)
-
-
-READ_AHEAD = ThreadPoolExecutor(16)
-
-
-def read_ahead(west, east, south, north, start, days, variable):
-    """A region's detail, read in the background once its view is loaded, so zooming in finds it in memory: every
-    chunk of its passages over the box, if they fit in half the blocks kept (not a view of the world)."""
-    names = DETAIL_PRODUCT["variables"].get(variable, (None, None))[1] if detail is not None else None
-    if names is None:
-        return []
-    times, _, chunks = detail_lines(west, east, south, north, start, days)
-    jobs = [(int(i), c) for i in times for c in chunks]
-    if len(jobs) > detail_block.cache_info().maxsize // 2:
-        return []
-    return [READ_AHEAD.submit(detail_block, i, c, tuple(names)) for i, c in jobs]
 
 
 def offsets(data, mode):
