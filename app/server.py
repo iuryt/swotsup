@@ -261,6 +261,7 @@ class Loaded:
         self.raw = values
         lon, lat = across(lon), across(lat)  # meshes need every corner; the nadir gap's are interpolated
         self.levels = {1: (values, build_meshes(values, lon, lat, center))}
+        self.bounds = np.array([m[6] for m in self.levels[1][1]]).reshape(-1, 4)  # a view finds its meshes at once
         self.points = {}  # level -> x, y, value and passage of each block with data
         for k in self.LEVELS[1:]:
             if min(values.shape[1:]) < 2 * k:
@@ -268,7 +269,8 @@ class Loaded:
             v = coarse(values, k)
             x, y = mercator(continuous_all(coarse(lon, k, False), center), coarse(lat, k, False))
             ok = np.isfinite(v) & np.isfinite(x) & np.isfinite(y)
-            self.points[k] = (x[ok], y[ok], v[ok], np.nonzero(ok)[0].astype("int32"))
+            order = np.argsort(y[ok])  # sorted by y: a tile takes its band of latitudes with a search
+            self.points[k] = tuple(a[order] for a in (x[ok], y[ok], v[ok], np.nonzero(ok)[0].astype("int32")))
         # the product's spacing on the ground (median, m; mercator stretches it by 1 / cos(lat)): which level a
         # view needs, at the view's latitude
         widths = [np.nanmedian(np.hypot(np.diff(m[2], axis=1), np.diff(m[3], axis=1))
@@ -285,48 +287,62 @@ class Loaded:
             v = v[np.isfinite(v)]
             self.quantiles[mode] = np.quantile(v, np.linspace(0, 1, 1001)).round(4).tolist() if len(v) else []
 
-    def value(self, mode, i):
-        """A passage's values, minus what the mode subtracts."""
-        return self.raw[i] - self.shift[mode][i]
+    def value(self, mode, i, lines=slice(None)):
+        """A passage's values (on some of its lines), minus what the mode subtracts."""
+        return self.raw[i][lines] - self.shift[mode][i]
 
     @property
     def pixels(self):
         return int(np.isfinite(self.raw).sum())
 
+    def blocks(self, x_range, y_range):
+        """Each mesh's lines in view, with the world's copies (the map repeats it east and west): (passage, its
+        lines in view, their x and y)."""
+        x0, x1, y0, y1 = self.bounds.T
+        for shift in (-WORLD, 0, WORLD):
+            hit = (x1 + shift >= x_range[0]) & (x0 + shift <= x_range[1]) & (y1 >= y_range[0]) & (y0 <= y_range[1])
+            for m in np.flatnonzero(hit):
+                i, rows, x, y, line_y0, line_y1, _ = self.levels[1][1][m]
+                # lines run south to north: the first reaching the view from the south and the last from the north
+                # (a small view can fall between two lines: then these two are the cell around it)
+                above, below = np.flatnonzero(line_y1 >= y_range[0]), np.flatnonzero(line_y0 <= y_range[1])
+                if len(above) == 0 or len(below) == 0:
+                    continue
+                a, b = above[0], below[-1]
+                block = slice(max(min(a, b) - 1, 0), max(a, b) + 2)  # one more line each side: whole cells
+                lines = slice(rows.start + block.start, rows.start + min(block.stop, len(x)))
+                yield i, lines, x[block] + shift, y[block]
+
     def rasters(self, mode, x_range, y_range, width, height):
         """Each mesh in view on a width x height grid: (passage, first line of the block, its x and y, raster)."""
         canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
-        for i, rows, x, y, line_y0, line_y1, (x0, x1, y0, y1) in self.levels[1][1]:
-            # lines run south to north: the first reaching the view from the south and the last from the north
-            # (a small view can fall between two lines: then these two are the cell around it)
-            above, below = np.flatnonzero(line_y1 >= y_range[0]), np.flatnonzero(line_y0 <= y_range[1])
-            if len(above) == 0 or len(below) == 0:
-                continue
-            a, b = above[0], below[-1]
-            block = slice(max(min(a, b) - 1, 0), max(a, b) + 2)  # one more line each side: whole cells
-            v = self.value(mode, i)[rows][block]
-            for shift in (-WORLD, 0, WORLD):  # the map repeats the world east and west
-                if x1 + shift < x_range[0] or x0 + shift > x_range[1]:
-                    continue
-                xs, ys = x[block] + shift, y[block]
-                mesh = xr.DataArray(v, name="v", dims=("along", "cross"),
-                                    coords={"x": (("along", "cross"), xs), "y": (("along", "cross"), ys)})
-                yield i, rows.start + block.start, xs, ys, canvas.quadmesh(mesh, x="x", y="y").values
+        for i, lines, xs, ys in self.blocks(x_range, y_range):
+            mesh = xr.DataArray(self.value(mode, i, lines), name="v", dims=("along", "cross"),
+                                coords={"x": (("along", "cross"), xs), "y": (("along", "cross"), ys)})
+            yield i, lines.start, xs, ys, canvas.quadmesh(mesh, x="x", y="y").values
 
     def mean_on(self, mode, x_range, y_range, width, height):
-        """Mean of the passages on a width x height grid, NaN where none: from the coarsest level whose blocks are
-        still smaller than a pixel of the grid (as points), or the cells themselves (as meshes)."""
-        # a pixel on the ground at the view's middle latitude (on a world view, most of it is far wider)
+        """Mean of the passages on a width x height grid, NaN where none. Where the cells are smaller than a pixel
+        (on the ground, at the view's middle latitude), all of them in view are drawn as points in one go: from the
+        coarsest level whose blocks still are, or the cells themselves (their lines in view, from the meshes).
+        Zoomed in further, each passage's cells are drawn as meshes."""
         pixel = (x_range[1] - x_range[0]) / width * np.cos(2 * np.arctan(np.exp(np.mean(y_range) / R)) - np.pi / 2)
-        level = max([k for k in self.points if k * self.spacing <= pixel], default=1)
-        if level > 1:
-            x, y, v, i = self.points[level]
-            v = v - self.shift[mode][i]
+        if self.spacing <= pixel:
+            level = max([k for k in self.points if k * self.spacing <= pixel], default=1)
             xs, ys, vs = [], [], []
-            for shift in (-WORLD, 0, WORLD):  # the map repeats the world east and west
-                keep = (x + shift >= x_range[0]) & (x + shift <= x_range[1]) & (y >= y_range[0]) & (y <= y_range[1])
-                xs.append(x[keep] + shift), ys.append(y[keep]), vs.append(v[keep])
+            if level > 1:
+                x, y, v, i = self.points[level]
+                band = slice(*np.searchsorted(y, y_range))
+                x, y, v = x[band], y[band], v[band] - self.shift[mode][i[band]]
+                for shift in (-WORLD, 0, WORLD):  # the map repeats the world east and west
+                    keep = (x + shift >= x_range[0]) & (x + shift <= x_range[1])
+                    xs.append(x[keep] + shift), ys.append(y[keep]), vs.append(v[keep])
+            else:
+                for i, lines, x, y in self.blocks(x_range, y_range):
+                    xs.append(x.ravel()), ys.append(y.ravel()), vs.append(self.value(mode, i, lines).ravel())
             canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+            if not xs:
+                return np.full((height, width), np.nan)
             frame = pd.DataFrame({"x": np.concatenate(xs), "y": np.concatenate(ys), "v": np.concatenate(vs)})
             return canvas.points(frame, "x", "y", agg=dsh.mean("v")).values
         total, count = np.zeros((height, width)), np.zeros((height, width))
@@ -534,11 +550,22 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
         return Response(EMPTY.getvalue(), media_type="image/png")
     n = detail.ds.line_time.encoding["chunks"][1]
     chunks = range(rows[0] // n, rows[-1] // n + 1)
-    blocks = [[detail_block(int(i), c, tuple(names)) for c in chunks] for i in times]
+    with ThreadPoolExecutor(16) as pool:  # each chunk is its own read from the cloud: all at once
+        reads = [[pool.submit(detail_block, int(i), c, tuple(names)) for c in chunks] for i in times]
+    blocks = [[r.result() for r in rs] for rs in reads]
     first = rows[0] - chunks[0] * n
     cut = lambda k: np.stack([np.concatenate([b[k] for b in bs])[first:first + len(rows)] for bs in blocks])  # noqa: E731
+    # of those, the lines whose own latitudes reach the tile (and one more each side: whole cells)
+    lat = cut(1)
+    with warnings.catch_warnings(action="ignore"):
+        lo, hi = np.nanmin(lat, axis=(0, 2)), np.nanmax(lat, axis=(0, 2))
+    near = np.flatnonzero((hi >= south) & (lo <= north))
+    if not len(near):
+        return Response(EMPTY.getvalue(), media_type="image/png")
+    near = slice(max(near[0] - 1, 0), near[-1] + 2)
     dims = ("time", "along", "cross")
-    sub = xr.Dataset({"v": (dims, cut(0))}, coords={"latitude": (dims, cut(1)), "longitude": (dims, cut(2))})
+    sub = xr.Dataset({"v": (dims, cut(0)[:, near])},
+                     coords={"latitude": (dims, lat[:, near]), "longitude": (dims, cut(2)[:, near])})
     tiles = Loaded(sub, ["v"], west, east)
     box, per = offsets(data, mode)
     cycles, passes = detail.index.cycle.values[times], detail.index.pass_id.values[times]

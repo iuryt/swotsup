@@ -48,6 +48,13 @@ def test_tiles_of_a_view_that_left_memory(client, monkeypatch):
     assert alpha(client, PASS_7, 30.0, 5.0) == 255
 
 
+def test_swath_east_of_180_where_the_map_shows_it(client):
+    """A box across 180 (170 to -150) keeps its passage at lon 200 (continuous, x past the map's east edge); the map
+    shows it at -160: drawn there from the world's copy."""
+    pass_150 = PASS_7 | dict(west=170, east=-150, start="2024-01-05")
+    assert alpha(client, pass_150, -160.0, 5.0) == 255
+
+
 def test_timeline_days_over_the_box(client):
     days = client.get("/api/timeline", params=dict(west=29, east=31, south=-1, north=1)).json()["day"]
     assert [np.datetime64(d, "ms").astype("datetime64[D]").astype(str) for d in days] == \
@@ -222,17 +229,21 @@ def test_detail_tiles_take_the_base_colors(store_path, monkeypatch):
     c = TestClient(server.app)
     view = PASS_7 | dict(mode="box", vmin=-0.05, vmax=0.05)  # values vary along the track: colors change
     c.get("/api/load", params=PASS_7)
-    z, lon, lat = 6, 30.0, 5.0
-    fx = (lon + 180) / 360 * 2**z
-    fy = (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
-    get = lambda kind: np.asarray(Image.open(io.BytesIO(c.get(f"/api/{kind}/{z}/{int(fx)}/{int(fy)}.png", params=view).content)).convert("RGBA"))  # noqa: E731
-    base, fine = get("tile"), get("detail")
-    on = base[..., 3] == 255
-    assert on.sum() > 100 and (fine[..., 3] == 255).sum() > 100
-    both = on & (fine[..., 3] == 255)
-    assert np.abs(base[both].astype(int) - fine[both].astype(int)).max() <= 2
-    assert (fine[~on][..., 3] == 0).all()  # nothing where the base has nothing
-    far = c.get(f"/api/detail/{z - 2}/{int(fx) // 4}/{int(fy) // 4}.png", params=view).content
+    lon, lat = 30.0, 5.0
+    for z in (6, 9):  # at 9 a line (2 km) is ~7 pixels: one missing at a tile's edge shows
+        fx = (lon + 180) / 360 * 2**z
+        fy = (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+        get = lambda kind: np.asarray(Image.open(io.BytesIO(c.get(f"/api/{kind}/{z}/{int(fx)}/{int(fy)}.png", params=view).content)).convert("RGBA"))  # noqa: E731
+        base, fine = get("tile"), get("detail")
+        on = base[..., 3] == 255
+        assert on.sum() > 100 and (fine[..., 3] == 255).sum() > 100
+        both = on & (fine[..., 3] == 255)
+        assert np.abs(base[both].astype(int) - fine[both].astype(int)).max() <= 2
+        assert (fine[~on][..., 3] == 0).all()  # nothing where the base has nothing
+        assert (on & (fine[..., 3] == 0)).sum() <= 0.002 * on.sum()  # and every line up to the tile's edges
+    z = 4
+    fx, fy = (lon + 180) / 360 * 2**z, (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+    far = c.get(f"/api/detail/{z}/{int(fx)}/{int(fy)}.png", params=view).content
     assert (np.asarray(Image.open(io.BytesIO(far)).convert("RGBA"))[..., 3] == 0).all()  # not below its zoom - 1
 
 
@@ -249,7 +260,7 @@ def test_coarse_levels_draw_what_the_full_data_draws(fine_store_path, monkeypatc
     c.get("/api/load", params=view)
     data = server.load(**view)[0]
     assert 16 in data.points
-    xr_, yr_ = server.tile_ranges(2, 2, 1)  # lon 0-90, lat 0-67: the swath from 0 to 10 N
+    xr_, yr_ = server.tile_ranges(0, 0, 0)  # the world: pixels of ~150 km at the equator, the 16 x 16 blocks
     # the data grow linearly along the track (one per line, lines every 0.02 deg from -10): a block's mean is the
     # value at its centre, so each pixel should be, on average, the value at its own latitude
     y = yr_[1] - (np.arange(256) + 0.5) * (yr_[1] - yr_[0]) / 256  # pixel rows from north to south
@@ -257,7 +268,7 @@ def test_coarse_levels_draw_what_the_full_data_draws(fine_store_path, monkeypatc
     expected = (3000 + (lat + 10) / 0.02)[::-1, None]  # rows south to north, as mean_on gives them
     m = data.mean_on("none", xr_, yr_, 256, 256)
     ok = np.isfinite(m)
-    assert ok.sum() >= 5 and abs(np.mean((m - expected)[ok])) < 3
+    assert ok.sum() >= 10 and abs(np.mean((m - expected)[ok])) < 3
     # a click reads the cells themselves: the value of its latitude's line (603.5 at 2.07 N), not a block's mean
     assert abs(data.passages_at("none", *server.mercator(30.1, 2.07))[0][0] - (3000 + 12.07 / 0.02)) <= 1.5
 
@@ -300,7 +311,8 @@ def test_one_absurd_pixel_does_not_move_the_colors(client):
 
 def test_level_follows_the_pixel_on_the_ground(fine_store_path, monkeypatch):
     """The level a view is drawn from compares a screen pixel with the cells on the ground at the view's latitude:
-    the world tile takes the 16 x 16 blocks (35 km), a zoom 6 tile (~2.4 km pixels over 2.2 km cells) the cells."""
+    the world tile takes the 16 x 16 blocks (35 km) as points; a zoom 7 tile (1.2 km pixels over 2.2 km cells), the
+    cells as meshes."""
     monkeypatch.setenv("SWOT_STORE", fine_store_path)
     sys.modules.pop("server", None)
     import server
@@ -311,5 +323,26 @@ def test_level_follows_the_pixel_on_the_ground(fine_store_path, monkeypatch):
     drawn = []
     monkeypatch.setattr(server.dsh.Canvas, "points", lambda self, frame, *a, **k: drawn.append(len(frame)) or server.xr.DataArray(np.full((self.plot_height, self.plot_width), np.nan)))
     data.mean_on("none", *server.tile_ranges(0, 0, 0), 256, 256)  # the world: ~156 km pixels at its middle (0 N)
-    data.mean_on("none", *server.tile_ranges(6, 37, 31), 256, 256)
+    data.mean_on("none", *server.tile_ranges(7, 74, 62), 256, 256)  # lon 30, lat 5
     assert len(drawn) == 1 and 0 < drawn[0] <= len(data.points[16][0])  # the world tile only, from the 16 x 16 blocks
+
+
+
+def test_cells_as_points_where_smaller_than_a_pixel(fine_store_path, monkeypatch):
+    """At zoom 6 (2.4 km pixels over 2.2 km cells) the cells in view are drawn as points in one go: the same
+    picture as their meshes, within a cell's value."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
+    data = server.load(**view)[0]
+    ranges = server.tile_ranges(6, 37, 31)  # lon 28-34, lat 0-6
+    points = data.mean_on("none", *ranges, 256, 256)
+    total, count = np.zeros((256, 256)), np.zeros((256, 256))
+    for *_, m in data.rasters("none", *ranges, 256, 256):
+        total, count = total + np.nan_to_num(m), count + np.isfinite(m)
+    with np.errstate(invalid="ignore"):
+        meshes = total / count
+    both = np.isfinite(points) & np.isfinite(meshes)
+    assert both.sum() > 200 and np.nanmedian(np.abs(points - meshes)[both]) <= 1.5
