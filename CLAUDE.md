@@ -35,7 +35,14 @@ be resumed here (`claude --resume`).
 - `app/server.py` (FastAPI): reads the store (`SWOT_STORE`, credentials from `AWS_*`) and serves
   - map tiles: each passage a curvilinear mesh rasterized with datashader (`Loaded.mean_on`), colored
     here, so only images go to the browser; overlapping passages are averaged; tile URLs carry a hash of
-    the server code, so browsers never keep tiles of an older version;
+    the server code, so browsers never keep tiles of an older version. A view is kept as float32 values
+    (~28 B/pixel), the modes as one number subtracted (medians: a few L2 pixels pass their flag km off), colors
+    from a 4 M-pixel sample, and 4x4 / 16x16 block means drawn as datashader points (one call for all passages)
+    where a screen pixel holds many cells: 12 days of the whole globe in L2 Expert (228 M px) take ~7 GB;
+  - detail tiles (`/api/detail`, SWOT_DETAIL_STORE, e.g. Unsmoothed over Expert): from SWOT_DETAIL_ZOOM - 1 on,
+    read tile by tile, a chunk of lines per passage at a time (LRU cache), shifted by what the base view
+    subtracts so colors match; the page fades them in over a zoom level, the base showing where they have none;
+  - L2 products keep values only where `ssha_karin_2_qual == 0` (over land and ice they reach kilometres);
   - `/api/timeline` (days with passages over the region, from the per-pass geometry, no data read),
     `/api/load`, `/api/value` (at a click: the value and its passages, with the time of their nearest line),
     `/api/series`, `/api/transect` (along a drawn polyline: points every 2 km on great circles, each passage's
@@ -130,6 +137,9 @@ truncated: load it again). Several jobs starting `pixi run` right after `pixi in
   the R2 credentials from a token (`arraylake auth login` on biomix, `ARRAYLAKE_TOKEN` on a server). The EC2
   server reads it when the token is in SSM Parameter Store (`/swot-explorer/arraylake-token`, put there by the
   user), else the S3 copy. From biomix it was slower than S3 (whole globe, one day: 16 s vs 5 s, 2026-10-20).
+- L2 Expert (2 km, the whole mission, envelopes) on Arraylake: `arraylake:computational-oceanography-udel/swot-l2-lr-ssh-
+  expert-d`, `SWOT_PRODUCT=expert`; with `SWOT_DETAIL_STORE=<the Unsmoothed one>` the map turns into 250 m from zoom 9.
+  12 global days need `SWOT_MAX_PIXELS` ~250e6 (from biomix: read ~50-170 s, build ~30 s).
 - L2 Unsmoothed (250 m) on Arraylake, being uploaded (Oct 2026): `SWOT_STORE=arraylake:computational-oceanography-
   udel/swot-l2-lr-ssh-unsmoothed-d SWOT_PRODUCT=unsmoothed` (needs `pcodec`). The server pins the latest commit at start
   (shown in the subtitle; restart for a newer one), keeps only the passages with a `line_time` chunk (listing them reads
