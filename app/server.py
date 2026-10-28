@@ -38,20 +38,20 @@ MAX_DAYS = 21
 MAX_BYTES = float(os.environ.get("SWOT_CACHE_GB", 4)) * 1e9  # loaded views kept in memory, beyond the newest
 # the product the store holds (SWOT_PRODUCT): its name, variables (label, the arrays summed) and opening view
 PRODUCTS = {
-    "l3": dict(label="L3 LR SSH v3.0", credit="AVISO/DUACS, CNES", variables={
+    "l3": dict(label="L3 LR SSH v3.0", credit="AVISO/DUACS, CNES", pixel=2.0, variables={
         "ssha_unfiltered": ("SSHA, unfiltered", ["ssha_unfiltered"]),
         "ssha_filtered": ("SSHA, filtered", ["ssha_filtered"]),
         "adt": ("ADT = SSHA + MDT", ["ssha_filtered", "mdt"])},
         # the whole globe on one day (kept in memory)
         default=dict(west=-180, east=180, south=-90, north=90, start="2024-11-02", days=1)),
     # the L2 product on the same 2 km grid as L3 (the whole mission, with envelopes)
-    "expert": dict(label="L2 LR SSH Expert, 2 km", credit="NASA/JPL, CNES", mask="ssha_karin_2_qual",
+    "expert": dict(label="L2 LR SSH Expert, 2 km", credit="NASA/JPL, CNES", pixel=2.0, mask="ssha_karin_2_qual",
                    max_pixels=250e6, variables={
         "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
         "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
         default=dict(west=-180, east=180, south=-90, north=90, start="2026-10-01", days=1)),
     # 250 m, 64 times the pixels of L3: small regions only; being uploaded, so the passages with data only
-    "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", credit="NASA/JPL, CNES", partial=True,
+    "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", credit="NASA/JPL, CNES", pixel=0.25, partial=True,
                        mask="ssha_karin_2_qual", variables={
         "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
         "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
@@ -536,14 +536,27 @@ def tile(z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2, vmax: fl
 @lru_cache(maxsize=int(os.environ.get("SWOT_DETAIL_BLOCKS", 1024)))  # ~3.4 MB each at 512 x 551 (float32)
 def detail_block(i, c, names):
     """A passage's (time index `i`) chunk `c` of lines of the detail store: its values (the sum of `names`) and
-    positions, as float32."""
+    positions, as float32, and when each line was."""
     n = detail.ds.line_time.encoding["chunks"][1]
     flag = DETAIL_PRODUCT.get("mask")
-    sub = detail.ds[list(names) + ["latitude", "longitude"] + ([flag] if flag else [])].isel(
+    sub = detail.ds[list(names) + ["latitude", "longitude", "line_time"] + ([flag] if flag else [])].isel(
         time=i, along=slice(c * n, (c + 1) * n)).load()
     values = masked(sum(sub[k].values for k in names), sub[flag].values if flag else None)
     return (values.astype("float32"), sub.latitude.values.astype("float32"),
-            sub.longitude.values.astype("float32"))
+            sub.longitude.values.astype("float32"), sub.line_time.values)
+
+
+def detail_passages(times, chunks, names, rows, cached=True):
+    """The detail store's passages (time indices) on some of their lines (`rows`, in `chunks`): values, latitudes,
+    longitudes (passages x lines x pixels) and when each line was, read all at once. Uncached (`cached=False`), for
+    reads that would push a region's blocks out (a point's whole mission)."""
+    read = detail_block if cached else detail_block.__wrapped__
+    n = detail.ds.line_time.encoding["chunks"][1]
+    with ThreadPoolExecutor(32) as pool:
+        reads = [[pool.submit(read, int(i), c, tuple(names)) for c in chunks] for i in times]
+    blocks = [[r.result() for r in rs] for rs in reads]
+    first = rows[0] - chunks[0] * n
+    return [np.stack([np.concatenate([b[k] for b in bs])[first:first + len(rows)] for bs in blocks]) for k in range(4)]
 
 
 def detail_lines(west, east, south, north, start, days):
@@ -601,14 +614,8 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
     times, rows, chunks = detail_lines(west, east, south, north, start, days)
     if not len(times) or not len(rows):
         return Response(EMPTY.getvalue(), media_type="image/png")
-    n = detail.ds.line_time.encoding["chunks"][1]
-    with ThreadPoolExecutor(16) as pool:  # each chunk is its own read from the cloud: all at once
-        reads = [[pool.submit(detail_block, int(i), c, tuple(names)) for c in chunks] for i in times]
-    blocks = [[r.result() for r in rs] for rs in reads]
-    first = rows[0] - chunks[0] * n
-    cut = lambda k: np.stack([np.concatenate([b[k] for b in bs])[first:first + len(rows)] for bs in blocks])  # noqa: E731
+    values, lat, lon, _ = detail_passages(times, chunks, names, rows)
     # of those, the lines whose own latitudes reach the tile (and one more each side: whole cells)
-    lat = cut(1)
     with warnings.catch_warnings(action="ignore"):
         lo, hi = np.nanmin(lat, axis=(0, 2)), np.nanmax(lat, axis=(0, 2))
     near = np.flatnonzero((hi >= south) & (lo <= north))
@@ -616,8 +623,8 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
         return Response(EMPTY.getvalue(), media_type="image/png")
     near = slice(max(near[0] - 1, 0), near[-1] + 2)
     dims = ("time", "along", "cross")
-    sub = xr.Dataset({"v": (dims, cut(0)[:, near])},
-                     coords={"latitude": (dims, lat[:, near]), "longitude": (dims, cut(2)[:, near])})
+    sub = xr.Dataset({"v": (dims, values[:, near])},
+                     coords={"latitude": (dims, lat[:, near]), "longitude": (dims, lon[:, near])})
     tiles = Loaded(sub, ["v"], west, east)
     box, per = offsets(data, mode)
     cycles, passes = detail.index.cycle.values[times], detail.index.pass_id.values[times]
@@ -637,13 +644,64 @@ def value(lon: float, lat: float, mode: str = "box", data=Depends(view)):
                 passages=[dict(time=t, pass_id=p, cycle=c) for t, p, c in passages])
 
 
+# steps below FINE km read the detail product (L2 Unsmoothed: 250 m), each passage's nearest pixel within FINE_RADIUS
+# (a 250 m cell has its centre within 0.18 km of any point in it); its Hovmöller only on lines up to FINE_LENGTH km
+FINE, FINE_RADIUS, FINE_LENGTH = 1.0, 0.2, 300.0
+
+
+def line_box(lon, lat):
+    """The box of a polyline's points, with a swath's half width (~0.6 degrees) around it."""
+    ulon = np.unwrap(lon, period=360)
+    west, east = (-180.0, 180.0) if np.ptp(ulon) > 356 else (ulon.min() - 1, ulon.max() + 1)
+    return west, east, max(lat.min() - 1, -90), min(lat.max() + 1, 90)
+
+
+def detail_profile(lon, lat, mode, start, days, variable, data):
+    """The detail store's passages in the view's dates along the points: each one's nearest pixel within FINE_RADIUS,
+    minus what the base view subtracts (as the detail tiles), with when its line was."""
+    names = DETAIL_PRODUCT["variables"].get(variable, (None, None))[1]
+    if names is None:
+        return []
+    times, rows, chunks = detail_lines(*line_box(lon, lat), start, days)
+    if not len(times) or not len(rows):
+        return []
+    values, la, lo, line_time = detail_passages(times, chunks, names, rows)
+    box, per = offsets(data, mode)
+    pts, out = unit(lon, lat), []
+    for k, i in enumerate(times):
+        ok = np.isfinite(values[k]) & np.isfinite(la[k]) & np.isfinite(lo[k])
+        if not ok.any():
+            continue
+        d, j = cKDTree(unit(lo[k][ok], la[k][ok])).query(pts, distance_upper_bound=FINE_RADIUS / swot_view.EARTH_RADIUS)
+        hit = np.isfinite(d)
+        if not hit.any():
+            continue
+        flat = np.flatnonzero(ok)[j[hit]]
+        row = np.unravel_index(flat, ok.shape)[0]
+        cycle, pass_id = int(detail.index.cycle.values[i]), int(detail.index.pass_id.values[i])
+        value = np.full(len(pts), np.nan)
+        value[hit] = values[k].ravel()[flat] - per.get((cycle, pass_id), box)
+        ms = np.full(len(pts), -1, "int64")
+        ms[hit] = line_time[k][row].astype("datetime64[ms]").astype("int64")
+        out.append(dict(time=str(pd.Timestamp(line_time[k][row[len(row) // 2]]).round("s")), pass_id=pass_id, cycle=cycle,
+                        value=[None if np.isnan(v) else round(float(v), 4) for v in value],
+                        line_time=[None if m < 0 else int(m) for m in ms]))
+    return out
+
+
 @app.get("/api/transect")
-def transect(points: str, mode: str = "box", step: float = 2.0, data=Depends(view)):
+def transect(points: str, mode: str = "box", step: float = 2.0, start: str = None, days: int = 1, variable: str = None,
+             data=Depends(view)):
     """Values along a polyline ("lon,lat;lon,lat;..."), every `step` km (2: the L3 grid) along great circles,
     one curve per passage that has any, with the time of the line each value comes from (ms) and the time of
-    the line at its middle point."""
+    the line at its middle point. Below FINE km (250 m), from the detail store."""
     lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
-    lon, lat, dist, step = along_line(lon, lat, max(step, 0.5))
+    fine = step < FINE and detail is not None
+    lon, lat, dist, step = along_line(lon, lat, max(step, 0.25 if fine else 0.5))
+    if fine:
+        return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
+                    step=round(float(step), 3), passages=sorted(detail_profile(lon, lat, mode, start, days, variable, data),
+                                                                key=lambda q: q["time"]))
     values, rows = data.along(mode, lon, lat)
     passages = []
     for i in np.flatnonzero(np.isfinite(values).any(1)):
@@ -663,15 +721,17 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
     pixels within 1.5 km (as /api/transect), on the points every `step` km, and the time of its line at the middle.
     The grid of a pass is the same in every cycle (a repeat orbit), and so is when each line is measured relative
     to the passage's time: both are read once, on its first passage; then only the values of the lines near the
-    polyline are read, for all its passages."""
-    names = VARIABLES[variable][1]
+    polyline are read, for all its passages. Below FINE km (250 m), from the detail store, on lines up to FINE_LENGTH."""
+    fine = step < FINE and detail is not None
+    product, src = (DETAIL_PRODUCT, detail) if fine else (PRODUCT, base)
+    ds, index, mask, radius = src.ds, src.index, product.get("mask"), FINE_RADIUS if fine else 1.5
+    names = product["variables"][variable][1]
     lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
-    lon, lat, dist, step = along_line(lon, lat, max(step, 0.5))
+    lon, lat, dist, step = along_line(lon, lat, max(step, 0.25 if fine else 0.5))
+    if fine and dist[-1] > FINE_LENGTH:
+        raise HTTPException(413, f"At 250 m, the Hovmöller takes lines up to {FINE_LENGTH:g} km: draw a shorter one")
     pts = unit(lon, lat)
-    # passes over the line's box, with a swath's half width (~0.6 degrees) around it
-    ulon = np.unwrap(lon, period=360)
-    west, east = (-180.0, 180.0) if np.ptp(ulon) > 356 else (ulon.min() - 1, ulon.max() + 1)
-    south, north = max(lat.min() - 1, -90), min(lat.max() + 1, 90)
+    west, east, south, north = line_box(lon, lat)  # the passes over the line's box
     near = np.flatnonzero((ds.lat.values >= south - 1) & (ds.lat.values <= north + 1))  # lines run south to north
     if not len(near):
         return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
@@ -687,7 +747,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
         ok = np.isfinite(la) & np.isfinite(lo)
         if not ok.any():
             return None
-        d, j = cKDTree(unit(lo[ok], la[ok])).query(pts, distance_upper_bound=1.5 / swot_view.EARTH_RADIUS)
+        d, j = cKDTree(unit(lo[ok], la[ok])).query(pts, distance_upper_bound=radius / swot_view.EARTH_RADIUS)
         hit = np.flatnonzero(np.isfinite(d))
         if not len(hit):
             return None
@@ -695,7 +755,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
         offset = geo.line_time.values[row] - index.time.values[times[0]]  # of each line hit, from its passage's time
         return p, times, hit, r0 + row, col, offset
 
-    passes = swot_view.passes_over(ds, (west + 180) % 360 - 180, (east + 180) % 360 - 180, south, north)
+    passes = swot_view.passes_over(geometry, (west + 180) % 360 - 180, (east + 180) % 360 - 180, south, north)
     with ThreadPoolExecutor(32) as pool:
         found = [f for f in pool.map(nearest, passes) if f]
     # the values of every passage at its pixels, in one read: zarr fetches each passage's chunk once, all at
@@ -705,7 +765,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
     cols = [np.tile(col, len(times)) for _, times, _, _, col, _ in found]
     if found:
         where = {dim: xr.DataArray(np.concatenate(v), dims="pixel") for dim, v in (("time", at), ("along", rows), ("cross", cols))}
-        values = masked(sum(ds[n].isel(where).values for n in names), ds[MASK].isel(where).values if MASK else None)
+        values = masked(sum(ds[n].isel(where).values for n in names), ds[mask].isel(where).values if mask else None)
     out, k0 = [], 0
     for p, times, hit, row, col, offset in found:
         v = values[k0:k0 + len(times) * len(hit)].reshape(len(times), len(hit))  # (passages, points hit)
@@ -724,8 +784,41 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
                 step=round(float(step), 3), passages=sorted(out, key=lambda q: q["time"]))
 
 
+def detail_series(lon, lat, names, radius):
+    """The mean of the detail store's pixels within `radius` km of the point, per passage (as `point_series`), each
+    passage read and reduced on its own (the whole mission at 250 m would not fit in memory at once)."""
+    km = swot_view.EARTH_RADIUS * np.pi / 180
+    dlat, dlon = radius / km + 0.5, radius / (km * np.cos(np.deg2rad(lat)))  # swath edges lean ~0.3 degree off nadir
+    passes = swot_view.passes_over(geometry, lon - dlon, lon + dlon, lat - dlat, lat + dlat)
+    times = np.flatnonzero(np.isin(detail.index.pass_id.values, passes))
+    rows = np.flatnonzero(np.abs(detail.ds.lat.values - lat) <= dlat)
+    if not len(times) or not len(rows):
+        return dict(time=[], value=[])
+    n = detail.ds.line_time.encoding["chunks"][1]
+    chunks = range(rows[0] // n, rows[-1] // n + 1)
+    least = max(1, round(np.pi * radius**2 / DETAIL_PRODUCT["pixel"] ** 2 / 4))  # a quarter of the circle's pixels
+
+    def mean(i):
+        values, la, lo, _ = detail_passages([i], chunks, names, rows, cached=False)
+        v = np.where(swot_view.distance(la, lo, lat, lon) <= radius, values, np.nan)
+        return np.nanmean(v) if np.isfinite(v).sum() >= least else np.nan
+
+    with ThreadPoolExecutor(16) as pool, warnings.catch_warnings(action="ignore"):
+        means = np.array(list(pool.map(mean, times)))
+    keep = np.isfinite(means)
+    t = detail.index.time.values[times[keep]]
+    order = np.argsort(t)
+    return dict(time=(t[order].astype("datetime64[ms]").astype("int64")).tolist(), value=means[keep][order].round(4).tolist())
+
+
 @app.get("/api/series")
-def series(lon: float, lat: float, variable: str, radius: float = 5):
+def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool = False):
+    """The mean around a point, per passage: within `radius` km, or (`fine`) of the detail store's 250 m pixels."""
+    if fine:
+        names = DETAIL_PRODUCT["variables"].get(variable, (None, None))[1] if detail is not None else None
+        if names is None:
+            raise HTTPException(404, "no 250 m product here")
+        return detail_series(lon, lat, names, radius)
     names = VARIABLES[variable][1]
     s = sum(swot_view.point_series(ds, lon, lat, n, radius, mask=MASK)[n] for n in names)
     return dict(time=(s.time.to_index().astype("int64") // 10**6).tolist(), value=s.values.round(4).tolist())
@@ -757,23 +850,35 @@ def line_dataset(result, label):
                 "lon": ("distance", result["lon"]), "lat": ("distance", result["lat"]),
                 "time": ("passage", times), "pass_number": ("passage", [q["pass_id"] for q in result["passages"]]),
                 "cycle": ("passage", [q["cycle"] for q in result["passages"]])},
-        attrs={"comment": "each passage's nearest pixel within 1.5 km of points every `step` km along great circles",
-               "step_km": result["step"]})
+        attrs={"comment": f"each passage's nearest pixel within {FINE_RADIUS if result['step'] < FINE else 1.5:g} km of "
+                          "points every `step` km along great circles", "step_km": result["step"]})
+
+
+FINE_SERIES_RADIUS = 1.0  # km: the 250 m series' circle (~50 pixels)
 
 
 @app.get("/api/series.nc")
 def series_nc(lon: float, lat: float, variable: str, radius: float = 5):
+    """The series at a point, and with a detail store, its 250 m series within FINE_SERIES_RADIUS (time_250m)."""
     s = series(lon, lat, variable, radius)
-    return as_netcdf(xr.Dataset({"value": ("time", s["value"], {"long_name": VARIABLES[variable][0], "units": "m"})},
-                                coords={"time": pd.to_datetime(s["time"], unit="ms")},
-                                attrs={"lon": lon, "lat": lat, "radius_km": radius,
-                                       "comment": "mean of the pixels within radius_km of (lon, lat), per passage"}),
-                     "swot_series")
+    out = xr.Dataset({"value": ("time", s["value"], {"long_name": VARIABLES[variable][0], "units": "m",
+                                                     "comment": f"{PRODUCT['label']}, mean within {radius:g} km"})},
+                     coords={"time": pd.to_datetime(s["time"], unit="ms")},
+                     attrs={"lon": lon, "lat": lat, "radius_km": radius,
+                            "comment": "mean of the pixels within radius_km of (lon, lat), per passage"})
+    if detail is not None and variable in DETAIL_PRODUCT["variables"]:
+        f = series(lon, lat, variable, FINE_SERIES_RADIUS, fine=True)
+        out["value_250m"] = ("time_250m", f["value"], {"long_name": VARIABLES[variable][0], "units": "m",
+                                                       "comment": f"{DETAIL_PRODUCT['label']}, mean within {FINE_SERIES_RADIUS:g} km"})
+        out = out.assign_coords(time_250m=pd.to_datetime(f["time"], unit="ms"))
+    return as_netcdf(out, "swot_series")
 
 
 @app.get("/api/transect.nc")
-def transect_nc(points: str, variable: str, mode: str = "box", step: float = 2.0, data=Depends(view)):
-    return as_netcdf(line_dataset(transect(points, mode, step, data), VARIABLES[variable][0]), "swot_profile")
+def transect_nc(points: str, variable: str, mode: str = "box", step: float = 2.0, start: str = None, days: int = 1,
+                data=Depends(view)):
+    return as_netcdf(line_dataset(transect(points, mode, step, start, days, variable, data), VARIABLES[variable][0]),
+                     "swot_profile")
 
 
 @app.get("/api/hovmoller.nc")
@@ -784,7 +889,11 @@ def hovmoller_nc(points: str, variable: str, step: float = 2.0):
 @app.get("/api/code/series")
 def series_code(lon: float, lat: float, variable: str, radius: float = 5):
     label, names = VARIABLES[variable]
-    return dict(code=swot_view.series_snippet(lon, lat, names, radius, f"{label}, ", target=STORE))
+    fine = None
+    if detail is not None and variable in DETAIL_PRODUCT["variables"]:
+        fine = dict(target=DETAIL_STORE, names=DETAIL_PRODUCT["variables"][variable][1], radius=FINE_SERIES_RADIUS,
+                    mask=DETAIL_PRODUCT.get("mask"), pixel=DETAIL_PRODUCT["pixel"], label="250 m pixels")
+    return dict(code=swot_view.series_snippet(lon, lat, names, radius, f"{label}, ", target=STORE, mask=MASK, fine=fine))
 
 
 @app.get("/api/code/line")
@@ -794,7 +903,11 @@ def line_code(points: str, variable: str, step: float = 2.0, start: str = None, 
     vertices = [tuple(map(float, p.split(","))) for p in points.split(";")]
     end = None if start is None else str(pd.Timestamp(start) + pd.Timedelta(days=days) - pd.Timedelta(seconds=1))
     title = f"{label}, " + (f"{start} to {end[:10]}" if start else "whole mission")
-    return dict(code=swot_view.line_snippet(vertices, names, step, start, end, mean, title, target=STORE))
+    if step < FINE and detail is not None:  # 250 m
+        names = DETAIL_PRODUCT["variables"][variable][1]
+        return dict(code=swot_view.line_snippet(vertices, names, step, start, end, mean, title, target=DETAIL_STORE,
+                                                radius=FINE_RADIUS, mask=DETAIL_PRODUCT.get("mask")))
+    return dict(code=swot_view.line_snippet(vertices, names, step, start, end, mean, title, target=STORE, mask=MASK))
 
 
 @app.get("/api/netcdf")
