@@ -1093,7 +1093,7 @@ async function main() {
     container: "map", center: box ? [d.west + (((d.east - d.west) % 360 + 360) % 360) / 2, (d.south + d.north) / 2] : [20, 5],
     zoom: box ? Math.log2(room * 360 / 512 / span) - 0.3 : zoom, minZoom: 0, maxZoom: 11, attributionControl: false,
     style: { version: 8, projection: { type: globe ? "globe" : "mercator" }, sources: { basemap: { type: "raster", tiles: [url], tileSize: 256, maxzoom: 9,
-                                                attribution: "GEBCO, NOAA NCEI · SWOT: AVISO/DUACS, CNES" } },
+                                                attribution: `GEBCO, NOAA NCEI · SWOT: ${info.credit}` } },
              layers: [{ id: "basemap", type: "raster", source: "basemap",
                         paint: { "raster-brightness-max": brightness, "raster-fade-duration": 0 } }] },
   });
