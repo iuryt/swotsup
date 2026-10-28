@@ -541,10 +541,11 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
     west, east, south, north = lon[0], lon[1], lat[0], lat[1]
     t0 = np.datetime64(start)
     times = np.flatnonzero((detail.index.time.values >= t0) & (detail.index.time.values < t0 + np.timedelta64(days, "D")))
-    over = np.isin(detail.index.pass_id.values[times], swot_view.passes_over(detail.geometry, (west + 180) % 360 - 180,
-                                                                              (east + 180) % 360 - 180, south, north))
+    # the passes, and their lines, whose nadir is near the tile's latitudes: a line's edges lean up to ~0.6 degree
+    # off its nadir, and a small tile can hold only those of lines whose nadir is outside it
+    over = np.isin(detail.index.pass_id.values[times], swot_view.passes_over(
+        detail.geometry, (west + 180) % 360 - 180, (east + 180) % 360 - 180, south - 0.7, north + 0.7))
     times = times[over]
-    # the lines whose nadir is near the tile's latitudes (a swath leans ~0.6 degree off its nadir)
     rows = np.flatnonzero((detail.ds.lat.values >= south - 0.7) & (detail.ds.lat.values <= north + 0.7))
     if not len(times) or not len(rows):
         return Response(EMPTY.getvalue(), media_type="image/png")
