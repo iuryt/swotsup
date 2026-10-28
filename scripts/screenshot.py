@@ -165,7 +165,11 @@ with sync_playwright() as p:
             for z in (3, 6, 7.5, 8, 8.5, 9, 10, 11, 12):
                 t = time.perf_counter()
                 page.evaluate(f"map.jumpTo({{center: [{lon}, {lat}], zoom: {z}}})")
-                page.wait_for_timeout(300)
+                page.wait_for_timeout(1200)
+                if page.is_visible("#progress"):  # the 250 m tiles in view, coming
+                    print(f"zoom {z} progress:", page.inner_text("#progress").replace(chr(10), " | "), page.evaluate(
+                        "(() => { const i = document.querySelector('#progress .progress-bar i'); return [i.style.width, getComputedStyle(i).width, getComputedStyle(i).backgroundColor]; })()"), flush=True)
+                    shot(f"zoom-{z}-progress")
                 page.wait_for_load_state("networkidle", timeout=180_000)
                 page.wait_for_function("map.areTilesLoaded()", timeout=180_000)
                 print(f"zoom {z}: tiles in {time.perf_counter() - t:.1f} s", flush=True)
