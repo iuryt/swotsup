@@ -517,3 +517,24 @@ def test_a_view_too_big_to_keep_becomes_an_overview(store_path, monkeypatch):
     assert (np.asarray(Image.open(io.BytesIO(tile.content)).convert("RGBA"))[..., 3] == 255).sum() > 10
     small = PASS_7 | dict(south=4, north=5)
     assert isinstance(server.load(**small)[0], server.Loaded)
+
+
+
+def test_overview_up_close_waits_for_what_the_modes_subtract(fine_store_path, monkeypatch):
+    """Tiles up close, clicks and lines of an overview being built wait for its medians (known once it is all read):
+    drawn before, they would keep colors of their own."""
+    import threading
+    import time
+
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    view = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    over, early = server.Overview(view, view["variable"]), []
+    asking = threading.Thread(target=lambda: early.append(over.near(30.05, 30.15, 2.02, 2.12).shift["box"].copy()))
+    asking.start()
+    time.sleep(0.5)
+    server.build_overviews(view, [over])
+    asking.join()
+    assert abs(early[0][0] - over.shift["box"][0]) < 1e-6 and abs(over.shift["box"][0]) > 1000
