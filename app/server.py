@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import datashader as dsh
+import cmocean  # noqa: F401 (registers its colormaps as cmo.*)
 import matplotlib
 import numpy as np
 import pandas as pd
@@ -37,27 +38,62 @@ zarr.config.set({"async.concurrency": 256})
 MAX_DAYS = 21
 # pixels in one view (passages x lines x pixels across): 60 M is ~2 days of the whole globe in L3, ~4 GB in memory
 MAX_BYTES = float(os.environ.get("SWOT_CACHE_GB", 4)) * 1e9  # loaded views kept in memory, beyond the newest
-# the product the store holds (SWOT_PRODUCT): its name, variables (label, the arrays summed) and opening view
+class Variable:
+    """What a map shows: the arrays summed (`names`), their quality flag (values kept where it is 0), in dB or not,
+    its default colormap and kind ("anomaly": a spatial mean subtracted, colors symmetric; "level": as stored)."""
+
+    def __init__(self, label, names, flag=None, db=False, cmap="RdBu_r", kind="anomaly", units="m"):
+        self.label, self.names, self.flag, self.db = label, list(names), flag, db
+        self.cmap, self.kind, self.units = cmap, kind, units
+
+    @property
+    def arrays(self):
+        """Every array the values need."""
+        return self.names + ([self.flag] if self.flag else [])
+
+    def values(self, get):
+        """The values, from `get(name)` -> each array: summed, NaN where the flag is not 0, in dB if so."""
+        v = masked(sum(get(n) for n in self.names), get(self.flag) if self.flag else None)
+        if self.db:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                v = np.where(v > 0, 10 * np.log10(v), np.nan)
+        return v
+
+
+# L2: values kept only where their quality flag is 0 (over land and ice SSHA reaches kilometres; until #3 lets the
+# user choose how strict). Sigma0 is in dB; SWH and wind are only at 2 km.
+SSHA_L2 = {
+    "ssha_karin_2": Variable("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"], "ssha_karin_2_qual"),
+    "ssha_karin_2_raw": Variable("SSHA (KaRIn 2), no correction", ["ssha_karin_2"], "ssha_karin_2_qual")}
+SIGMA0 = Variable("Sigma0 (KaRIn 2)", ["sig0_karin_2"], "sig0_karin_2_qual", db=True, cmap="cmo.gray", kind="level",
+                  units="dB")
+# the product the store holds (SWOT_PRODUCT): its name, variables and opening view
 PRODUCTS = {
     "l3": dict(label="L3 LR SSH v3.0", credit="AVISO/DUACS, CNES", pixel=2.0, variables={
-        "ssha_unfiltered": ("SSHA, unfiltered", ["ssha_unfiltered"]),
-        "ssha_filtered": ("SSHA, filtered", ["ssha_filtered"]),
-        "adt": ("ADT = SSHA + MDT", ["ssha_filtered", "mdt"])},
+        "ssha_unfiltered": Variable("SSHA, unfiltered", ["ssha_unfiltered"]),
+        "ssha_filtered": Variable("SSHA, filtered", ["ssha_filtered"]),
+        "adt": Variable("ADT = SSHA + MDT", ["ssha_filtered", "mdt"])},
         # the whole globe on one day (kept in memory)
         default=dict(west=-180, east=180, south=-90, north=90, start="2024-11-02", days=1)),
     # the L2 product on the same 2 km grid as L3 (the whole mission, with envelopes)
-    "expert": dict(label="L2 LR SSH Expert, 2 km", credit="NASA/JPL, CNES", pixel=2.0, mask="ssha_karin_2_qual",
-                   max_pixels=250e6, variables={
-        "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
-        "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
+    "expert": dict(label="L2 LR SSH Expert, 2 km", credit="NASA/JPL, CNES", pixel=2.0, max_pixels=250e6, variables=SSHA_L2 | {
+        "sig0_karin_2": SIGMA0,
+        "swh_karin": Variable("Significant wave height (KaRIn)", ["swh_karin"], "swh_karin_qual", cmap="cmo.dense",
+                              kind="level"),
+        "wind_speed_karin_2": Variable("Wind speed (KaRIn 2)", ["wind_speed_karin_2"], "wind_speed_karin_2_qual",
+                                       cmap="cmo.speed", kind="level", units="m/s")},
         default="latest", overview=True),  # the whole globe on the latest 21 days, as an overview
     # 250 m, 64 times the pixels of L3: small regions only; being uploaded, so the passages with data only
     "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", credit="NASA/JPL, CNES", pixel=0.25, partial=True,
-                       mask="ssha_karin_2_qual", variables={
-        "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
-        "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
-        default=None),  # the latest day with data, around a passage (below)
+                       variables=SSHA_L2 | {"sig0_karin_2": SIGMA0},
+                       default=None),  # the latest day with data, around a passage (below)
 }
+# the colormaps a map can take (any variable, any of them), diverging first (for anomalies), then sequential
+COLORMAPS = {name: matplotlib.colormaps[name] for name in (
+    "RdBu_r", "cmo.balance", "cmo.curl",
+    "cmo.gray", "gray", "cmo.dense", "cmo.amp", "magma", "cmo.deep_r", "cmo.speed", "viridis", "cmo.tempo", "cmo.haline",
+    "cividis", "cmo.turbid")}
+DIVERGING = 3
 # without configuration: L2 Expert, with L2 Unsmoothed from a zoom on (detail, below); a store named (SWOT_STORE)
 # is L3 unless SWOT_PRODUCT says otherwise
 L2 = "arraylake:computational-oceanography-udel/swot-l2-lr-ssh-"
@@ -65,9 +101,6 @@ CONFIGURED = "SWOT_STORE" in os.environ
 PRODUCT = PRODUCTS[os.environ.get("SWOT_PRODUCT", "l3" if CONFIGURED else "expert")]
 MAX_PIXELS = float(os.environ.get("SWOT_MAX_PIXELS", PRODUCT.get("max_pixels", 60e6)))
 VARIABLES = PRODUCT["variables"]
-# L2: values kept only where their quality flag is 0 (over land and ice they reach kilometres; until #3 lets the
-# user choose how strict)
-MASK = PRODUCT.get("mask")
 
 
 def masked(values, flag):
@@ -76,7 +109,6 @@ def masked(values, flag):
 MODES = ("box", "passage", "none")  # spatial mean subtracted: of the box, of each passage, nothing
 R = 6378137.0  # web mercator
 WORLD = 2 * np.pi * R
-CMAP = matplotlib.colormaps["RdBu_r"]
 
 def open_product(target, partial=False, geometry=None):
     """A store at its latest commit (kept: a store being written changes while people look): the dataset, when each
@@ -256,13 +288,14 @@ class Loaded:
 
     LEVELS = (1, 4, 16)
 
-    def __init__(self, sub, names, west, east, line_time=None, mask=None):
-        self.names = names
+    def __init__(self, sub, var, west, east, line_time=None):
+        var = var if isinstance(var, Variable) else Variable("", var)  # names of values already combined
+        self.names = var.names
         self.line_time = line_time  # (time, along): when each line was measured
-        values = masked(sum(sub[n].values for n in names), None if mask is None else sub[mask].values).astype("float32")
-        # positions as float32 (~1 m), the arrays summed dropped: what the clicks and lines need
-        self.sub = sub.drop_vars(list(names) + ([mask] if mask else [])).assign_coords(latitude=sub.latitude.astype("float32"),
-                                                      longitude=sub.longitude.astype("float32"))
+        values = var.values(lambda n: sub[n].values).astype("float32")
+        # positions as float32 (~1 m), the arrays dropped: what the clicks and lines need
+        self.sub = sub.drop_vars(var.arrays).assign_coords(latitude=sub.latitude.astype("float32"),
+                                                           longitude=sub.longitude.astype("float32"))
         lon, lat = sub.longitude.values, sub.latitude.values
         w, e = box_lons(west, east)
         center = (w + e) / 2
@@ -445,7 +478,7 @@ class Overview:
         self.times = np.flatnonzero(np.isin(ds.time.values, sub.time.values))  # the passages over the box
         first = int(np.searchsorted(ds.lat.values, sub.lat.values[0])) if sub.sizes["along"] else 0
         self.lines = slice(first, first + sub.sizes["along"])  # their lines in its latitudes
-        self.names, self.variable = VARIABLES[variable][1], variable
+        self.var, self.names, self.variable = VARIABLES[variable], VARIABLES[variable].names, variable
         self.sub = index.isel(time=self.times)  # cycle and pass_id of each passage: what the modes subtract
         self.ready = threading.Event()
         size = 256 * 2**self.ZOOM
@@ -551,7 +584,7 @@ class Overview:
 
     def near(self, west, east, south, north):
         """The passages over a box, a chunk at a time, as a small view in memory (the modes as the whole view's)."""
-        return from_blocks((base_block, tuple(self.names)), base, self.times, west, east, south, north, self.shift)
+        return from_blocks((base_block, self.variable), base, self.times, west, east, south, north, self.shift)
 
 
 def lonlat_box(x_range, y_range):
@@ -582,7 +615,7 @@ def build(view, overviews):
     todo = [o for o in overviews if not o.restore()]
     if not todo:
         return
-    names = sorted({n for o in todo for n in o.names}) + ([MASK] if MASK else [])
+    names = sorted({n for o in todo for n in o.var.arrays})
     times = todo[0].times
     for o in todo:
         o.started = t0
@@ -596,7 +629,7 @@ def build(view, overviews):
                 coming = ahead.submit(fetch, batches[k + 1])
             lon, lat = sub.longitude.values, sub.latitude.values
             for o in todo:
-                o.add(at, masked(sum(sub[n].values for n in o.names), sub[MASK].values if MASK else None).astype("float32"), lon, lat)
+                o.add(at, o.var.values(lambda n: sub[n].values).astype("float32"), lon, lat)
                 o.done = int(at[-1]) + 1
             print(f"overview: {at[-1] + 1} of {len(times)} passages, {time.perf_counter() - t0:.0f} s", flush=True)
     for o in todo:
@@ -642,7 +675,7 @@ def load(west, east, south, north, start, days, variable):
                 return loaded[key], 0.0
         t0 = time.perf_counter()
         end = pd.Timestamp(start) + pd.Timedelta(days=days) - pd.Timedelta(seconds=1)
-        names = VARIABLES[variable][1]
+        var = VARIABLES[variable]
         sub = swot_view.subset(ds, west, east, south, north, start, end)
         if PRODUCT.get("overview") and sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > OVERVIEW_PIXELS:
             with cache_lock:
@@ -650,8 +683,8 @@ def load(west, east, south, north, start, days, variable):
             return overview_of(key), 0.0
         if sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > MAX_PIXELS:
             raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
-        values, line_time = read(sub, names + ([MASK] if MASK else []))
-        data = Loaded(values, names, west, east, line_time, MASK)
+        values, line_time = read(sub, var.arrays)
+        data = Loaded(values, var, west, east, line_time)
         with cache_lock:
             loaded[key] = data
             loading.pop(key, None)
@@ -723,7 +756,11 @@ def progress(west: float, east: float, south: float, north: float, start: str, d
 def info():
     return dict(first=str(pd.Timestamp(ds.time.values[0])), last=str(pd.Timestamp(ds.time.values[-1])),
                 passages=ds.sizes["time"], passes=ds.sizes["pass_number"], max_days=MAX_DAYS, default=DEFAULT,
-                variables={k: v[0] for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
+                variables={k: v.label for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
+                # each variable's kind, units and default colormap; the colormaps on offer as 16 stops each
+                looks={k: dict(kind=v.kind, units=v.units, cmap=v.cmap, fine=has_detail(k)) for k, v in VARIABLES.items()},
+                colormaps={name: ["#%02x%02x%02x" % tuple(int(255 * c) for c in cm(x)[:3]) for x in np.linspace(0, 1, 16)]
+                           for name, cm in COLORMAPS.items()}, diverging=list(COLORMAPS)[:DIVERGING],
                 netcdf=NETCDF, product=PRODUCT["label"], credit=PRODUCT["credit"],
                 detail=None if detail is None else dict(zoom=DETAIL_ZOOM, product=DETAIL_PRODUCT["label"],
                                                         commit=detail.commit.id[:8]),
@@ -755,15 +792,20 @@ def load_view(west: float, east: float, south: float, north: float, start: str, 
                 code=swot_view.snippet(west, east, south, north, start, str(end.date()), data.names[0]))
 
 
+def colormap(name, variable):
+    """A colormap asked for by name, else the variable's own."""
+    return name if name in COLORMAPS else VARIABLES[variable].cmap
+
+
 EMPTY = io.BytesIO()
 Image.new("RGBA", (256, 256)).save(EMPTY, format="png")
 
 
-def png(mean, vmin, vmax):
-    """A tile's means as a PNG (transparent where NaN), or the empty tile."""
+def png(mean, vmin, vmax, cmap):
+    """A tile's means as a PNG in a colormap (transparent where NaN), or the empty tile."""
     if not np.isfinite(mean).any():
         return Response(EMPTY.getvalue(), media_type="image/png")
-    rgba = (CMAP(np.clip((mean - vmin) / (vmax - vmin), 0, 1)) * 255).astype(np.uint8)
+    rgba = (COLORMAPS[cmap](np.clip((mean - vmin) / (vmax - vmin), 0, 1)) * 255).astype(np.uint8)
     rgba[..., 3] = np.where(np.isfinite(mean), 255, 0)
     out = io.BytesIO()
     Image.fromarray(rgba[::-1]).save(out, format="png")  # rows from north to south
@@ -777,49 +819,54 @@ def tile_ranges(z, x, y):
 
 
 @app.get("/api/tile/{z}/{x}/{y}.png")
-def tile(z: int, x: int, y: int, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2, data=Depends(view)):
-    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256), vmin, vmax)
+def tile(z: int, x: int, y: int, variable: str, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2,
+         cmap: str = None, data=Depends(view)):
+    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256), vmin, vmax, colormap(cmap, variable))
 
 
 # --- the detail product, tile by tile: each passage's lines near the tile, read a chunk at a time and kept
 
-def block(src, product, i, c, names):
-    """A passage's (time index `i`) chunk `c` of lines of a store (`src`, its product's flag): its values (the sum of
-    `names`) and positions, as float32, and when each line was."""
+def block(src, product, i, c, variable):
+    """A passage's (time index `i`) chunk `c` of lines of a store (`src`): a variable's values (as its product says)
+    and positions, as float32, and when each line was."""
     n = src.ds.line_time.encoding["chunks"][1]
-    flag = product.get("mask")
-    sub = src.ds[list(names) + ["latitude", "longitude", "line_time"] + ([flag] if flag else [])].isel(
-        time=i, along=slice(c * n, (c + 1) * n)).load()
-    values = masked(sum(sub[k].values for k in names), sub[flag].values if flag else None)
+    var = product["variables"][variable]
+    sub = src.ds[var.arrays + ["latitude", "longitude", "line_time"]].isel(time=i, along=slice(c * n, (c + 1) * n)).load()
+    values = var.values(lambda k: sub[k].values)
     return (values.astype("float32"), sub.latitude.values.astype("float32"),
             sub.longitude.values.astype("float32"), sub.line_time.values)
 
 
 @lru_cache(maxsize=int(os.environ.get("SWOT_DETAIL_BLOCKS", 1024)))  # ~3.4 MB each at 512 x 551 (float32)
-def detail_block(i, c, names):
-    return block(detail, DETAIL_PRODUCT, i, c, names)
+def detail_block(i, c, variable):
+    return block(detail, DETAIL_PRODUCT, i, c, variable)
 
 
 @lru_cache(maxsize=int(os.environ.get("SWOT_BASE_BLOCKS", 4096)))  # ~0.4 MB each at 493 x 69 (L2 Expert)
-def base_block(i, c, names):
-    return block(base, PRODUCT, i, c, names)
+def base_block(i, c, variable):
+    return block(base, PRODUCT, i, c, variable)
 
 
-def lines_of(read, src, times, chunks, names, rows):
+def lines_of(read, src, times, chunks, variable, rows):
     """Passages (time indices) of a store on some of their lines (`rows`, in `chunks`), read a block at a time with
     `read`, all at once: values, latitudes, longitudes (passages x lines x pixels) and when each line was."""
     n = src.ds.line_time.encoding["chunks"][1]
     with ThreadPoolExecutor(32) as pool:
-        reads = [[pool.submit(read, int(i), c, tuple(names)) for c in chunks] for i in times]
+        reads = [[pool.submit(read, int(i), c, variable) for c in chunks] for i in times]
     blocks = [[r.result() for r in rs] for rs in reads]
     first = rows[0] - chunks[0] * n
     return [np.stack([np.concatenate([b[k] for b in bs])[first:first + len(rows)] for bs in blocks]) for k in range(4)]
 
 
-def detail_passages(times, chunks, names, rows, cached=True):
+def has_detail(variable):
+    """Whether the detail product (250 m) has this variable (Unsmoothed: SSHA and sigma0, not SWH or wind)."""
+    return detail is not None and variable in DETAIL_PRODUCT["variables"]
+
+
+def detail_passages(times, chunks, variable, rows, cached=True):
     """The detail store's passages on some of their lines (as `lines_of`). Uncached (`cached=False`), for reads that
     would push a region's blocks out (a point's whole mission)."""
-    return lines_of(detail_block if cached else detail_block.__wrapped__, detail, times, chunks, names, rows)
+    return lines_of(detail_block if cached else detail_block.__wrapped__, detail, times, chunks, variable, rows)
 
 
 def lines_over(src, times, west, east, south, north):
@@ -853,11 +900,10 @@ def offsets(data, mode):
 
 @app.get("/api/detail/{z}/{x}/{y}.png")
 def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mode: str = "box",
-                vmin: float = -0.2, vmax: float = 0.2, data=Depends(view)):
+                vmin: float = -0.2, vmax: float = 0.2, cmap: str = None, data=Depends(view)):
     """A tile of the detail product (from DETAIL_ZOOM - 1 on), over the base's: its passages in the view's dates
     that cross the tile, minus what the base subtracts. Transparent where it has no data, so the base shows."""
-    names = DETAIL_PRODUCT["variables"].get(variable, (None, None))[1]
-    if detail is None or z < DETAIL_ZOOM - 1 or names is None:
+    if z < DETAIL_ZOOM - 1 or not has_detail(variable):
         return Response(EMPTY.getvalue(), media_type="image/png")
     xr_, yr_ = tile_ranges(z, x, y)
     lon = np.rad2deg(np.array(xr_) / R)
@@ -866,7 +912,7 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
     times, rows, chunks = detail_lines(west, east, south, north, start, days)
     if not len(times) or not len(rows):
         return Response(EMPTY.getvalue(), media_type="image/png")
-    values, lat, lon, _ = detail_passages(times, chunks, names, rows)
+    values, lat, lon, _ = detail_passages(times, chunks, variable, rows)
     # of those, the lines whose own latitudes reach the tile (and one more each side: whole cells)
     with warnings.catch_warnings(action="ignore"):
         lo, hi = np.nanmin(lat, axis=(0, 2)), np.nanmax(lat, axis=(0, 2))
@@ -882,7 +928,7 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
     cycles, passes = detail.index.cycle.values[times], detail.index.pass_id.values[times]
     shift = np.array([per.get((int(c), int(p)), box) for c, p in zip(cycles, passes)], "float32")
     tiles.shift["shifted"] = shift
-    return png(tiles.mean_on("shifted", xr_, yr_, 256, 256), vmin, vmax)
+    return png(tiles.mean_on("shifted", xr_, yr_, 256, 256), vmin, vmax, colormap(cmap, variable))
 
 
 @app.get("/api/value")
@@ -912,13 +958,12 @@ def line_box(lon, lat):
 def detail_profile(lon, lat, mode, start, days, variable, data):
     """The detail store's passages in the view's dates along the points: each one's nearest pixel within FINE_RADIUS,
     minus what the base view subtracts (as the detail tiles), with when its line was."""
-    names = DETAIL_PRODUCT["variables"].get(variable, (None, None))[1]
-    if names is None:
+    if not has_detail(variable):
         return []
     times, rows, chunks = detail_lines(*line_box(lon, lat), start, days)
     if not len(times) or not len(rows):
         return []
-    values, la, lo, line_time = detail_passages(times, chunks, names, rows)
+    values, la, lo, line_time = detail_passages(times, chunks, variable, rows)
     box, per = offsets(data, mode)
     pts, out = unit(lon, lat), []
     for k, i in enumerate(times):
@@ -949,7 +994,7 @@ def transect(points: str, mode: str = "box", step: float = 2.0, start: str = Non
     one curve per passage that has any, with the time of the line each value comes from (ms) and the time of
     the line at its middle point. Below FINE km (250 m), from the detail store."""
     lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
-    fine = step < FINE and detail is not None
+    fine = step < FINE and has_detail(variable)
     lon, lat, dist, step = along_line(lon, lat, max(step, 0.25 if fine else 0.5))
     if fine:
         return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
@@ -979,10 +1024,9 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
     The grid of a pass is the same in every cycle (a repeat orbit), and so is when each line is measured relative
     to the passage's time: both are read once, on its first passage; then only the values of the lines near the
     polyline are read, for all its passages. Below FINE km (250 m), from the detail store, on lines up to FINE_LENGTH."""
-    fine = step < FINE and detail is not None
+    fine = step < FINE and has_detail(variable)
     product, src = (DETAIL_PRODUCT, detail) if fine else (PRODUCT, base)
-    ds, index, mask, radius = src.ds, src.index, product.get("mask"), FINE_RADIUS if fine else 1.5
-    names = product["variables"][variable][1]
+    ds, index, var, radius = src.ds, src.index, product["variables"][variable], FINE_RADIUS if fine else 1.5
     lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
     lon, lat, dist, step = along_line(lon, lat, max(step, 0.25 if fine else 0.5))
     if fine and dist[-1] > FINE_LENGTH:
@@ -1022,7 +1066,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
     cols = [np.tile(col, len(times)) for _, times, _, _, col, _ in found]
     if found:
         where = {dim: xr.DataArray(np.concatenate(v), dims="pixel") for dim, v in (("time", at), ("along", rows), ("cross", cols))}
-        values = masked(sum(ds[n].isel(where).values for n in names), ds[mask].isel(where).values if mask else None)
+        values = var.values(lambda n: ds[n].isel(where).values)
     out, k0 = [], 0
     for p, times, hit, row, col, offset in found:
         v = values[k0:k0 + len(times) * len(hit)].reshape(len(times), len(hit))  # (passages, points hit)
@@ -1041,7 +1085,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
                 step=round(float(step), 3), passages=sorted(out, key=lambda q: q["time"]))
 
 
-def detail_series(lon, lat, names, radius):
+def detail_series(lon, lat, variable, radius):
     """The mean of the detail store's pixels within `radius` km of the point, per passage (as `point_series`), each
     passage read and reduced on its own (the whole mission at 250 m would not fit in memory at once)."""
     km = swot_view.EARTH_RADIUS * np.pi / 180
@@ -1056,7 +1100,7 @@ def detail_series(lon, lat, names, radius):
     least = max(1, round(np.pi * radius**2 / DETAIL_PRODUCT["pixel"] ** 2 / 4))  # a quarter of the circle's pixels
 
     def mean(i):
-        values, la, lo, _ = detail_passages([i], chunks, names, rows, cached=False)
+        values, la, lo, _ = detail_passages([i], chunks, variable, rows, cached=False)
         v = np.where(swot_view.distance(la, lo, lat, lon) <= radius, values, np.nan)
         return np.nanmean(v) if np.isfinite(v).sum() >= least else np.nan
 
@@ -1072,12 +1116,11 @@ def detail_series(lon, lat, names, radius):
 def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool = False):
     """The mean around a point, per passage: within `radius` km, or (`fine`) of the detail store's 250 m pixels."""
     if fine:
-        names = DETAIL_PRODUCT["variables"].get(variable, (None, None))[1] if detail is not None else None
-        if names is None:
-            raise HTTPException(404, "no 250 m product here")
-        return detail_series(lon, lat, names, radius)
-    names = VARIABLES[variable][1]
-    s = sum(swot_view.point_series(ds, lon, lat, n, radius, mask=MASK)[n] for n in names)
+        if not has_detail(variable):
+            raise HTTPException(404, "no 250 m product for this variable")
+        return detail_series(lon, lat, variable, radius)
+    var = VARIABLES[variable]
+    s = sum(swot_view.point_series(ds, lon, lat, n, radius, mask=var.flag, db=var.db)[n] for n in var.names)
     return dict(time=(s.time.to_index().astype("int64") // 10**6).tolist(), value=s.values.round(4).tolist())
 
 
@@ -1092,7 +1135,7 @@ def as_netcdf(dataset, name):
                     headers={"Content-Disposition": f'attachment; filename="{name}.nc"'})
 
 
-def line_dataset(result, label):
+def line_dataset(result, var):
     """A profile's or a Hovmöller's passages as (passage, distance) values, with their time, pass and cycle."""
     n = len(result["distance"])
     values = np.full((len(result["passages"]), n), np.nan)
@@ -1102,7 +1145,7 @@ def line_dataset(result, label):
     times = [pd.Timestamp(q["time"], unit="ms") if isinstance(q["time"], int) else pd.Timestamp(q["time"])
              for q in result["passages"]]
     return xr.Dataset(
-        {"value": (("passage", "distance"), values, {"long_name": label, "units": "m"})},
+        {"value": (("passage", "distance"), values, {"long_name": var.label, "units": var.units})},
         coords={"distance": ("distance", result["distance"], {"units": "km", "long_name": "along the line"}),
                 "lon": ("distance", result["lon"]), "lat": ("distance", result["lat"]),
                 "time": ("passage", times), "pass_number": ("passage", [q["pass_id"] for q in result["passages"]]),
@@ -1118,14 +1161,15 @@ FINE_SERIES_RADIUS = 1.0  # km: the 250 m series' circle (~50 pixels)
 def series_nc(lon: float, lat: float, variable: str, radius: float = 5):
     """The series at a point, and with a detail store, its 250 m series within FINE_SERIES_RADIUS (time_250m)."""
     s = series(lon, lat, variable, radius)
-    out = xr.Dataset({"value": ("time", s["value"], {"long_name": VARIABLES[variable][0], "units": "m",
+    var = VARIABLES[variable]
+    out = xr.Dataset({"value": ("time", s["value"], {"long_name": var.label, "units": var.units,
                                                      "comment": f"{PRODUCT['label']}, mean within {radius:g} km"})},
                      coords={"time": pd.to_datetime(s["time"], unit="ms")},
                      attrs={"lon": lon, "lat": lat, "radius_km": radius,
                             "comment": "mean of the pixels within radius_km of (lon, lat), per passage"})
-    if detail is not None and variable in DETAIL_PRODUCT["variables"]:
+    if has_detail(variable):
         f = series(lon, lat, variable, FINE_SERIES_RADIUS, fine=True)
-        out["value_250m"] = ("time_250m", f["value"], {"long_name": VARIABLES[variable][0], "units": "m",
+        out["value_250m"] = ("time_250m", f["value"], {"long_name": var.label, "units": var.units,
                                                        "comment": f"{DETAIL_PRODUCT['label']}, mean within {FINE_SERIES_RADIUS:g} km"})
         out = out.assign_coords(time_250m=pd.to_datetime(f["time"], unit="ms"))
     return as_netcdf(out, "swot_series")
@@ -1134,37 +1178,40 @@ def series_nc(lon: float, lat: float, variable: str, radius: float = 5):
 @app.get("/api/transect.nc")
 def transect_nc(points: str, variable: str, mode: str = "box", step: float = 2.0, start: str = None, days: int = 1,
                 data=Depends(view)):
-    return as_netcdf(line_dataset(transect(points, mode, step, start, days, variable, data), VARIABLES[variable][0]),
+    return as_netcdf(line_dataset(transect(points, mode, step, start, days, variable, data), VARIABLES[variable]),
                      "swot_profile")
 
 
 @app.get("/api/hovmoller.nc")
 def hovmoller_nc(points: str, variable: str, step: float = 2.0):
-    return as_netcdf(line_dataset(hovmoller(points, variable, step), VARIABLES[variable][0]), "swot_hovmoller")
+    return as_netcdf(line_dataset(hovmoller(points, variable, step), VARIABLES[variable]), "swot_hovmoller")
 
 
 @app.get("/api/code/series")
 def series_code(lon: float, lat: float, variable: str, radius: float = 5):
-    label, names = VARIABLES[variable]
-    fine = None
-    if detail is not None and variable in DETAIL_PRODUCT["variables"]:
-        fine = dict(target=DETAIL_STORE, names=DETAIL_PRODUCT["variables"][variable][1], radius=FINE_SERIES_RADIUS,
-                    mask=DETAIL_PRODUCT.get("mask"), pixel=DETAIL_PRODUCT["pixel"], label="250 m pixels")
-    return dict(code=swot_view.series_snippet(lon, lat, names, radius, f"{label}, ", target=STORE, mask=MASK, fine=fine))
+    var, fine = VARIABLES[variable], None
+    if has_detail(variable):
+        f = DETAIL_PRODUCT["variables"][variable]
+        fine = dict(target=DETAIL_STORE, names=f.names, radius=FINE_SERIES_RADIUS, mask=f.flag, db=f.db,
+                    pixel=DETAIL_PRODUCT["pixel"], label="250 m pixels")
+    return dict(code=swot_view.series_snippet(lon, lat, var.names, radius, f"{var.label}, ", target=STORE, mask=var.flag,
+                                              db=var.db, fine=fine, units=var.units))
 
 
 @app.get("/api/code/line")
 def line_code(points: str, variable: str, step: float = 2.0, start: str = None, days: int = 1, mean: str = "time"):
     """The profile of the passages from `start` for `days` days, or (no start) the Hovmöller of the mission."""
-    label, names = VARIABLES[variable]
+    var = VARIABLES[variable]
+    label = var.label
     vertices = [tuple(map(float, p.split(","))) for p in points.split(";")]
     end = None if start is None else str(pd.Timestamp(start) + pd.Timedelta(days=days) - pd.Timedelta(seconds=1))
     title = f"{label}, " + (f"{start} to {end[:10]}" if start else "whole mission")
-    if step < FINE and detail is not None:  # 250 m
-        names = DETAIL_PRODUCT["variables"][variable][1]
-        return dict(code=swot_view.line_snippet(vertices, names, step, start, end, mean, title, target=DETAIL_STORE,
-                                                radius=FINE_RADIUS, mask=DETAIL_PRODUCT.get("mask")))
-    return dict(code=swot_view.line_snippet(vertices, names, step, start, end, mean, title, target=STORE, mask=MASK))
+    if step < FINE and has_detail(variable):  # 250 m
+        f = DETAIL_PRODUCT["variables"][variable]
+        return dict(code=swot_view.line_snippet(vertices, f.names, step, start, end, mean, title, target=DETAIL_STORE,
+                                                radius=FINE_RADIUS, mask=f.flag, db=f.db, units=f.units))
+    return dict(code=swot_view.line_snippet(vertices, var.names, step, start, end, mean, title, target=STORE,
+                                            mask=var.flag, db=var.db, units=var.units))
 
 
 @app.get("/api/netcdf")
@@ -1207,12 +1254,11 @@ def world_png():
 
 
 # the opening view, ready before the first visitor: in memory, or for a product too big to keep (`overview`), its
-# overview for every variable, built in the background (or read back from SWOT_CACHE_DIR)
+# overview, built in the background (or read back from SWOT_CACHE_DIR); other variables on it are built when asked
 OVERVIEWS, OPENING = {}, set()  # views too big to keep: their overviews (OrderedDict order: oldest first)
 if PRODUCT.get("overview"):
-    for variable in VARIABLES:
-        OPENING.add(key := tuple((DEFAULT | dict(variable=variable)).values()))
-        OVERVIEWS[key] = Overview(DEFAULT, variable)
-    threading.Thread(target=build_overviews, args=(DEFAULT, list(OVERVIEWS.values())), daemon=True).start()
+    OPENING.add(key := tuple(DEFAULT.values()))
+    OVERVIEWS[key] = Overview(DEFAULT, DEFAULT["variable"])
+    threading.Thread(target=build_overviews, args=(DEFAULT, [OVERVIEWS[key]]), daemon=True).start()
 else:
     load(**DEFAULT)

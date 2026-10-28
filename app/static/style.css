@@ -245,3 +245,12 @@ button.icon svg { width: 17px; height: 17px; }
 .card .chart-buttons { display: inline-flex; gap: 0; }
 .card .chart-buttons button { padding: 4px 6px; }
 .card .chart-buttons svg { width: 16px; height: 16px; }
+
+/* the colormap menu: a strip and a name for each */
+#cmap { position: relative; }
+#cmap button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 6px; font-size: 12px; text-align: left; }
+#cmap button i { flex: 0 0 90px; height: 10px; border-radius: 2px; }
+#cmap .cmap-list { max-height: 260px; overflow-y: auto; margin-top: 4px; border: 1px solid rgba(148,163,184,0.25); border-radius: 6px; }
+#cmap .cmap-list button { background: none; border: 0; color: var(--text, #e5e7eb); cursor: pointer; }
+#cmap .cmap-list button:hover, #cmap .cmap-list button.active { background: rgba(148,163,184,0.15); }
+#cmap .cmap-list hr { border: 0; border-top: 1px solid rgba(148,163,184,0.25); margin: 2px 0; }
