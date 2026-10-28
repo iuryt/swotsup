@@ -497,3 +497,23 @@ def test_overview_draws_what_the_view_in_memory_draws(fine_store_path, tmp_path,
     assert again.restore()
     ranges = server.tile_ranges(2, 2, 1)
     np.testing.assert_array_equal(again.mean_on("box", *ranges, 256, 256), over.mean_on("box", *ranges, 256, 256))
+
+
+
+def test_a_view_too_big_to_keep_becomes_an_overview(store_path, monkeypatch):
+    """With a product that has overviews, a view bigger than OVERVIEW_PIXELS (e.g. another 21 days of the globe,
+    after a click on a passage) is built as one, in the background, and drawn from it; a smaller view is read whole."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    sys.modules.pop("server", None)
+    import server
+
+    monkeypatch.setitem(server.PRODUCT, "overview", True)
+    monkeypatch.setattr(server, "OVERVIEW_PIXELS", 5000)
+    big = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    data = server.load(**big)[0]
+    assert isinstance(data, server.Overview) and data.ready.wait(60) and len(data.times) == 4
+    assert server.load(**big)[0] is data  # once
+    tile = TestClient(server.app).get("/api/tile/2/2/1.png", params=big | dict(mode="none", vmin=3000, vmax=5000))
+    assert (np.asarray(Image.open(io.BytesIO(tile.content)).convert("RGBA"))[..., 3] == 255).sum() > 10
+    small = PASS_7 | dict(south=4, north=5)
+    assert isinstance(server.load(**small)[0], server.Loaded)
