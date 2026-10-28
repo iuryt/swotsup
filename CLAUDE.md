@@ -62,8 +62,14 @@ be resumed here (`claude --resume`).
     each chunk fetched once: the equatorial Pacific, 12k passages, 18 s from biomix instead of 80 s),
     `/api/netcdf`, `/api/world.png`.
   Every request names its view (box, dates, variable); views are kept in memory up to `SWOT_CACHE_GB`
-  and read again if they were pushed out. The opening view (whole globe, 2 Nov 2024, 1 day, `DEFAULT`) is
-  loaded when the server starts.
+  and read again if they were pushed out. The opening view (`DEFAULT`): for L2 Expert the whole globe on the 21 days
+  up to the latest passage (`latest_days`, often part of two cycles; ~400 M pixels: too big to keep), served by an
+  `Overview` (as is any view bigger than SWOT_OVERVIEW_PIXELS, built on demand): built in the
+  background at start, a batch of 32 passages at a time (from biomix 123 s, 4.9 GB at most), into world rasters of
+  zoom 4 (sum and count of every cell as a point, per mode: the colors and modes change without reading again), kept
+  on disk (`SWOT_CACHE_DIR`, by commit and view: a restart reads them back); tiles up to zoom 4 come from them, closer
+  tiles, clicks and lines from the passages read a chunk at a time where needed (`from_blocks`, `base_block`, LRU
+  `SWOT_BASE_BLOCKS`). For L3, the whole globe on 2 Nov 2024 (1 day), loaded at start.
 - `app/static/`: the page, no build step (MapLibre GL 5, uPlot, lucide, Prism from CDNs, pinned): map full
   screen without axes, globe by default with a button for the flat map (remembered per browser), floating
   panels, a canvas timeline (orange band of up to 21 days; the dragged edge stops at the limit, moving keeps

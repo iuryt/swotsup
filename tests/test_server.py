@@ -450,3 +450,103 @@ def test_fine_hovmoller_only_on_short_lines(store_path, fine_store_path, monkeyp
     assert [{round(v) for v in q["value"] if v is not None} for q in h["passages"]] == [{3600}, {5600}]
     long = c.get("/api/hovmoller", params=dict(points="29.6,0.0;29.6,4.0", step=0.25, variable="ssha_unfiltered"))
     assert long.status_code == 413
+
+
+
+def test_opening_on_the_latest_days():
+    """The opening view: the 21 days up to the day of the latest passage, whatever the cycles."""
+    import server
+
+    times = np.array(["2026-09-30T23:00", "2026-10-24T05:10", "2026-10-12T12:00"], "datetime64[ns]")
+    assert server.latest_days(times) == dict(start="2026-10-04", days=21)
+
+
+def test_overview_draws_what_the_view_in_memory_draws(fine_store_path, tmp_path, monkeypatch):
+    """A view too big to keep is drawn from its overview: up to zoom 4 from the rasters it sums (each cell as a point;
+    the modes as one number per passage or for the box), closer from its passages read a chunk at a time. Both give
+    what the same view in memory gives, and clicks too. Kept on disk, it is read back the same."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    monkeypatch.setattr(server, "CACHE_DIR", str(tmp_path))
+    view = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    memory = server.load(**view)[0]
+    over = server.Overview(view, view["variable"])
+    server.build_overviews(view, [over])
+    assert len(over.times) == 2 and over.ready.is_set()
+    for mode in ("none", "box", "passage"):
+        assert abs(over.shift["box"][0] - memory.shift["box"][0]) < 1
+        for z, tol in ((4, 3), (7, 0.01)):  # rasters: means of cells against means of 4 x 4 blocks; chunks: the same
+            fx, fy = (30.1 + 180) / 360 * 2**z, (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(2.0) / 2)) / np.pi) / 2 * 2**z
+            ranges = server.tile_ranges(z, int(fx), int(fy))
+            a, b = over.mean_on(mode, *ranges, 256, 256), memory.mean_on(mode, *ranges, 256, 256)
+            both = np.isfinite(a) & np.isfinite(b)
+            assert both.sum() > 30 and np.median(np.abs(a - b)[both]) <= tol, (mode, z)
+    x, y = server.mercator(30.1, 2.07)
+    click = over.near(30.05, 30.15, 2.02, 2.12).passages_at("none", x, y)
+    assert sorted(round(float(v)) for v, *_ in click) == sorted(round(float(v)) for v, *_ in memory.passages_at("none", x, y))
+    again = server.Overview(view, view["variable"])
+    assert again.restore()
+    ranges = server.tile_ranges(2, 2, 1)
+    np.testing.assert_array_equal(again.mean_on("box", *ranges, 256, 256), over.mean_on("box", *ranges, 256, 256))
+
+
+
+def test_a_view_too_big_to_keep_becomes_an_overview(store_path, monkeypatch):
+    """With a product that has overviews, a view bigger than OVERVIEW_PIXELS (e.g. another 21 days of the globe,
+    after a click on a passage) is built as one, in the background, and drawn from it; a smaller view is read whole."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    sys.modules.pop("server", None)
+    import server
+
+    monkeypatch.setitem(server.PRODUCT, "overview", True)
+    monkeypatch.setattr(server, "OVERVIEW_PIXELS", 5000)
+    big = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    data = server.load(**big)[0]
+    assert isinstance(data, server.Overview) and data.ready.wait(60) and len(data.times) == 4
+    assert server.load(**big)[0] is data  # once
+    tile = TestClient(server.app).get("/api/tile/2/2/1.png", params=big | dict(mode="none", vmin=3000, vmax=5000))
+    assert (np.asarray(Image.open(io.BytesIO(tile.content)).convert("RGBA"))[..., 3] == 255).sum() > 10
+    small = PASS_7 | dict(south=4, north=5)
+    assert isinstance(server.load(**small)[0], server.Loaded)
+
+
+
+def test_overview_up_close_waits_for_what_the_modes_subtract(fine_store_path, monkeypatch):
+    """Tiles up close, clicks and lines of an overview being built wait for its medians (known once it is all read):
+    drawn before, they would keep colors of their own."""
+    import threading
+    import time
+
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    view = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    over, early = server.Overview(view, view["variable"]), []
+    asking = threading.Thread(target=lambda: early.append(over.near(30.05, 30.15, 2.02, 2.12).shift["box"].copy()))
+    asking.start()
+    time.sleep(0.5)
+    server.build_overviews(view, [over])
+    asking.join()
+    assert abs(early[0][0] - over.shift["box"][0]) < 1e-6 and abs(over.shift["box"][0]) > 1000
+
+
+
+def test_progress_of_an_overview_being_built(store_path, monkeypatch):
+    """While a view too big to keep is read, its progress: passages read, of how many; nothing for other views."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    sys.modules.pop("server", None)
+    import server
+
+    big = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    over = server.Overview(big, big["variable"])
+    over.started, over.done = server.time.perf_counter(), 2
+    monkeypatch.setitem(server.OVERVIEWS, tuple(big.values()), over)
+    c = TestClient(server.app)
+    p = c.get("/api/progress", params=big).json()
+    assert p["done"] == 2 and p["total"] == 4
+    assert c.get("/api/progress", params=PASS_7).json() == {}
+    over.ready.set()
+    assert c.get("/api/progress", params=big).json() == {}
