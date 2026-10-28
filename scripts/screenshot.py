@@ -45,7 +45,9 @@ with sync_playwright() as p:
             if page.query_selector(".card .expand:visible"):
                 page.click(".card .expand")
             page.wait_for_selector(".card .uplot, .card .loading:not(:has(.spinner))", timeout=120_000)
+            page.wait_for_function("!document.querySelector('.card .hint').textContent.includes('reading…')", timeout=120_000)
             page.wait_for_timeout(1500)
+            print("series:", page.inner_text(".card .hint"), flush=True)
             shot("series")
             with page.expect_download() as png:  # the figure, then the code that draws it
                 page.click(".card [data-get=png]")
@@ -72,6 +74,14 @@ with sync_playwright() as p:
             page.wait_for_timeout(800)
             print("line:", page.inner_text(".card.transect .hint"), flush=True)
             shot("line")
+            if page.query_selector(".card.transect .step:not(.hidden)"):  # at 250 m (a detail product), then back
+                page.select_option(".card.transect .step", "0.25")
+                page.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=120_000)
+                page.wait_for_timeout(1500)
+                print("line 250 m:", page.inner_text(".card.transect .hint"), flush=True)
+                shot("line-250m")
+                page.select_option(".card.transect .step", "2")
+                page.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=120_000)
         elif scenario == "hovmoller":
             page.click(".card.transect .kind [data-v=hovmoller]")
             page.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=120_000)

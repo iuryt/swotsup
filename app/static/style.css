@@ -116,6 +116,9 @@ body.globe #overview { display: none; }
 .card .expand svg { width: 13px; height: 13px; }
 .card:not(.compact) .expand { display: none; }
 .card .hint .spinner { display: inline-block; vertical-align: middle; }
+.card .hint .key { cursor: pointer; margin-right: 12px; white-space: nowrap; }
+.card .hint .key i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+.card .hint .key.off { opacity: 0.4; text-decoration: line-through; }
 .tip { position: absolute; pointer-events: none; white-space: nowrap; padding: 3px 7px; border-radius: 6px; z-index: 5;
   background: rgba(2, 6, 23, 0.9); border: 1px solid var(--orange); color: var(--fg); font-size: 11px; }
 .card .loading { height: 180px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }

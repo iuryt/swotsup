@@ -537,6 +537,9 @@ function chartSize(card) {  // the chart fills the card below its header (and gr
   return { width: card.clientWidth - 24, height: card.clientHeight - card.querySelector(".chart").offsetTop - 12 };
 }
 
+const FINE_RADIUS = 1;  // km: the 250 m series' circle (~50 pixels)
+const SERIES = [{ color: "#3b82f6" }, { color: "#f97316" }];  // 2 km, 250 m
+
 async function fillSeries(card, lngLat, radius) {
   const chart = card.querySelector(".chart"), hint = card.querySelector(".hint");
   card.plot?.destroy();
@@ -544,47 +547,86 @@ async function fillSeries(card, lngLat, radius) {
   card.tip?.remove();
   chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the whole mission from the cloud…</div>`;
   hint.textContent = `mean within ${radius} km`;
+  const where = { lon: wrap(lngLat.lng), lat: lngLat.lat, variable: state.variable };
+  // the 250 m series (a smaller circle of the detail product) comes later, drawn over the 2 km one when it arrives
+  const fine = info.detail ? api("/api/series", { ...where, radius: FINE_RADIUS, fine: true }).catch(() => null) : null;
   try {
-    const s = await api("/api/series", { lon: wrap(lngLat.lng), lat: lngLat.lat, variable: state.variable, radius });
-    hint.textContent = `mean within ${radius} km · ${s.time.length} passages · click one to see that date on the map`;
+    const s = await api("/api/series", { ...where, radius });
     if (card.classList.contains("sheet")) card.querySelector("h3").textContent = `${latText(lngLat.lat)} ${lonText(lngLat.lng)} · ${passages(s.time.length)}`;
-    chart.innerHTML = "";
     if (!s.time.length) { chart.innerHTML = `<div class="loading">No passage here (outside the swaths, or in the nadir gap).</div>`; return; }
-    const band = { hooks: { drawClear: [(u) => {  // the selected dates
-      const [a, b] = [u.valToPos(state.start / 1000, "x", true), u.valToPos((state.start + state.days * DAY) / 1000, "x", true)];
-      u.ctx.fillStyle = "rgba(249,115,22,0.25)";
-      u.ctx.fillRect(a, u.bbox.top, Math.max(b - a, 2), u.bbox.height);
-    }] } };
-    const axis = { stroke: "#94a3b8", grid: { stroke: "rgba(148,163,184,0.12)" }, ticks: { stroke: "rgba(148,163,184,0.25)" } };
-    const tip = document.createElement("div");  // date and value of the point under the mouse, on the page
-    tip.className = "tip floating";
-    document.body.appendChild(tip);
-    card.tip = tip;
-    const hover = { hooks: { init: [(u) => {
-      touchCursor(u);
-      u.over.addEventListener("click", () => {  // that passage's date on the map, keeping the number of days
-        if (u.cursor.idx == null) return;
-        const day = Math.floor(u.data[0][u.cursor.idx] * 1000 / DAY) * DAY;
-        const start = Math.min(Math.max(day - Math.floor((state.days - 1) / 2) * DAY, timeline.full[0]),
-                               timeline.full[1] - state.days * DAY);
-        setDates(start, state.days);
-      });
-    }], setCursor: [(u) => {
-      const i = u.cursor.idx;
-      tip.style.display = i == null ? "none" : "block";
-      if (i == null) return;
-      tip.textContent = `${dayText(u.data[0][i] * 1000)} · ${u.data[1][i].toFixed(3)} m`;
-      placeTip(tip, u, u.valToPos(u.data[0][i], "x"), u.valToPos(u.data[1][i], "y"));
-    }] } };
-    card.plot = new uPlot({
-      ...chartSize(card), plugins: [band, hover], legend: { show: false }, cursor: { points: { size: 7 } },
-      scales: { x: { time: true } },
-      axes: [axis, { ...axis, label: "m", size: 45 }],
-      series: [{}, { stroke: "#3b82f6", width: 1, points: { show: true, size: 4, fill: "#3b82f6" } }],
-    }, [s.time.map((t) => t / 1000), s.value], chart);
+    card.series = s;
+    drawSeries(card, [s], radius);
+    if (!fine) return;
+    const f = await fine;
+    if (!card.isConnected || card.series !== s) return;  // closed, or drawn again meanwhile
+    if (card.plot && f?.time.length) drawSeries(card, [s, f], radius);
+    else seriesLegend(card, [s], radius, f ? "no 250 m data here yet" : "250 m not available");
   } catch (e) {
     chart.innerHTML = `<div class="loading">${e.message}</div>`;
   }
+}
+
+function seriesLegend(card, curves, radius, fineNote = "reading…") {
+  // which curve is which, each a toggle: "● 2 km pixels, within 5 km · 412 passages  ● 250 m pixels, within 1 km · ..."
+  const hint = card.querySelector(".hint"), u = card.plot;
+  const text = [`2 km pixels, within ${radius} km · ${passages(curves[0].time.length)}`,
+                `250 m pixels, within ${FINE_RADIUS} km · ${curves[1] ? passages(curves[1].time.length) : fineNote}`];
+  hint.innerHTML = (info.detail ? text : text.slice(0, 1)).map((t, k) =>
+    `<span class="key${u && u.series[k + 1] && !u.series[k + 1].show ? " off" : ""}" data-k="${k}" title="Show or hide this series">` +
+    `<i style="background:${SERIES[k].color}"></i>${t}</span>`).join("") + `<span class="key-note"> · click a point to see that date on the map</span>`;
+  hint.querySelectorAll(".key").forEach((el) => el.onclick = (e) => {
+    e.stopPropagation();
+    const i = Number(el.dataset.k) + 1;
+    if (!card.plot || !card.plot.series[i]) return;
+    card.plot.setSeries(i, { show: !card.plot.series[i].show });
+    el.classList.toggle("off", !card.plot.series[i].show);
+  });
+}
+
+function drawSeries(card, curves, radius) {
+  const chart = card.querySelector(".chart");
+  card.plot?.destroy();
+  card.tip?.remove();
+  chart.innerHTML = "";
+  // one time axis for both: the passages of either (the same passage is at the same time in both products)
+  const xs = [...new Set(curves.flatMap((c) => c.time))].sort((a, b) => a - b);
+  const ys = curves.map((c) => { const at = new Map(c.time.map((t, k) => [t, c.value[k]])); return xs.map((t) => at.get(t) ?? null); });
+  const band = { hooks: { drawClear: [(u) => {  // the selected dates
+    const [a, b] = [u.valToPos(state.start / 1000, "x", true), u.valToPos((state.start + state.days * DAY) / 1000, "x", true)];
+    u.ctx.fillStyle = "rgba(249,115,22,0.25)";
+    u.ctx.fillRect(a, u.bbox.top, Math.max(b - a, 2), u.bbox.height);
+  }] } };
+  const axis = { stroke: "#94a3b8", grid: { stroke: "rgba(148,163,184,0.12)" }, ticks: { stroke: "rgba(148,163,184,0.25)" } };
+  const tip = document.createElement("div");  // date and values of the passage under the mouse, on the page
+  tip.className = "tip floating";
+  document.body.appendChild(tip);
+  card.tip = tip;
+  const hover = { hooks: { init: [(u) => {
+    touchCursor(u);
+    u.over.addEventListener("click", () => {  // that passage's date on the map, keeping the number of days
+      if (u.cursor.idx == null) return;
+      const day = Math.floor(u.data[0][u.cursor.idx] * 1000 / DAY) * DAY;
+      const start = Math.min(Math.max(day - Math.floor((state.days - 1) / 2) * DAY, timeline.full[0]),
+                             timeline.full[1] - state.days * DAY);
+      setDates(start, state.days);
+    });
+  }], setCursor: [(u) => {
+    const i = u.cursor.idx, k = i == null ? -1 : u.data.slice(1).findIndex((y, j) => y[i] != null && u.series[j + 1].show);
+    tip.style.display = k < 0 ? "none" : "block";
+    if (k < 0) return;
+    const values = u.data.slice(1).map((y, j) => y[i] == null || !u.series[j + 1].show ? ""
+      : `${curves.length > 1 ? (j ? "250 m " : "2 km ") : ""}${y[i].toFixed(3)} m`).filter(Boolean);
+    tip.textContent = `${dayText(u.data[0][i] * 1000)} · ${values.join(" · ")}`;
+    placeTip(tip, u, u.valToPos(u.data[0][i], "x"), u.valToPos(u.data[k + 1][i], "y"));
+  }] } };
+  card.plot = new uPlot({
+    ...chartSize(card), plugins: [band, hover], legend: { show: false }, cursor: { points: { size: 7 } },
+    scales: { x: { time: true } },
+    axes: [axis, { ...axis, label: "m", size: 45 }],
+    series: [{}, ...curves.map((_, k) => ({ stroke: SERIES[k].color, width: 1, spanGaps: true,
+                                           points: { show: true, size: 4, fill: SERIES[k].color } }))],
+  }, [xs.map((t) => t / 1000), ...ys], chart);
+  seriesLegend(card, curves, radius);
 }
 
 // --- mouse position (and value) in the lower right corner
@@ -672,8 +714,8 @@ function openTransect(points) {
         <select class="hov-mode hidden" title="What is subtracted from the values">
           <option value="time">minus time mean</option><option value="none">as stored</option></select>
         <span class="chart-buttons">${chartButtons()}</span>
-        <select class="step" title="Distance between the points of the line">
-        ${[1, 2, 5, 10].map((k) => `<option value="${k}" ${k === 2 ? "selected" : ""}>every ${k} km</option>`).join("")}</select>
+        <select class="step${info.detail ? "" : " hidden"}" title="Resolution: ${info.product}, or ${info.detail?.product}">
+          <option value="2" selected>2 km</option><option value="0.25">250 m</option></select>
         <button class="ghost close" title="Close"><i data-lucide="x"></i></button></div></header>
     <div class="chart"></div>`;
   document.body.appendChild(card);
@@ -718,19 +760,21 @@ function setPath(t, points) {
   showLine(transect.path);
 }
 
+const distanceText = (km) => km < 1 ? `${Math.round(km * 1000)} m` : `${+km.toFixed(2)} km`;
+
 async function fillTransect() {
   const { card, points, step } = transect, chart = card.querySelector(".chart"), hint = card.querySelector(".hint");
   transect.key = lineKey();
   card.plot?.destroy();
   card.plot = null;
   card.tip?.remove();
-  chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the values along the line…</div>`;
+  chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the values along the line${step < 1 ? " at 250 m" : ""}…</div>`;
   try {
     const t = await api(`/api/transect?${state.view}`, { mode: state.mode, step,
       points: points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";") });
     setPath(t, points);
     card.querySelector("h3").textContent = `Along the line · ${t.distance.at(-1).toFixed(0)} km · ${$("#legend-variable").textContent}`;
-    hint.textContent = `${passages(t.passages.length)} · nearest pixel of each, every ${t.step} km`;
+    hint.textContent = `${passages(t.passages.length)} · nearest pixel of each, every ${distanceText(t.step)}`;
     if (narrow()) card.querySelector("h3").textContent = `Line · ${t.distance.at(-1).toFixed(0)} km · ${passages(t.passages.length)}`;
     chart.innerHTML = "";
     if (!t.passages.length) {
@@ -792,8 +836,8 @@ async function fillHovmoller() {
   card.plot?.destroy();
   card.plot = null;
   card.tip?.remove();
-  chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the whole mission along the line…
-    (a line across an ocean can take some 10-20 s)</div>`;
+  chart.innerHTML = `<div class="loading"><span class="spinner"></span>Reading the whole mission along the line${step < 1
+    ? " at 250 m… (only the passages L2 Unsmoothed has so far)" : "… (a line across an ocean can take some 10-20 s)"}</div>`;
   try {
     // the values as stored, kept: changing what is subtracted does not read them again
     const key = transect.key;
@@ -826,7 +870,7 @@ async function fillHovmoller() {
     let [lo, hi] = [all[Math.floor(all.length * 0.02)], all[Math.floor(all.length * 0.98)]];
     if (mode !== "none") hi = -(lo = -Math.max(-lo, hi));
     if (!(hi > lo)) [lo, hi] = [lo - 0.1, lo + 0.1];
-    hint.textContent = `${passages(n)} · ${mode === "time" ? "minus the mean over time at each point" : "as stored"} · colors ${mode === "none" ? `${lo.toFixed(2)} to ${hi.toFixed(2)}` : `±${hi.toFixed(2)}`} m`;
+    hint.textContent = `${passages(n)} · every ${distanceText(h.step)} · ${mode === "time" ? "minus the mean over time at each point" : "as stored"} · colors ${mode === "none" ? `${lo.toFixed(2)} to ${hi.toFixed(2)}` : `±${hi.toFixed(2)}`} m`;
     chart.title = "Drag a box to zoom (the wheel zooms the time), double-click to go back, click a passage to see its date on the map";
     const [t0, t1] = [timeline.full[0] / 1000, timeline.full[1] / 1000], [d0, d1] = [h.distance[0], h.distance.at(-1)];
     const column = (u) => {  // the point under the cursor
@@ -973,7 +1017,17 @@ async function chartAction(card, what) {
     ctx.fillText(title, 20 * dpr, 28 * dpr);
     ctx.fillStyle = "#94a3b8";
     ctx.font = `${12 * dpr}px Inter, sans-serif`;
-    ctx.fillText((card.querySelector(".hint")?.textContent ?? "").split(" · click")[0], 20 * dpr, 50 * dpr);  // no "click..."
+    const keys = [...card.querySelectorAll(".hint .key:not(.off)")];
+    if (keys.length) {  // the series' keys, each with its color
+      let x = 20 * dpr;
+      for (const key of keys) {
+        ctx.fillStyle = key.querySelector("i").style.background;
+        ctx.fillRect(x, 41 * dpr, 9 * dpr, 9 * dpr);
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillText(key.textContent, x + 14 * dpr, 50 * dpr);
+        x += ctx.measureText(key.textContent).width + 34 * dpr;
+      }
+    } else ctx.fillText((card.querySelector(".hint")?.textContent ?? "").split(" · click")[0], 20 * dpr, 50 * dpr);  // no "click..."
     ctx.drawImage(plot, 0, pad);
     card.plot.setSize(size);
     const a = document.createElement("a");
