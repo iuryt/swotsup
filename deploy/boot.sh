@@ -20,17 +20,29 @@ token=$(aws ssm get-parameter --region us-east-1 --name /swot-explorer/arraylake
 store=(-e SWOT_STORE=s3://iuryt-shared-east/icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2 -e SWOT_PRODUCT=l3)
 [ -n "$token" ] && store=(-e "ARRAYLAKE_TOKEN=$token")
 echo "store: $([ -n "$token" ] && echo "L2 on Arraylake" || echo "the L3 copy on S3")"
-install -d -o 1000 -g 1000 /opt/cache  # the server runs as user 1000 (Dockerfile)
-chown -R 1000:1000 /opt/cache
+install -d -o 1000 -g 1000 /opt/cache /opt/telemetry  # the server runs as user 1000 (Dockerfile)
+chown -R 1000:1000 /opt/cache /opt/telemetry
+# the country of a visitor (anonymous usage): DB-IP Lite, this month's (else last month's), kept with the cache
+geo=/opt/cache/dbip-country-lite.mmdb
+for month in $(date +%Y-%m) $(date -d "-1 month" +%Y-%m); do
+  [ -s $geo ] && [ $(( $(date +%s) - $(stat -c %Y $geo) )) -lt 2678400 ] && break
+  curl -sfL "https://download.db-ip.com/free/dbip-country-lite-$month.mmdb.gz" | gunzip > $geo.new && mv $geo.new $geo && break
+done
+chown 1000:1000 $geo 2>/dev/null
 docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=0 -e SWOT_CACHE_GB=6 \
   -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
-  -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" "${store[@]}" swot
+  -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" -v /opt/telemetry:/telemetry -e SWOT_TELEMETRY_DIR=/telemetry \
+  -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb "${store[@]}" swot
 set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860
+# the anonymous usage, copied to S3 every 10 minutes and before the machine stops (it may only write there)
+sync="aws s3 sync --only-show-errors /opt/telemetry s3://iuryt-shared-east/telemetry/swot-explorer/"
+systemctl stop swot-telemetry.timer 2>/dev/null
+systemd-run --unit swot-telemetry --on-calendar='*:0/10' bash -c "$sync"
 # every request shows up in the server's access log; none in the last IDLE minutes (and up for as long): stop
 systemctl stop swot-idle 2>/dev/null
 systemd-run --unit swot-idle bash -c "while sleep 60; do
   [ \$(cut -d. -f1 /proc/uptime) -gt $((IDLE * 60)) ] || continue
-  docker logs --since ${IDLE}m swot 2>&1 | grep -q '\"GET ' || shutdown -h now
+  docker logs --since ${IDLE}m swot 2>&1 | grep -q '\"GET ' || { $sync; shutdown -h now; }
 done"

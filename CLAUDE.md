@@ -58,6 +58,10 @@ be resumed here (`claude --resume`).
     variable has its own (SSHA RdBu_r, sigma0 cmo.gray, SWH cmo.dense, wind cmo.speed), and the Display menu offers
     them all (remembered per variable in the browser; tiles take `cmap`). "level" variables open with nothing
     subtracted and colors not about zero;
+  - anonymous usage (`docs/usage-data.md`, #16): `/api/event` (the page's events with the view on screen; the
+    country and the visitor of the day from the address, which is not kept) and the time of every API request (one tile
+    request in 10), a file per day in SWOT_TELEMETRY_DIR (on the EC2 /opt/telemetry, copied to S3 every 10 min and
+    before it stops); unset: nothing is recorded;
   - `/api/timeline` (days with passages over the region, from the per-pass geometry, no data read),
     `/api/load`, `/api/value` (at a click: the value and its passages, with the time of their nearest line),
     `/api/series`, `/api/transect` (along a drawn polyline: points every 2 km on great circles, each passage's

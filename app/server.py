@@ -4,6 +4,7 @@ so only images of the screen's size go to the browser.
 Run: uvicorn server:app --app-dir app --port 5006   (SWOT_STORE, credentials from AWS_* in the environment)"""
 import hashlib
 import io
+import itertools
 import json
 import os
 import threading
@@ -23,7 +24,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import zarr
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -732,6 +733,96 @@ VERSION = hashlib.sha1(b"".join((Path(__file__).parent / f).read_bytes() for f i
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
+# --- anonymous usage (#16; About says what): events from the page and the time of every request, a file per day in
+# SWOT_TELEMETRY_DIR (none: nothing is recorded). Never kept: the address, a hash of it, browser details, any id
+# that lasts more than a day. From the address, at once and then dropped: the country (SWOT_GEOIP, DB-IP Lite) and
+# the visitor of the day (a hash with a salt that changes every day and is never kept: unique visitors per day, and
+# no way back to the address nor across days).
+TELEMETRY = os.environ.get("SWOT_TELEMETRY_DIR")
+GEOIP = os.environ.get("SWOT_GEOIP")
+EVENTS = {"open", "view", "point", "series", "line", "zoom_250m", "code", "download", "link", "close"}
+FIELDS = ("session", "event", "screen", "from_link", "west", "east", "south", "north", "start", "days", "variable",
+          "lon", "lat", "zoom", "projection", "mode", "cmap", "point_lon", "point_lat", "line", "line_km", "line_kind",
+          "step", "what")
+telemetry_lock, salts = threading.Lock(), {}
+TILE_SAMPLE = 10  # of the tile requests (thousands a visit), one in TILE_SAMPLE is kept, with "sample": TILE_SAMPLE
+tiles_seen = itertools.count()
+
+
+def record(kind, row):
+    """A row (JSON) at the end of the day's file of its kind (events, requests)."""
+    if not TELEMETRY:
+        return
+    line = json.dumps(row, separators=(",", ":")) + "\n"
+    with telemetry_lock, open(os.path.join(TELEMETRY, f"{kind}-{row['time'][:10]}.jsonl"), "a") as f:
+        f.write(line)
+
+
+def visitor_day(address, agent, day):
+    """The same for one address and browser on one day; the salt of a day goes when the next comes."""
+    with telemetry_lock:
+        if day not in salts:
+            salts.clear()
+            salts[day] = os.urandom(16)
+        salt = salts[day]
+    return hashlib.sha256(salt + address.encode() + agent.encode()).hexdigest()[:16]
+
+
+@lru_cache(maxsize=1)
+def geoip():
+    import maxminddb
+
+    return maxminddb.open_database(GEOIP)
+
+
+def country(address):
+    """The country code of an address (DB-IP Lite), "" if unknown."""
+    if not GEOIP or not address:
+        return ""
+    try:
+        return ((geoip().get(address) or {}).get("country") or {}).get("iso_code", "")
+    except Exception:
+        return ""
+
+
+def address_of(request):
+    """The visitor's address: the first of X-Forwarded-For behind a proxy (Caddy), else the connection's."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "")
+
+
+@app.post("/api/event")
+async def event(request: Request):
+    """One event from the page, with what it says of the view (only the fields kept), the time, the visitor of the
+    day and the country; nothing else of the request is kept."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if TELEMETRY and isinstance(body, dict) and body.get("event") in EVENTS:
+        now = pd.Timestamp.now("UTC")
+        row = {k: body[k] for k in FIELDS if isinstance(body.get(k), (str, int, float, bool)) and len(str(body[k])) < 2000}
+        address = address_of(request)
+        row |= dict(time=now.isoformat(), version=RELEASE, country=country(address),
+                    visitor_day=visitor_day(address, request.headers.get("user-agent", ""), str(now.date())))
+        record("events", row)
+    return Response(status_code=204)
+
+
+@app.middleware("http")
+async def timing(request: Request, call_next):
+    """The time of every request to the API: its endpoint (the route, not the values asked), seconds and status."""
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    if TELEMETRY and request.url.path.startswith("/api/") and request.url.path != "/api/event":
+        route = getattr(request.scope.get("route"), "path", request.url.path)
+        tile = route.endswith("{y}.png")
+        if not tile or next(tiles_seen) % TILE_SAMPLE == 0:
+            record("requests", dict(time=pd.Timestamp.now("UTC").isoformat(), endpoint=route, sample=TILE_SAMPLE if tile else 1,
+                                    seconds=round(time.perf_counter() - t0, 3), status=response.status_code))
+    return response
+
+
 @app.get("/")
 def page():
     """The page, with each of our files versioned by its modification time, so browsers never keep an old one."""
@@ -763,6 +854,7 @@ def info():
                            for name, cm in COLORMAPS.items()}, diverging=list(COLORMAPS)[:DIVERGING],
                 netcdf=NETCDF, product=PRODUCT["label"], credit=PRODUCT["credit"],
                 public_url=os.environ.get("SWOT_PUBLIC_URL"),  # what a copied link starts with (the EC2's wake link)
+                telemetry=bool(TELEMETRY),
                 detail=None if detail is None else dict(zoom=DETAIL_ZOOM, product=DETAIL_PRODUCT["label"],
                                                         commit=detail.commit.id[:8]),
                 commit=dict(id=COMMIT.id[:8], time=str(pd.Timestamp(COMMIT.written_at).tz_convert(None)), message=COMMIT.message))

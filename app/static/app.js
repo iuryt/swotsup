@@ -542,6 +542,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
   const card = pointCard = el.querySelector(".card");
   card.lngLat = lngLat;
   linkSoon();
+  track("point", { point_lon: +lngLat.lng.toFixed(4), point_lat: +lngLat.lat.toFixed(4) });
   wireChart(card);
   if (sheet) {
     card.classList.add("sheet");
@@ -576,6 +577,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
     card.querySelector(".chart-buttons").classList.remove("hidden");
     fillSeries(card, lngLat, RADIUS);
     linkSoon();
+    track("series", { point_lon: +lngLat.lng.toFixed(4), point_lat: +lngLat.lat.toFixed(4) });
   };
   new ResizeObserver(() => {
     link();
@@ -858,6 +860,8 @@ async function fillTransect() {
     const t = await api(`/api/transect?${state.view}`, { mode: state.mode, step,
       points: points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";") });
     setPath(t, points);
+    transect.km = Math.round(t.distance.at(-1));
+    track("line", lineFields());
     card.querySelector("h3").textContent = `Along the line · ${t.distance.at(-1).toFixed(0)} km · ${$("#legend-variable").textContent}`;
     hint.textContent = `${passages(t.passages.length)} · nearest pixel of each, every ${distanceText(t.step)}`;
     if (narrow()) card.querySelector("h3").textContent = `Line · ${t.distance.at(-1).toFixed(0)} km · ${passages(t.passages.length)}`;
@@ -931,6 +935,8 @@ async function fillHovmoller() {
     if (transect?.card !== card || transect.kind !== "hovmoller") return;  // closed or switched meanwhile
     transect.hov = { key, h };
     setPath(h, points);
+    transect.km = Math.round(h.distance.at(-1));
+    track("line", lineFields());
     const km = h.distance.at(-1).toFixed(0), n = h.passages.length;
     card.querySelector("h3").textContent = narrow() ? `Hovmöller · ${km} km · ${passages(n)}`
       : `Along the line · ${km} km · whole mission · ${info.variables[state.variable]}`;
@@ -1060,7 +1066,7 @@ function showCode(code, title, hint) {
   $("#copy").lastChild.textContent = "Copy";
   $("#code-dialog").showModal();
 }
-const showRegionCode = () => showCode(state.code ?? "", "The same data in your own Python",
+const showRegionCode = () => track("code", { what: "region" }) || showCode(state.code ?? "", "The same data in your own Python",
   "Only <code>pip install icechunk xarray</code>. This is the region and dates on the map.");
 
 // --- a chart's buttons: the figure as PNG, its numbers as NetCDF, the code that reproduces it
@@ -1087,6 +1093,7 @@ function wireChart(card) {  // on the card itself: the point's card stops clicks
 
 async function chartAction(card, what) {
   const { kind, params, title } = chartQuery(card);
+  track(what === "png" || what === "nc" ? "download" : "code", { what: `${kind}-${what}`, ...(kind === "series" ? {} : lineFields()) });
   if (what === "png") {  // the chart drawn large, under the card's title and subtitle, on the panel's color
     if (!card.plot) return;
     const size = { width: card.plot.width, height: card.plot.height };
@@ -1209,6 +1216,25 @@ function setProjection(globe) {
   linkSoon();
 }
 
+// --- anonymous usage (About says what): events, each with the view on screen; a session is a random number for
+// this tab only (nothing is kept in the browser). Nothing is sent where the server keeps none (info.telemetry).
+const SESSION = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+function track(event, extra = {}) {
+  if (!info?.telemetry || !map || !state.box) return;
+  const c = map.getCenter(), f = (x, n = 4) => +Number(x).toFixed(n);
+  const body = JSON.stringify({ session: SESSION, event, screen: narrow() ? "phone" : "desktop", ...state.box,
+    start: isoDay(state.start), days: state.days, variable: state.variable, lon: f(c.lng), lat: f(c.lat), zoom: f(map.getZoom(), 2),
+    projection: document.body.classList.contains("globe") ? "globe" : "flat", mode: state.mode, cmap: cmapOf(), ...extra });
+  if (!navigator.sendBeacon?.("/api/event", new Blob([body], { type: "application/json" })))
+    fetch("/api/event", { method: "POST", body, keepalive: true, headers: { "Content-Type": "application/json" } }).catch(() => {});
+}
+function trackView(hash) {  // the view, once it has stayed a few seconds (not every step of a drag)
+  clearTimeout(trackView.timer);
+  trackView.timer = setTimeout(() => { if (hash !== trackView.last) { trackView.last = hash; track("view"); } }, 3000);
+}
+const lineFields = () => transect && { line: transect.points.map(([x, y]) => `${x.toFixed(3)},${y.toFixed(3)}`).join(";"),
+  line_km: transect.km, line_kind: transect.kind, step: transect.step };
+
 // --- the link: the address keeps what is on screen, after the # (kept up to date as people move, without a reload
 // or history entries), and opening it rebuilds it all. view=W,E,S,N,start,days,variable & map=lon,lat,zoom,globe|flat
 // & mode & cmap & range=1|2|5|vmin,vmax & point=lon,lat[,series] & line=lon,lat;lon,lat/profile|hovmoller/step/hovMode
@@ -1221,6 +1247,7 @@ function linkNow() {
   if (pointCard?.lngLat) parts.push(`point=${f(pointCard.lngLat.lng)},${f(pointCard.lngLat.lat)}${pointCard.classList.contains("compact") ? "" : ",series"}`);
   if (transect) parts.push(`line=${transect.points.map(([x, y]) => `${f(x)},${f(y)}`).join(";")}/${transect.kind}/${transect.step}/${transect.hovMode}`);
   history.replaceState(null, "", "#" + parts.join("&"));
+  trackView(parts.slice(0, 5).join("&"));  // the view (not the point or line: those are their own events)
 }
 function linkSoon() { clearTimeout(linkSoon.timer); linkSoon.timer = setTimeout(linkNow, 300); }
 
@@ -1277,6 +1304,7 @@ function restoreLink(link) {  // the point and the line of a link, once its view
 
 async function copyLink() {  // the public address (on the EC2: the link that wakes it) with the view
   linkNow();
+  track("link");
   const url = (info.public_url || location.origin + location.pathname) + location.hash;
   try { await navigator.clipboard.writeText(url); toast("Link copied: it opens this view"); }
   catch (e) { prompt("Copy this link:", url); }
@@ -1352,12 +1380,18 @@ async function main() {
     setupCoords();
     watchDetail();
     setupCmap();
-    if (link.point || link.line) state.afterLoad = () => restoreLink(link);
+    state.afterLoad = () => { track("open", { from_link: !!link.view }); if (link.point || link.line) restoreLink(link); };
     setBox({ west: d.west, east: d.east, south: d.south, north: d.north });
     drawOverview();
   });
   map.on("move", drawOverview);
   map.on("moveend", linkSoon);
+  map.on("zoomend", () => {  // into the 250 m (once per visit there)
+    const fine = info.detail && map.getZoom() >= info.detail.zoom - 1 && info.looks[state.variable].fine;
+    if (fine && !state.inFine) track("zoom_250m");
+    state.inFine = fine;
+  });
+  addEventListener("pagehide", () => track("close"));
   map.on("click", (e) => {
     if (document.body.classList.contains("sheet")) document.body.classList.remove("sheet");  // a tap outside closes it
     else if (!state.drawing && !state.lining && !state.justDrew) openPoint(e.lngLat);
