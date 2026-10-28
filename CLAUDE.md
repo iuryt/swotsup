@@ -89,7 +89,7 @@ be resumed here (`claude --resume`).
   with the default environment, so the image runs the versions we test).
 - `deploy/boot.sh` (runs on the EC2 instance at every boot: build, serve behind Caddy, stop after 30 idle
   minutes) and `deploy/wake.py` (the Lambda link: starts the instance and shows a waiting page).
-- `scripts/screenshot.py` (scenarios: open, click, series, line, hovmoller, flat, dateline, phone), `scripts/bench_server.py`.
+- `scripts/screenshot.py` (scenarios: open, click, series, line (and line-250m), hovmoller, flat, dateline, phone, wide, zoom), `scripts/bench_server.py`.
 
 Decisions worth keeping:
 - Dark only for now; basemap GEBCO grayscale from NOAA NCEI tiles (no key), darkened.
@@ -124,8 +124,8 @@ sbatch slurm/app.sbatch            # serve on a compute node (reloads by polling
 sbatch slurm/screenshot.sbatch     # serve and run every screenshot scenario: img/app-*.png, copies in img/history
 sbatch slurm/screenshot_versions.sbatch HASH...   # screenshots of past commits into img/history
 sbatch slurm/test.sbatch           # pytest; extra args go to pytest
-sbatch -p batch -c 2 --mem 8G -t 60 -o logs/mutants-%j.out slurm/mutants.sh   # every injected bug must be "caught";
-                                   # it edits app/ in place: run nothing else on the repo meanwhile
+sbatch slurm/mutants.sh [PATTERN]  # every injected bug (tests/mutations.sh) must be "caught"; each in its own copy,
+                                   # 8 at once (~4 min for all); PATTERN: only the labels matching (a bash regex)
 sbatch slurm/pixi_install.sbatch   # after changing dependencies (also installs chromium for playwright)
 sbatch -c 8 -o logs/bench-%j.out slurm/run.sbatch scripts/bench_server.py   # timings (AWS_PROFILE=swot-read)
 sbatch -o logs/ec2-%j.out slurm/ec2.sh up|status|update|down   # test server on EC2 (c7i.2xlarge, us-east-1),
@@ -164,6 +164,7 @@ truncated: load it again). Several jobs starting `pixi run` right after `pixi in
 
 ## Tests
 
-Only tests that can fail on a real bug, each with its mutation in `slurm/mutants.sh`. Fixtures
+Only tests that can fail on a real bug, each with its mutation in `tests/mutations.sh` (`slurm/mutants.sh` runs them
+in copies of app/ and tests/ with swot_cloud as of its last commit, so the repository is never edited). Fixtures
 (`tests/conftest.py`) build small fake L3 files and stores with `swot_icechunk` (an editable path
-dependency); `tests/test_server.py` imports the server on such a store.
+dependency), once per session (tests only read them); `tests/test_server.py` imports the server on such a store.
