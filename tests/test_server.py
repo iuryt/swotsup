@@ -450,3 +450,50 @@ def test_fine_hovmoller_only_on_short_lines(store_path, fine_store_path, monkeyp
     assert [{round(v) for v in q["value"] if v is not None} for q in h["passages"]] == [{3600}, {5600}]
     long = c.get("/api/hovmoller", params=dict(points="29.6,0.0;29.6,4.0", step=0.25, variable="ssha_unfiltered"))
     assert long.status_code == 413
+
+
+
+def test_latest_complete_cycle():
+    """The opening cycle: the latest whose passages span 20 days or more, else the one before; its first day, and the
+    days up to its last passage (at most 21)."""
+    import server
+
+    day = np.timedelta64(1, "D")
+    t0 = np.datetime64("2026-09-01T05:00")
+    times = np.array([t0 + k * day for k in range(21)] + [t0 + 20 * day + np.timedelta64(20, "h")]
+                     + [t0 + (21 + k) * day for k in range(5)])  # cycle 7: 20.8 days; cycle 8: 4 days so far
+    cycles = np.array([7] * 22 + [8] * 5)
+    assert server.latest_cycle(cycles, times) == dict(start="2026-09-01", days=21)
+    cycles[22:], times[22:] = 7, times[22:] - 10 * day  # cycle 8 not started: 7 is the latest, and complete
+    assert server.latest_cycle(cycles, times)["start"] == "2026-09-01"
+
+
+def test_overview_draws_what_the_view_in_memory_draws(fine_store_path, tmp_path, monkeypatch):
+    """A view too big to keep is drawn from its overview: up to zoom 4 from the rasters it sums (each cell as a point;
+    the modes as one number per passage or for the box), closer from its passages read a chunk at a time. Both give
+    what the same view in memory gives, and clicks too. Kept on disk, it is read back the same."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    monkeypatch.setattr(server, "CACHE_DIR", str(tmp_path))
+    view = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    memory = server.load(**view)[0]
+    over = server.Overview(view, view["variable"])
+    server.build_overviews(view, [over])
+    assert len(over.times) == 2 and over.ready.is_set()
+    for mode in ("none", "box", "passage"):
+        assert abs(over.shift["box"][0] - memory.shift["box"][0]) < 1
+        for z, tol in ((4, 3), (7, 0.01)):  # rasters: means of cells against means of 4 x 4 blocks; chunks: the same
+            fx, fy = (30.1 + 180) / 360 * 2**z, (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(2.0) / 2)) / np.pi) / 2 * 2**z
+            ranges = server.tile_ranges(z, int(fx), int(fy))
+            a, b = over.mean_on(mode, *ranges, 256, 256), memory.mean_on(mode, *ranges, 256, 256)
+            both = np.isfinite(a) & np.isfinite(b)
+            assert both.sum() > 30 and np.median(np.abs(a - b)[both]) <= tol, (mode, z)
+    x, y = server.mercator(30.1, 2.07)
+    click = over.near(30.05, 30.15, 2.02, 2.12).passages_at("none", x, y)
+    assert sorted(round(float(v)) for v, *_ in click) == sorted(round(float(v)) for v, *_ in memory.passages_at("none", x, y))
+    again = server.Overview(view, view["variable"])
+    assert again.restore()
+    ranges = server.tile_ranges(2, 2, 1)
+    np.testing.assert_array_equal(again.mean_on("box", *ranges, 256, 256), over.mean_on("box", *ranges, 256, 256))
