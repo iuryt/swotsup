@@ -36,3 +36,8 @@ mutate app/swot_view.py 's/near = ({value}).where(d <= radius)/near = ({value}).
 mutate app/swot_view.py 's/query(samples, distance_upper_bound=1.5 \/ R)/query(samples)/' "line code fills points off the swath"
 mutate app/swot_view.py 's/    window = f/    window = "" and f/' "line code profile ignores the dates"
 mutate app/server.py 's/        values\[k, first:first + len(q\["value"\])\] = /        values[k, :len(q["value"])] = /' "chart NetCDF puts a passage's values at the line's start"
+mutate app/swot_view.py 's/        lon_max\[k\] = nadir.longitude_nadir.values + dlon/        lon_max[k] = nadir.longitude_nadir.values + dlon \/ 2/' "nadir envelope only half the swath to the east"
+mutate app/swot_view.py 's/        return \[int(k) async for k in store.list_dir("line_time\/c")\]/        return [int(k) async for k in store.list_dir("line_time\/c")][:1]/' "written passages: only the first"
+mutate app/swot_view.py 's/    per = ds.line_time.encoding\["chunks"\]\[0\]/    per = 1/' "written passages: chunk indices taken as passages"
+mutate app/server.py 's/        lon, lat = across(lon), across(lat)  # meshes need every corner/        pass  # meshes need every corner/' "L2 Unsmoothed: nothing drawn where the gap has no position"
+mutate app/server.py 's/        step = (a1 - a0 + 180) % 360 - 180/        step = a1 - a0/' "gap positions interpolated around the world across 180"

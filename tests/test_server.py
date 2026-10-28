@@ -187,3 +187,23 @@ def test_chart_netcdf_has_the_chart_numbers(fine_store_path, monkeypatch):
         row = nc.value.values[k, q["first"]:q["first"] + len(q["value"])]
         np.testing.assert_allclose(row, [np.nan if v is None else v for v in q["value"]])
         assert np.isnan(nc.value.values[k, :q["first"]]).all()
+
+
+def test_swath_drawn_where_the_nadir_gap_has_no_position(client):
+    """L2 Unsmoothed has no latitude/longitude in its nadir gap: the meshes interpolate them across each line, so
+    the pixels with values on both sides are drawn (a line needs all its corners), across 180 too."""
+    import server
+    import xarray as xr
+
+    lat = np.repeat(np.linspace(-1, 1, 21)[:, None], 7, axis=1)[None]  # one passage, 21 lines, 7 pixels
+    lon = np.broadcast_to([179.7, 179.8, 179.9, 180.0, -179.9, -179.8, -179.7], lat.shape).copy()
+    values = np.ones(lat.shape)
+    values[0, :, 2:5] = np.nan  # the gap: no value...
+    lat[0, :, 2:5] = lon[0, :, 2:5] = np.nan  # ...and no position
+    dims = ("time", "along", "cross")
+    sub = xr.Dataset({"ssha_unfiltered": (dims, values)}, coords={"latitude": (dims, lat), "longitude": (dims, lon)})
+    data = server.Loaded(sub, ["ssha_unfiltered"], 179, -179)
+    (x0, x1), (y0, y1) = server.mercator(np.array([179.65, 180.35]), np.array([-0.5, 0.5]))
+    m = np.isfinite(data.mean_on("none", (x0, x1), (y0, y1), 14, 4))
+    assert m[:, :3].all() and m[:, -3:].all()  # both sides of the gap
+    assert not m[:, 6:8].any()  # not the gap itself

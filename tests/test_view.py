@@ -119,3 +119,21 @@ def test_line_snippet_gives_every_passage_or_those_of_the_dates(fine_store_path,
     profile = run_snippet(swot_view.line_snippet(points, ["ssha_filtered"], start="2024-01-03", end="2024-01-04T23:59",
                                                  target="s3://b/p"), fine_store_path, monkeypatch)
     assert [(p, c) for p, c, _ in profile["passages"]] == [(7, 3)]
+
+
+def test_written_passages_and_envelopes_from_the_nadir(store_path):
+    """A store being filled: the passages listed as written are those with data, and a pass without its envelopes
+    (lon_min/lon_max not written yet) is still found over a box, from its nadir and the swath's half width."""
+    path, _ = store_path
+    session = icechunk.Repository.open(icechunk.local_filesystem_storage(path)).readonly_session("main")
+    ds = swot_view.dataset(session.store)
+    assert swot_view.written(ds, session.store).tolist() == [0, 1, 2, 3]  # every passage (2 chunks of 2)
+    ds = ds.assign(latitude_nadir=ds.latitude.isel(cross=ds.sizes["cross"] // 2),
+                   longitude_nadir=ds.longitude.isel(cross=ds.sizes["cross"] // 2))
+    lon_min, lon_max = swot_view.nadir_envelope(ds, half_width=60)
+    ds = ds.assign_coords(lon_min=(ds.lon_min.dims, np.full(ds.lon_min.shape, np.nan)),
+                          lon_max=(ds.lon_max.dims, np.full(ds.lon_max.shape, np.nan)))
+    assert len(swot_view.passes_over(ds, 29, 31, -1, 1)) == 0  # without envelopes, nothing
+    ds = ds.assign_coords(lon_min=(ds.lon_min.dims, lon_min), lon_max=(ds.lon_max.dims, lon_max))
+    np.testing.assert_array_equal(swot_view.passes_over(ds, 29, 31, -1, 1), [7, 20])
+    np.testing.assert_array_equal(swot_view.passes_over(ds, 30.7, 31, -1, 1), [20])  # 7 ends at 30.5 + 60 km

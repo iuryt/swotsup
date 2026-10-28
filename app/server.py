@@ -35,20 +35,51 @@ zarr.config.set({"async.concurrency": 256})
 MAX_DAYS = 21
 MAX_PIXELS = 60e6  # ~2 days of the whole globe; keeps a load under ~1 GB of memory
 MAX_BYTES = float(os.environ.get("SWOT_CACHE_GB", 4)) * 1e9  # loaded views kept in memory, beyond the newest
-VARIABLES = {"ssha_unfiltered": ("SSHA, unfiltered", ["ssha_unfiltered"]),
-             "ssha_filtered": ("SSHA, filtered", ["ssha_filtered"]),
-             "adt": ("ADT = SSHA + MDT", ["ssha_filtered", "mdt"])}
+# the product the store holds (SWOT_PRODUCT): its name, variables (label, the arrays summed) and opening view
+PRODUCTS = {
+    "l3": dict(label="L3 LR SSH v3.0", variables={
+        "ssha_unfiltered": ("SSHA, unfiltered", ["ssha_unfiltered"]),
+        "ssha_filtered": ("SSHA, filtered", ["ssha_filtered"]),
+        "adt": ("ADT = SSHA + MDT", ["ssha_filtered", "mdt"])},
+        # the whole globe on one day (kept in memory)
+        default=dict(west=-180, east=180, south=-90, north=90, start="2024-11-02", days=1)),
+    # 250 m, 64 times the pixels of L3: small regions only; being uploaded, so the passages with data only
+    "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", partial=True, variables={
+        "ssha_karin_2": ("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"]),
+        "ssha_karin_2_raw": ("SSHA (KaRIn 2), no correction", ["ssha_karin_2"])},
+        default=None),  # the latest day with data, around a passage (below)
+}
+PRODUCT = PRODUCTS[os.environ.get("SWOT_PRODUCT", "l3")]
+VARIABLES = PRODUCT["variables"]
 MODES = ("box", "passage", "none")  # spatial mean subtracted: of the box, of each passage, nothing
-# opening view: the whole globe on one day (kept in memory)
-DEFAULT = dict(west=-180, east=180, south=-90, north=90, start="2024-11-02", days=1, variable="ssha_unfiltered")
 R = 6378137.0  # web mercator
 WORLD = 2 * np.pi * R
 CMAP = matplotlib.colormaps["RdBu_r"]
 
 STORE = os.environ.get("SWOT_STORE", swot_view.STORE)
-ds = swot_view.open_store(STORE)
+# the latest commit when the server starts, kept: a store being written changes while people look
+repo = swot_view.open_repo(STORE)
+COMMIT = next(iter(repo.ancestry(branch="main")))
+session = repo.readonly_session(snapshot_id=COMMIT.id)
+ds = swot_view.dataset(session.store)
+if PRODUCT.get("partial"):
+    ds = ds.isel(time=swot_view.written(ds, session.store))  # the passages with data, all the app sees
+    # passes whose envelopes are not written yet: from their nadir (the swath's half width around it)
+    lon_min, lon_max = swot_view.nadir_envelope(ds)
+    have = np.isfinite(ds.lon_min.values).any(1, keepdims=True)
+    ds = ds.assign_coords(lon_min=(ds.lon_min.dims, np.where(have, ds.lon_min.values, lon_min)),
+                          lon_max=(ds.lon_max.dims, np.where(have, ds.lon_max.values, lon_max)))
 index = ds[["cycle", "pass_id"]].reset_coords().load()  # when each passage was, for the timeline
 geometry = ds[["lon_min", "lon_max"]].load()  # which passes cross a box, without reading data
+DEFAULT = PRODUCT["default"]
+if DEFAULT is None:  # the latest passage's day, 6 x 6 degrees around its nadir at the latitude nearest the equator
+    last = int(np.argmax(index.time.values))
+    nadir = ds[["latitude_nadir", "longitude_nadir"]].isel(time=last).load()
+    k = int(np.nanargmin(np.abs(nadir.latitude_nadir.values)))
+    lat0, lon0 = float(nadir.latitude_nadir.values[k]), (float(nadir.longitude_nadir.values[k]) + 180) % 360 - 180
+    DEFAULT = dict(west=round(lon0 - 3, 2), east=round(lon0 + 3, 2), south=round(lat0 - 3, 2), north=round(lat0 + 3, 2),
+                   start=str(pd.Timestamp(index.time.values[last]).date()), days=1)
+DEFAULT = DEFAULT | dict(variable=next(iter(VARIABLES)))
 
 
 def mercator(lon, lat):
@@ -96,6 +127,33 @@ def continuous(lon, center):
     return lon + 360 * np.round((center - np.median(lon)) / 360)
 
 
+def across(a):
+    """Positions missing within a line (the nadir gap of L2 Unsmoothed, its edge pixels) interpolated across it from
+    the nearest ones on each side: the grid is regular across, and a mesh needs every corner (the values there stay
+    NaN). At a line's ends, the nearest position; lines without any stay NaN. Only the columns with something
+    missing are worked on (with one known column on each side), vectorized over the lines. The step between the two
+    sides is taken within -180..180, so a line crossing 180 is not interpolated around the world."""
+    a = np.array(a, float)
+    flat = a.reshape(-1, a.shape[-1])
+    gaps = np.flatnonzero(np.isnan(flat).any(0))
+    for run in np.split(gaps, np.flatnonzero(np.diff(gaps) > 1) + 1) if len(gaps) else []:
+        c0, c1 = max(run[0] - 1, 0), min(run[-1] + 2, flat.shape[1])
+        block = flat[:, c0:c1]
+        ok = np.isfinite(block)
+        n = block.shape[1]
+        x = np.broadcast_to(np.arange(n), block.shape)
+        left = np.maximum.accumulate(np.where(ok, x, -1), axis=1)  # the nearest position on each side
+        right = np.minimum.accumulate(np.where(ok, x, n)[:, ::-1], axis=1)[:, ::-1]
+        lo, hi = np.where(left < 0, right, left).clip(0, n - 1), np.where(right >= n, left, right).clip(0, n - 1)
+        rows = np.arange(len(block))[:, None]
+        with np.errstate(invalid="ignore"):
+            a0, a1 = block[rows, lo], block[rows, hi]
+            step = (a1 - a0 + 180) % 360 - 180
+            frac = np.where(hi > lo, (x - lo) / np.maximum(hi - lo, 1), 0)
+            flat[:, c0:c1] = np.where(ok, block, a0 + step * frac)
+    return a
+
+
 class Loaded:
     """One subset in memory: the passages over a box in a time window, ready to draw."""
 
@@ -114,6 +172,7 @@ class Loaded:
         # runs across the lines between them (land, missing lines) would draw long thin quads over the gap.
         self.meshes = []
         lat = sub.latitude.values
+        lon, lat = across(lon), across(lat)  # meshes need every corner; the nadir gap's are interpolated
         for i in range(len(values)):
             usable = np.isfinite(lon[i]).all(1) & np.isfinite(lat[i]).all(1) & np.isfinite(values[i]).any(1)
             edges = np.flatnonzero(np.diff(np.r_[0, usable.astype(int), 0]))
@@ -257,7 +316,8 @@ def info():
     return dict(first=str(pd.Timestamp(ds.time.values[0])), last=str(pd.Timestamp(ds.time.values[-1])),
                 passages=ds.sizes["time"], passes=ds.sizes["pass_number"], max_days=MAX_DAYS, default=DEFAULT,
                 variables={k: v[0] for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
-                netcdf=NETCDF)
+                netcdf=NETCDF, product=PRODUCT["label"],
+                commit=dict(id=COMMIT.id[:8], time=str(pd.Timestamp(COMMIT.written_at).tz_convert(None)), message=COMMIT.message))
 
 
 @app.get("/api/timeline")
