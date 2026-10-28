@@ -44,7 +44,13 @@ be resumed here (`claude --resume`).
   - detail tiles (`/api/detail`, SWOT_DETAIL_STORE, e.g. Unsmoothed over Expert): from SWOT_DETAIL_ZOOM - 1 on,
     read tile by tile, chunks of lines of every passage at once (LRU cache), only the lines whose latitudes reach
     the tile, shifted by what the base view subtracts so colors match; the page fades them in over a zoom level,
-    the base showing where they have none. A first look at a place reads ~5 s from Arraylake, then ~0.2 s;
+    the base showing where they have none. A first look at a place reads ~5 s from Arraylake, then ~0.2 s. Once a
+    region's view is loaded, its detail is read ahead in the background (`read_ahead`, if it fits in half the
+    SWOT_DETAIL_BLOCKS kept, default 1024 ~3.5 GB): zooming in then finds it in memory (12 tiles in 0.7 s);
+  - reading a view: envelopes are kept in memory (`open_product`; the detail store takes the base's), and `read`
+    fetches one array and passage at a time, all at once: a vectorized read of a subset fetches its chunks nearly one
+    by one (the Gulf Stream, 12 days of Expert: ~35 s -> 1.6 s from biomix). From AWS the stores read ~10x faster
+    than from biomix (Unsmoothed, 2 days of the Gulf Stream, 644 MB: 0.6 s on a c7i.2xlarge in us-east-1);
   - L2 products keep values only where `ssha_karin_2_qual == 0` (over land and ice they reach kilometres);
   - `/api/timeline` (days with passages over the region, from the per-pass geometry, no data read),
     `/api/load`, `/api/value` (at a click: the value and its passages, with the time of their nearest line),
