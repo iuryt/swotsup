@@ -59,3 +59,5 @@ mutate app/server.py 's/        frame = pd.DataFrame({"x": x, "y": y, "v": v, "p
 mutate app/server.py 's/    data.shift = {mode: shift\[at\] for mode, shift in shifts.items()}/    pass/' "overview tiles from chunks subtract their own medians"
 mutate app/server.py 's/            self.shift\["box"\]\[:\] = f\["box"\]\[0\]/            self.shift["box"][:] = 0/' "overview read back without its box median"
 mutate app/server.py 's/        if len(span) and span.max() - span.min() >= np.timedelta64(20, "D"):/        if len(span):/' "opening cycle not complete"
+mutate app/server.py 's/        if PRODUCT.get("overview") and sub.sizes\["time"\] \* sub.sizes\["along"\] \* sub.sizes\["cross"\] > OVERVIEW_PIXELS:/        if False:/' "a view too big to keep read whole"
+mutate app/server.py 's/        sub, _ = read(ds.isel(time=times\[at\], along=todo\[0\].lines), names)/        sub, _ = read(ds.isel(time=times[at][:1], along=todo[0].lines), names)/' "overview built from part of its passages"

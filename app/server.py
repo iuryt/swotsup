@@ -446,8 +446,11 @@ class Overview:
     ZOOM, BATCH = 4, 32
 
     def __init__(self, view, variable):
-        t0 = np.datetime64(view["start"])
-        self.times = np.flatnonzero((index.time.values >= t0) & (index.time.values < t0 + np.timedelta64(view["days"], "D")))
+        end = pd.Timestamp(view["start"]) + pd.Timedelta(days=view["days"]) - pd.Timedelta(seconds=1)
+        sub = swot_view.subset(ds, view["west"], view["east"], view["south"], view["north"], view["start"], end)
+        self.times = np.flatnonzero(np.isin(ds.time.values, sub.time.values))  # the passages over the box
+        first = int(np.searchsorted(ds.lat.values, sub.lat.values[0])) if sub.sizes["along"] else 0
+        self.lines = slice(first, first + sub.sizes["along"])  # their lines in its latitudes
         self.names, self.variable = VARIABLES[variable][1], variable
         self.sub = index.isel(time=self.times)  # cycle and pass_id of each passage: what the modes subtract
         self.ready = threading.Event()
@@ -457,7 +460,9 @@ class Overview:
         self.shift = {mode: np.zeros(len(self.times), "float32") for mode in ("none", "box", "passage")}
         self.samples, self.quantiles, self.pixels, self.seconds = [], {}, 0, 0.0
         self.read_ahead = []
-        self.file = os.path.join(CACHE_DIR, f"overview-{COMMIT.id}-{view['start']}-{view['days']}-{variable}.npz") if CACHE_DIR else None
+        box = "_".join(f"{view[k]:g}" for k in ("west", "east", "south", "north"))
+        self.file = (os.path.join(CACHE_DIR, f"overview-{COMMIT.id}-{box}-{view['start']}-{view['days']}-{variable}.npz")
+                     if CACHE_DIR else None)
 
     @property
     def nbytes(self):
@@ -494,7 +499,8 @@ class Overview:
         self.samples = []
         if self.file:  # kept for a restart; those of older commits or cycles go
             for old in Path(CACHE_DIR).glob(f"overview-*-{self.variable}.npz"):
-                old.unlink()
+                if not old.name.startswith(f"overview-{COMMIT.id}-"):
+                    old.unlink()
             np.savez(self.file, none=self.sum["none"], passage=self.sum["passage"], count=self.count,
                      shift=self.shift["passage"], box=self.shift["box"][:1], pixels=self.pixels, seconds=self.seconds,
                      quantiles=np.array([json.dumps(self.quantiles)]))
@@ -556,7 +562,7 @@ def build_overviews(view, overviews):
     times = todo[0].times
     for b in range(0, len(times), Overview.BATCH):
         at = np.arange(b, min(b + Overview.BATCH, len(times)))
-        sub, _ = read(ds.isel(time=times[at]), names)
+        sub, _ = read(ds.isel(time=times[at], along=todo[0].lines), names)
         lon, lat = sub.longitude.values, sub.latitude.values
         for o in todo:
             o.add(at, masked(sum(sub[n].values for n in o.names), sub[MASK].values if MASK else None).astype("float32"), lon, lat)
@@ -591,7 +597,7 @@ def read(sub, names):
 def load(west, east, south, north, start, days, variable):
     """The view's data and the seconds spent reading it (0 if it was in memory)."""
     key = (west, east, south, north, start, days, variable)
-    if key in OVERVIEWS:  # the opening view of a product too big to keep: its overview (ready or being built)
+    if key in OVERVIEWS:  # a view too big to keep: its overview (ready or being built)
         return OVERVIEWS[key], 0.0
     with cache_lock:
         if key in loaded:
@@ -606,6 +612,10 @@ def load(west, east, south, north, start, days, variable):
         end = pd.Timestamp(start) + pd.Timedelta(days=days) - pd.Timedelta(seconds=1)
         names = VARIABLES[variable][1]
         sub = swot_view.subset(ds, west, east, south, north, start, end)
+        if PRODUCT.get("overview") and sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > OVERVIEW_PIXELS:
+            with cache_lock:
+                loading.pop(key, None)
+            return overview_of(key), 0.0
         if sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > MAX_PIXELS:
             raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
         values, line_time = read(sub, names + ([MASK] if MASK else []))
@@ -618,6 +628,25 @@ def load(west, east, south, north, start, days, variable):
             while sum(d.nbytes for d in loaded.values()) > MAX_BYTES and len(loaded) > len(keep & loaded.keys()):
                 del loaded[next(k for k in loaded if k not in keep)]
     return data, time.perf_counter() - t0
+
+
+OVERVIEW_PIXELS = float(os.environ.get("SWOT_OVERVIEW_PIXELS", 60e6))  # views bigger than this: overviews
+OVERVIEWS_KEPT = int(os.environ.get("SWOT_OVERVIEWS", 6))  # besides the opening view's (~0.2 GB each)
+
+
+def overview_of(key):
+    """The overview of a view too big to keep (`key`), built in the background the first time (or read back from
+    disk); the oldest go beyond OVERVIEWS_KEPT, the opening view's stay."""
+    with cache_lock:
+        if key in OVERVIEWS:
+            return OVERVIEWS[key]
+        view = dict(zip(("west", "east", "south", "north", "start", "days", "variable"), key))
+        OVERVIEWS[key] = overview = Overview(view, view["variable"])
+        others = [k for k in OVERVIEWS if k not in OPENING]
+        for old in others[:max(len(others) - OVERVIEWS_KEPT, 0)]:
+            del OVERVIEWS[old]
+    threading.Thread(target=build_overviews, args=(view, [overview]), daemon=True).start()
+    return overview
 
 
 def view(west: float, east: float, south: float, north: float, start: str, days: int, variable: str):
@@ -1153,10 +1182,11 @@ def world_png():
 
 # the opening view, ready before the first visitor: in memory, or for a product too big to keep (`overview`), its
 # overview for every variable, built in the background (or read back from SWOT_CACHE_DIR)
-OVERVIEWS = {}
+OVERVIEWS, OPENING = {}, set()  # views too big to keep: their overviews (OrderedDict order: oldest first)
 if PRODUCT.get("overview"):
     for variable in VARIABLES:
-        OVERVIEWS[tuple((DEFAULT | dict(variable=variable)).values())] = Overview(DEFAULT, variable)
+        OPENING.add(key := tuple((DEFAULT | dict(variable=variable)).values()))
+        OVERVIEWS[key] = Overview(DEFAULT, variable)
     threading.Thread(target=build_overviews, args=(DEFAULT, list(OVERVIEWS.values())), daemon=True).start()
 else:
     load(**DEFAULT)
