@@ -729,3 +729,77 @@ def test_base_inside_the_detail_swath(store_path, monkeypatch):
     row = int(fy % 1 * 256)
     b, f = np.flatnonzero(base[row]), np.flatnonzero(fine[row])
     assert b[0] > f[0] and b[-1] < f[-1]
+
+
+def dtu_server(dtu_store_path, fine_store_path, monkeypatch):
+    """The server on a store with a DTU25 MSS correction (pass / 100 + 0.001 per km of along) and a detail store
+    without it (pass 7 only), with a variable that adds it."""
+    server, c = detail_server(dtu_store_path, monkeypatch, fine=fine_store_path)
+    monkeypatch.setitem(server.VARIABLES, "dtu", server.Variable("SSHA, DTU25 MSS", ["ssha_filtered", server.DTU]))
+    return server, c
+
+
+def test_dtu25_correction_of_each_passage_pass_at_2_km_and_250_m(dtu_store_path, fine_store_path, monkeypatch):
+    """The DTU25 correction is added at each passage's pass (passes 7 and 20 cross the point) in the 2 km series, and
+    interpolated from the base store at the 250 m pixels' along (the detail store lacks it)."""
+    server, c = dtu_server(dtu_store_path, fine_store_path, monkeypatch)
+    lon, lat = 30.1, 2.0
+    along = float(np.interp(lat, server.ds.lat.values, server.ds.along.values))
+    for fine, atol in ((False, 0.002), (True, 0.0006)):
+        get = lambda v: c.get("/api/series", params=dict(lon=lon, lat=lat, variable=v, fine=fine, radius=1 if fine else 5)).json()  # noqa: E731
+        dtu, plain = get("dtu"), get("ssha_filtered")
+        assert dtu["time"] == plain["time"] and len(plain["time"]) >= 2
+        index = server.detail.index if fine else server.index  # the 250 m series: the detail store's passages
+        times = index.time.values.astype("datetime64[ms]").astype("int64")
+        passes = [int(index.pass_id.values[np.flatnonzero(times == t)[0]]) for t in plain["time"]]
+        assert fine or set(passes) == {7, 20}
+        np.testing.assert_allclose(np.subtract(dtu["value"], plain["value"]), np.array(passes) / 100 + 0.001 * along, atol=atol)
+
+
+def test_dtu25_correction_in_the_250_m_hovmoller(dtu_store_path, fine_store_path, monkeypatch):
+    """The 250 m Hovmöller adds the correction at each pixel's along, interpolated from the base store."""
+    server, c = dtu_server(dtu_store_path, fine_store_path, monkeypatch)
+    points = "29.8,4;29.8,6"
+    get = lambda v: c.get("/api/hovmoller", params=dict(points=points, variable=v, step=0.25)).json()  # noqa: E731
+    dtu, plain = get("dtu"), get("ssha_filtered")
+    assert len(plain["passages"]) == 2
+    along = np.interp(plain["lat"], server.ds.lat.values, server.ds.along.values)
+    for a, b in zip(dtu["passages"], plain["passages"]):
+        k = a["first"] + np.arange(len(a["value"]))
+        diff = np.array(a["value"], float) - np.array(b["value"], float)
+        ok = np.isfinite(diff)
+        assert ok.sum() > 100
+        np.testing.assert_allclose(diff[ok], 0.07 + 0.001 * along[k][ok], atol=0.0005)
+
+
+def test_dtu25_correction_interpolated_between_the_base_pixels(dtu_store_path, fine_store_path, monkeypatch):
+    """At points between the base store's pixels, its correction is interpolated linearly (here exact)."""
+    server, _ = dtu_server(dtu_store_path, fine_store_path, monkeypatch)
+    along = server.ds.along.values[100:110] + 0.37 * np.diff(server.ds.along.values[100:111])
+    cross = np.linspace(-40, 40, 7)
+    np.testing.assert_allclose(server.from_base(server.DTU, 20, along, cross), 0.2 + 0.001 * along[:, None] + 0 * cross,
+                               rtol=1e-6)
+
+
+def test_dtu25_line_code_gives_the_app_values(dtu_store_path, fine_store_path, monkeypatch):
+    """The code users copy for a line adds the DTU25 correction as the app does: from the store at 2 km, interpolated
+    from it at 250 m (the detail store's pixels fall between its own)."""
+    import swot_view
+    from test_view import run_with_stores
+
+    server, c = dtu_server(dtu_store_path, fine_store_path, monkeypatch)
+    paths, points = {"expert": dtu_store_path, "fine": fine_store_path}, [(29.8, 4.0), (29.8, 6.0)]
+    for step, target, dtu in ((2, "s3://b/expert", "here"), (0.25, "s3://b/fine", "s3://b/expert")):
+        app = {v: c.get("/api/hovmoller", params=dict(points="29.8,4;29.8,6", variable=v, step=step)).json()
+               for v in ("dtu", "ssha_filtered")}
+        code = {d: run_with_stores(swot_view.line_snippet(points, ["ssha_filtered"], step=step, mean="none", target=target,
+                                                          radius=server.FINE_RADIUS if step < 1 else 1.5, dtu=d), paths, monkeypatch)
+                for d in (dtu, None)}
+        diff = code[dtu]["values"] - code[None]["values"]
+        assert len(app["dtu"]["passages"]) == len(diff) >= 1
+        for row, a, b in zip(diff, app["dtu"]["passages"], app["ssha_filtered"]["passages"]):
+            want = np.full(len(row), np.nan)
+            want[a["first"]:a["first"] + len(a["value"])] = np.array(a["value"], float) - np.array(b["value"], float)
+            ok = np.isfinite(want)
+            assert ok.sum() > 50
+            np.testing.assert_allclose(row[ok], want[ok], atol=2e-4)
