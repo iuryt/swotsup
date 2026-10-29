@@ -675,3 +675,20 @@ def test_series_on_the_ocean_only(fine_store_path):
     every = swot_view.point_series(ds, 30.0, 2.0, "ssha_filtered", radius=5)
     ocean = swot_view.point_series(ds, 30.0, 2.0, "ssha_filtered", radius=5, surface=(0,))
     assert (ocean.pixels.values < every.pixels.values * 0.7).all() and (ocean.pixels.values > 0).all()
+
+
+
+def test_dates_the_detail_covers(store_path, tmp_path, make_file, monkeypatch):
+    """The page says what dates the detail product (250 m, still being uploaded) covers so far: its first and last
+    passages (10 and 12 Jan), not the base's (3 to 6 Jan)."""
+    import icechunk
+    from swot_cloud.store import append
+
+    path = str(tmp_path / "later")
+    session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
+    for cycle, day in ((7, 10), (8, 12)):
+        append(session.store, make_file(cycle, 7, day=day), along_chunk=50, time_chunk=1)
+    session.commit("later")
+    server, c = detail_server(store_path[0], monkeypatch, fine=path)
+    d = c.get("/api/info").json()["detail"]
+    assert d["first"][:10] == "2024-01-10" and d["last"][:10] == "2024-01-12"
