@@ -227,6 +227,8 @@ def test_detail_tiles_take_the_base_colors(store_path, monkeypatch):
     sys.modules.pop("server", None)
     import server
 
+    monkeypatch.setattr(server, "DETAIL_PASSAGES", frozenset())  # the base under the detail, to compare them
+
     c = TestClient(server.app)
     view = PASS_7 | dict(mode="box", vmin=-0.05, vmax=0.05)  # values vary along the track: colors change
     c.get("/api/load", params=PASS_7)
@@ -264,6 +266,8 @@ def test_detail_tile_with_only_the_edges_of_lines(tmp_path, make_file, monkeypat
     monkeypatch.setenv("SWOT_DETAIL_ZOOM", "6")
     sys.modules.pop("server", None)
     import server
+
+    monkeypatch.setattr(server, "DETAIL_PASSAGES", frozenset())  # the base under the detail, to compare them
 
     c = TestClient(server.app)
     view = dict(west=33, east=37, south=8, north=12, start="2024-01-03", days=1, variable="ssha_unfiltered",
@@ -692,3 +696,16 @@ def test_dates_the_detail_covers(store_path, tmp_path, make_file, monkeypatch):
     server, c = detail_server(store_path[0], monkeypatch, fine=path)
     d = c.get("/api/info").json()["detail"]
     assert d["first"][:10] == "2024-01-10" and d["last"][:10] == "2024-01-12"
+
+
+
+def test_from_the_detail_zoom_no_base_under_it(store_path, monkeypatch):
+    """From the detail's zoom, the base leaves out the passages the detail product has (here all: the same store):
+    its tile is empty there, and full one zoom below."""
+    server, c = detail_server(store_path[0], monkeypatch)
+    view = PASS_7 | dict(mode="none", vmin=-1, vmax=1)
+    c.get("/api/load", params=PASS_7)
+    opaque = lambda z: (np.asarray(Image.open(io.BytesIO(c.get(  # noqa: E731
+        f"/api/tile/{z}/{int((30 + 180) / 360 * 2**z)}/{int((1 - np.log(np.tan(np.pi / 4 + np.deg2rad(5) / 2)) / np.pi) / 2 * 2**z)}.png",
+        params=view).content)).convert("RGBA"))[..., 3] > 0).sum()
+    assert opaque(5) > 100 and opaque(6) == 0
