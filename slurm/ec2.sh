@@ -8,6 +8,10 @@
 #   sbatch -o logs/ec2-%j.out slurm/ec2.sh update   send app/ and deploy/ again; reboot if running (else at its next start)
 #   sbatch -o logs/ec2-%j.out slurm/ec2.sh status   link, state and the end of the boot log
 #   sbatch -o logs/ec2-%j.out slurm/ec2.sh down     delete everything `up` created
+#   sbatch -o logs/ec2-%j.out slurm/ec2.sh domain   https://$DOMAIN in front of it all (after `up`; then `update`)
+# The domain: CloudFront with an ACM certificate and Route 53 records in the domain's zone (registered in Route 53).
+# Its origin is the instance, failing over to the Lambda function (502/503, or no connection: it sleeps), whose
+# waiting page then stays at the same address; `down` leaves the domain's pieces in place.
 # DEPLOY_PROFILE: EC2, the roles swot-explorer and swot-explorer-wake, the Lambda function swot-explorer-wake and
 # deploy/swot_explorer/ in the bucket.
 #SBATCH -p batch -c 1 --mem 2G -t 30
@@ -17,6 +21,7 @@ cd "${SLURM_SUBMIT_DIR:-.}"
 NAME=swot-explorer WAKE=swot-explorer-wake TYPE=${TYPE:-c7i.2xlarge} BUCKET=iuryt-shared-east
 STORE=icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2 CODE=deploy/swot_explorer/app.tar.gz
 TELEMETRY=telemetry/swot-explorer  # where the instance writes the anonymous usage (write only)
+DOMAIN=${DOMAIN:-swotsup.org}
 export AWS_REGION=us-east-1
 aws() { pixi exec --spec awscli aws --profile "${DEPLOY_PROFILE:-swot-deploy}" "$@"; }
 instance() {
@@ -24,8 +29,10 @@ instance() {
     --filters Name=tag:Name,Values=$NAME Name=instance-state-name,Values=pending,running,stopping,stopped
 }
 address() { aws ec2 describe-addresses --filters Name=tag:Name,Values=$NAME --query "Addresses[0].$1" --output text; }
+distribution() { aws cloudfront list-distributions --query "DistributionList.Items[?Aliases.Items[0]=='$DOMAIN'].$1 | [0]" --output text; }
 send_code() {  # build context (Dockerfile at the root), the boot script, and the link to share (copied links start with it)
-  aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text > logs/public_url 2>/dev/null || : > logs/public_url
+  if [ "$(distribution Id)" != None ]; then echo "https://$DOMAIN/" > logs/public_url
+  else aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text > logs/public_url 2>/dev/null || : > logs/public_url; fi
   tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh -C ../logs public_url
   aws s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
@@ -118,6 +125,72 @@ update)
   else
     echo "$(instance) is not running: it gets the new package at its next start"
   fi
+  ;;
+domain)
+  zone=$(aws route53 list-hosted-zones-by-name --dns-name $DOMAIN --query "HostedZones[?Name=='$DOMAIN.'].Id | [0]" --output text)
+  [ "$zone" != None ] || { echo "no Route 53 zone for $DOMAIN yet (registering it creates one)"; exit 1; }
+  records() {  # UPSERT a list of record sets in the zone
+    aws route53 change-resource-record-sets --hosted-zone-id "$zone" --change-batch \
+      "{\"Changes\":[$(echo "$1" | sed 's/^/{"Action":"UPSERT","ResourceRecordSet":/; s/$/}/' | paste -sd,)]}" --query ChangeInfo.Id --output text
+  }
+  # the certificate (CloudFront's are in us-east-1), validated by a DNS record per name
+  cert=$(aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$DOMAIN'].CertificateArn | [0]" --output text)
+  if [ "$cert" = None ]; then
+    cert=$(aws acm request-certificate --domain-name $DOMAIN --subject-alternative-names www.$DOMAIN \
+      --validation-method DNS --query CertificateArn --output text)
+    sleep 15  # its validation records take a moment to be listed
+  fi
+  records "$(aws acm describe-certificate --certificate-arn "$cert" --output json --query \
+    'Certificate.DomainValidationOptions[].ResourceRecord' | pixi exec --spec jq jq -c 'unique[] |
+    {Name, Type, TTL: 300, ResourceRecords: [{Value}]}')"
+  aws acm wait certificate-validated --certificate-arn "$cert"
+  echo "certificate $cert: $(aws acm describe-certificate --certificate-arn "$cert" --query Certificate.Status --output text)"
+  if [ "$(distribution Id)" = None ]; then
+    policy() { aws cloudfront list-$1-policies --type managed --query "${2}PolicyList.Items[?${2}PolicyConfig.Name=='$3'].Id | [0]" --output text; }
+    nocache=$(policy cache Cache Managed-CachingDisabled) bycontrol=$(policy cache Cache Managed-UseOriginCacheControlHeaders-QueryStrings)
+    viewer=$(policy origin-request OriginRequest Managed-AllViewerExceptHostHeader)
+    lambda=$(aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text | sed 's|https://||; s|/$||')
+    origin() {  # id, host, read timeout, extra fields
+      echo "{\"Id\":\"$1\",\"DomainName\":\"$2\",\"ConnectionAttempts\":1,\"ConnectionTimeout\":3,$4
+        \"CustomOriginConfig\":{\"HTTPPort\":80,\"HTTPSPort\":443,\"OriginProtocolPolicy\":\"https-only\",
+        \"OriginSslProtocols\":{\"Quantity\":1,\"Items\":[\"TLSv1.2\"]},\"OriginReadTimeout\":$3,\"OriginKeepaliveTimeout\":5}}"
+    }
+    behavior() {  # path, origin, cache policy, methods
+      echo "{\"PathPattern\":\"$1\",\"TargetOriginId\":\"$2\",\"ViewerProtocolPolicy\":\"redirect-to-https\",\"Compress\":true,
+        \"CachePolicyId\":\"$3\",\"OriginRequestPolicyId\":\"$viewer\",\"AllowedMethods\":{$4,
+        \"CachedMethods\":{\"Quantity\":2,\"Items\":[\"GET\",\"HEAD\"]}}}" | sed 's/"PathPattern":"",//'
+    }
+    get='"Quantity":2,"Items":["GET","HEAD"]' all='"Quantity":7,"Items":["GET","HEAD","OPTIONS","PUT","POST","PATCH","DELETE"]'
+    cat > logs/distribution.json <<JSON
+{"CallerReference": "$NAME-$(date +%s)", "Comment": "SWOT's Up", "Enabled": true, "HttpVersion": "http2and3",
+ "IsIPV6Enabled": true, "PriceClass": "PriceClass_All",
+ "Aliases": {"Quantity": 2, "Items": ["$DOMAIN", "www.$DOMAIN"]},
+ "ViewerCertificate": {"ACMCertificateArn": "$cert", "SSLSupportMethod": "sni-only", "MinimumProtocolVersion": "TLSv1.2_2021"},
+ "Origins": {"Quantity": 2, "Items": [
+   $(origin ec2 "$(address PublicIp | tr . -).sslip.io" ${ORIGIN_TIMEOUT:-60}),
+   $(origin wake "$lambda" 30 '"CustomHeaders":{"Quantity":1,"Items":[{"HeaderName":"X-Swot-Front","HeaderValue":"1"}]},')]},
+ "OriginGroups": {"Quantity": 1, "Items": [{"Id": "ec2-or-wake",
+   "FailoverCriteria": {"StatusCodes": {"Quantity": 2, "Items": [502, 503]}},
+   "Members": {"Quantity": 2, "Items": [{"OriginId": "ec2"}, {"OriginId": "wake"}]}}]},
+ "DefaultCacheBehavior": $(behavior "" ec2-or-wake $nocache "$get"),
+ "CacheBehaviors": {"Quantity": 4, "Items": [
+   $(behavior /api/event ec2 $nocache "$all"),
+   $(behavior "/api/tile/*" ec2-or-wake $bycontrol "$get"),
+   $(behavior "/api/detail/*" ec2-or-wake $bycontrol "$get"),
+   $(behavior /api/world.png ec2-or-wake $bycontrol "$get")]},
+ "CustomErrorResponses": {"Quantity": 3, "Items": [{"ErrorCode": 502, "ErrorCachingMinTTL": 0},
+   {"ErrorCode": 503, "ErrorCachingMinTTL": 0}, {"ErrorCode": 504, "ErrorCachingMinTTL": 0}]}}
+JSON
+    aws cloudfront create-distribution --distribution-config file://logs/distribution.json --query Distribution.Id --output text
+  fi
+  front=$(distribution DomainName)
+  records "$(for name in $DOMAIN www.$DOMAIN; do for type in A AAAA; do
+    echo "{\"Name\":\"$name\",\"Type\":\"$type\",\"AliasTarget\":{\"HostedZoneId\":\"Z2FDTNDATAQYW2\",\"DNSName\":\"$front\",\"EvaluateTargetHealth\":false}}"
+  done; done)"
+  ip=$(address PublicIp)
+  aws lambda update-function-configuration --function-name $WAKE --query LastModified \
+    --environment "Variables={HOST=${ip//./-}.sslip.io,INSTANCE=$NAME,FRONT=https://$DOMAIN/}"
+  echo "https://$DOMAIN/ -> $front (CloudFront takes ~5-15 min to deploy); run update so the page's links use it"
   ;;
 down)
   aws lambda delete-function --function-name $WAKE || true
