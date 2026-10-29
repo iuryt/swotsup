@@ -195,6 +195,8 @@ DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE", None if CONFIGURED else L2 + 
 DETAIL_PRODUCT = PRODUCTS[os.environ.get("SWOT_DETAIL_PRODUCT", "unsmoothed")]
 DETAIL_ZOOM = int(os.environ.get("SWOT_DETAIL_ZOOM", 9))
 detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial"), geometry) if DETAIL_STORE else None
+# the passages it has, (cycle, pass): under it, from its zoom on, the base is drawn inside its swath (see `inner`)
+DETAIL_PASSAGES = frozenset(zip(detail.index.cycle.values.tolist(), detail.index.pass_id.values.tolist())) if detail else frozenset()
 DEFAULT = PRODUCT["default"]
 if DEFAULT is None:  # the latest passage's day, 6 x 6 degrees around its nadir at the latitude nearest the equator
     last = int(np.argmax(index.time.values))
@@ -262,6 +264,14 @@ def continuous_all(lon, center):
         if ok.sum() > 1:
             out[i][ok] = continuous(lon[i][ok], center)
     return out
+
+
+def inner(v):
+    """A passage's values (lines x cross) without the first and last cell of each run of data along every line: its
+    swath's outer edges and the sides of the nadir gap. The 2 km and the 250 m span the same distances from nadir,
+    but a 2 km cell is drawn 2 km wide, ~1 km past the 250 m's outer edge and ~1.5 km into its nadir gap."""
+    ok = np.pad(np.isfinite(v), ((0, 0), (1, 1)))  # past a line's ends: no data
+    return np.where(ok[:, 1:-1] & ok[:, :-2] & ok[:, 2:], v, np.nan)
 
 
 def across(a):
@@ -411,19 +421,23 @@ class Loaded:
                 lines = slice(rows.start + block.start, rows.start + min(block.stop, len(x)))
                 yield i, lines, x[block] + shift, y[block]
 
-    def rasters(self, mode, x_range, y_range, width, height):
-        """Each mesh in view on a width x height grid: (passage, first line of the block, its x and y, raster)."""
+    def rasters(self, mode, x_range, y_range, width, height, trim=frozenset()):
+        """Each mesh in view on a width x height grid: (passage, first line of the block, its x and y, raster); the
+        passages in `trim` ((cycle, pass) pairs) without the cells at the ends of their lines' data (`inner`)."""
         canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+        trimmed = {i for i, key in enumerate(zip(self.sub.cycle.values.tolist(), self.sub.pass_id.values.tolist()))
+                   if key in trim} if trim else set()
         for i, lines, xs, ys in self.blocks(x_range, y_range):
-            mesh = xr.DataArray(self.value(mode, i, lines), name="v", dims=("along", "cross"),
+            v = self.value(mode, i, lines)
+            mesh = xr.DataArray(inner(v) if i in trimmed else v, name="v", dims=("along", "cross"),
                                 coords={"x": (("along", "cross"), xs), "y": (("along", "cross"), ys)})
             yield i, lines.start, xs, ys, canvas.quadmesh(mesh, x="x", y="y").values
 
-    def mean_on(self, mode, x_range, y_range, width, height):
+    def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset()):
         """Mean of the passages on a width x height grid, NaN where none. Where the cells are smaller than a pixel
         (on the ground, at the view's middle latitude), all of them in view are drawn as points in one go: from the
         coarsest level whose blocks still are, or the cells themselves (their lines in view, from the meshes).
-        Zoomed in further, each passage's cells are drawn as meshes."""
+        Zoomed in further, each passage's cells are drawn as meshes (those in `trim` inside their swath: `rasters`)."""
         pixel = (x_range[1] - x_range[0]) / width * np.cos(2 * np.arctan(np.exp(np.mean(y_range) / R)) - np.pi / 2)
         if self.spacing <= pixel:
             level = max([k for k in self.points if k * self.spacing <= pixel], default=1)
@@ -444,7 +458,7 @@ class Loaded:
             frame = pd.DataFrame({"x": np.concatenate(xs), "y": np.concatenate(ys), "v": np.concatenate(vs)})
             return canvas.points(frame, "x", "y", agg=dsh.mean("v")).values
         total, count = np.zeros((height, width)), np.zeros((height, width))
-        for *_, m in self.rasters(mode, x_range, y_range, width, height):
+        for *_, m in self.rasters(mode, x_range, y_range, width, height, trim):
             total, count = total + np.where(np.isfinite(m), m, 0), count + np.isfinite(m)
         with np.errstate(invalid="ignore"):
             return total / count
@@ -623,11 +637,11 @@ class Overview:
             return None
         return int(round(z))
 
-    def mean_on(self, mode, x_range, y_range, width, height):
+    def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset()):
         z = self.tile(x_range, y_range, width, height)
         if z is None:  # closer: the passages that cross the view, a chunk at a time
             data = self.near(*lonlat_box(x_range, y_range))
-            return np.full((height, width), np.nan) if data is None else data.mean_on(mode, x_range, y_range, width, height)
+            return np.full((height, width), np.nan) if data is None else data.mean_on(mode, x_range, y_range, width, height, trim)
         self.ready.wait()
         k, size = 2 ** (self.ZOOM - z), WORLD / 2**z
         c0 = int(round((x_range[0] + WORLD / 2) / size)) * 256 * k
@@ -987,7 +1001,10 @@ def tile_ranges(z, x, y):
 @app.get("/api/tile/{z}/{x}/{y}.png")
 def tile(z: int, x: int, y: int, variable: str, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2,
          cmap: str = None, data=Depends(view)):
-    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256), vmin, vmax, colormap(cmap, variable))
+    # where the detail product shows (from the zoom before its own, on its passages), the base is drawn inside its
+    # swath: always under it, never past its edges, so the page needs no fading between the two
+    trim = DETAIL_PASSAGES if z >= DETAIL_ZOOM - 1 and has_detail(variable) else frozenset()
+    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256, trim), vmin, vmax, colormap(cmap, variable))
 
 
 # --- the detail product, tile by tile: each passage's lines near the tile, read a chunk at a time and kept
