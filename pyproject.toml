@@ -2,7 +2,7 @@
 authors = [{name = "iury Simoes-Sousa", email = "iuryt@pm.me"}]
 name = "swot-explorer"
 requires-python = ">= 3.11"
-version = "0.14.1"
+version = "0.14.2"
 license = "MIT"
 description = "SWOT Sea Surface Height Explorer: a web map over the SWOT L3 LR SSH IceChunk store."
 
@@ -24,7 +24,7 @@ pandas = "*"
 h5netcdf = ">=1.8.1,<2"
 datashader = "*"
 scipy = "*"  # nearest pixels along a drawn line
-matplotlib = "*"
+matplotlib-base = "*"  # no Qt: the server draws to files only
 cmocean = "*"  # the oceanographic colormaps (sigma0, SWH, wind)
 cartopy = ">=0.25.0,<0.26"
 pillow = "*"

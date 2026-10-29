@@ -105,7 +105,7 @@ status)
   id=$(instance)
   echo "instance $id: $(aws ec2 describe-instances --instance-ids "$id" --query 'Reservations[0].Instances[0].State.Name' \
     --output text), https://$(address PublicIp | tr . -).sslip.io (stops after 30 idle minutes)"
-  aws ec2 get-console-output --instance-id "$id" --latest --output text | tail -40 || true
+  aws ec2 get-console-output --instance-id "$id" --latest --output text | tail -${LINES_SHOWN:-40} || true
   ;;
 update)
   send_code
