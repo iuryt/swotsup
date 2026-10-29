@@ -836,6 +836,19 @@ const transectSize = chartSize;
 // Hovmöller (the whole mission) on the variable and the mode only
 const lineKey = () => transect.kind === "profile" ? `${state.view}|${state.mode}|${transect.step}`
   : `hovmoller|${state.variable}|${transect.step}`;
+// a line with no passage: at 250 m, maybe only because L2 Unsmoothed does not have those dates yet (it is still being
+// uploaded): what it covers so far, and the line at 2 km
+function noPassage(text) {
+  if (transect.step >= 1 || !info.detail) return `<div class="loading">${text}</div>`;
+  const covers = `${dayText(Date.parse(info.detail.first + "Z"))} to ${dayText(Date.parse(info.detail.last + "Z"))}`;
+  setTimeout(() => {
+    const b = transect?.card.querySelector(".at-2km");
+    if (b) b.onclick = () => { transect.step = 2; transect.card.querySelector(".step").value = "2"; fillLine(); linkSoon(); };
+  });
+  return `<div class="loading">${info.detail.product} has no passage here on these dates yet: so far it covers
+    ${covers}.<br><button class="ghost at-2km">Show at 2 km</button></div>`;
+}
+
 const fillLine = () => {  // a variable without 250 m (SWH, wind): the line at 2 km, and no 250 m to choose
   const select = transect.card.querySelector(".step"), fine = info.looks[state.variable].fine;
   select.querySelector('option[value="0.25"]').disabled = !fine;
@@ -855,7 +868,7 @@ const distanceText = (km) => km < 1 ? `${Math.round(km * 1000)} m` : `${+km.toFi
 
 async function fillTransect() {
   const { card, points, step } = transect, chart = card.querySelector(".chart"), hint = card.querySelector(".hint");
-  transect.key = lineKey();
+  const key = transect.key = lineKey();
   card.plot?.destroy();
   card.plot = null;
   card.tip?.remove();
@@ -863,6 +876,8 @@ async function fillTransect() {
   try {
     const t = await api(`/api/transect?${state.view}`, { mode: state.mode, step,
       points: points.map(([x, y]) => `${wrap(x).toFixed(4)},${y.toFixed(4)}`).join(";") });
+    // asked again meanwhile (another resolution, view or kind; or closed): an older answer must not win
+    if (transect?.card !== card || transect.kind !== "profile" || transect.key !== key) return;
     setPath(t, points);
     transect.km = Math.round(t.distance.at(-1));
     track("line", lineFields());
@@ -871,7 +886,7 @@ async function fillTransect() {
     if (narrow()) card.querySelector("h3").textContent = `Line · ${t.distance.at(-1).toFixed(0)} km · ${passages(t.passages.length)}`;
     chart.innerHTML = "";
     if (!t.passages.length) {
-      chart.innerHTML = `<div class="loading">No passage crosses the line on the selected dates.</div>`;
+      chart.innerHTML = noPassage("No passage crosses the line on the selected dates.");
       return;
     }
     const color = (k) => PALETTE[k % PALETTE.length];
@@ -945,7 +960,7 @@ async function fillHovmoller() {
     card.querySelector("h3").textContent = narrow() ? `Hovmöller · ${km} km · ${passages(n)}`
       : `Along the line · ${km} km · whole mission · ${info.variables[state.variable]}`;
     chart.innerHTML = "";
-    if (!n) { chart.innerHTML = `<div class="loading">No passage crosses the line.</div>`; return; }
+    if (!n) { chart.innerHTML = noPassage("No passage crosses the line."); return; }
     // one column per point: the passages there in time order, minus (by default) the mean over time at that
     // point, so what stays (the mean topography of the surface) leaves and what changes shows
     const mode = transect.hovMode, avg = (v) => v.reduce((a, b) => a + b, 0) / v.length;
