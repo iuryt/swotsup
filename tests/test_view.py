@@ -175,10 +175,10 @@ def run_with_stores(code, paths, monkeypatch):
     return scope
 
 
-def test_dtu25_snippets_give_the_app_values(dtu_store_path, fine_store_path, monkeypatch):
+def test_dtu25_snippets_give_the_app_values(dtu_store_path, shifted_fine_store_path, monkeypatch):
     """The code users copy adds the DTU25 correction as the app does: the region's, at each passage's pass; the
     series', at 2 km and interpolated from the Expert store at 250 m (the line's: test_server)."""
-    paths = {"expert": dtu_store_path, "fine": fine_store_path}
+    paths = {"expert": dtu_store_path, "fine": shifted_fine_store_path}
     ds = swot_view.open_store(dtu_store_path)
     region = run_with_stores(swot_view.snippet(29, 31, 0, 4, "2024-01-01", "2024-01-31", "ssha_filtered",
                                                target="s3://b/expert", dtu=True), paths, monkeypatch)
@@ -188,7 +188,7 @@ def test_dtu25_snippets_give_the_app_values(dtu_store_path, fine_store_path, mon
     fine = dict(target="s3://b/fine", names=["ssha_filtered"], radius=1, mask=None, pixel=2.0, label="250 m", dtu=True)
     scope = run_with_stores(swot_view.series_snippet(30.1, 2.0, ["ssha_filtered"], 5, target="s3://b/expert", fine=fine,
                                                      dtu=True), paths, monkeypatch)
-    for name, store, radius in (("series", dtu_store_path, 5), ("fine", fine_store_path, 1)):
+    for name, store, radius in (("series", dtu_store_path, 5), ("fine", shifted_fine_store_path, 1)):
         own = swot_view.open_store(store)
         plain = swot_view.point_series(own, 30.1, 2.0, radius=radius).ssha_filtered
         passes = own.pass_id.sel(time=plain.time).values

@@ -5,7 +5,7 @@
 # do not get in. Usage: sbatch slurm/mutants.sh [PATTERN]   (only the mutations whose label matches, a bash regex)
 #SBATCH -p batch -c 16 --mem 32G -t 60 -o logs/mutants-%j.out
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
-PATTERN=${1:-} JOBS=${JOBS:-8} PYTHON=$PWD/.pixi/envs/default/bin/python
+PATTERN=${1:-} JOBS=${JOBS:-16} PYTHON=$PWD/.pixi/envs/default/bin/python
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/mutants-XXXX")
 trap 'rm -rf "$BASE"' EXIT
 mkdir "$BASE/src"

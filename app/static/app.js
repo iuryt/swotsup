@@ -82,11 +82,13 @@ function followArea() {  // once the map stops: read another area if the view le
   }, 1000);
 }
 
-// the variable's entry in the menu: its rivers-and-lakes and mean-sea-surface choices are in the Display menu
+// the variable's entry in the menu: its rivers-and-lakes, mean-sea-surface and calibration choices are in the
+// Display menu
 function showVariable() {
   let k = state.variable;
   if (info.looks[k].twin && info.looks[k].water) k = info.looks[k].twin;
   if (info.looks[k].mss && !info.looks[k].dtu) k = info.looks[k].mss;
+  if (info.looks[k].cal && !info.looks[k].calibrated) k = info.looks[k].cal;
   $("#variable").value = k;
 }
 
@@ -224,6 +226,8 @@ function setColors() {
   $("#water-row").classList.toggle("hidden", !look.twin);  // rivers and lakes: where the variable has the choice
   $("#water").checked = look.water;
   $("#mss-row").classList.toggle("hidden", !look.mss);  // which mean sea surface: where the variable has the choice
+  $("#cal-row").classList.toggle("hidden", !look.cal);  // calibrated or not: likewise
+  $("#cal").checked = look.calibrated;
   document.querySelectorAll("#mss button").forEach((b) => b.classList.toggle("active", (b.dataset.value === "dtu") === look.dtu));
   cmapMenu();
   const pct = (v) => { // percentile of a value, from the quantiles
@@ -1434,7 +1438,9 @@ async function main() {
   if (link.range?.vmin != null) Object.assign(state, { preset: "custom", vmin: link.range.vmin, vmax: link.range.vmax });
   // one entry per variable: a twin with rivers and lakes, or with the L2's mean sea surface, is a choice in the
   // Display menu, not an entry
-  const listed = Object.keys(info.variables).filter((k) => !(info.looks[k].twin && info.looks[k].water) && !(info.looks[k].mss && !info.looks[k].dtu));
+  const listed = Object.keys(info.variables).filter((k) => !(info.looks[k].twin && info.looks[k].water)
+    && !(info.looks[k].mss && !info.looks[k].dtu) && !(info.looks[k].cal && !info.looks[k].calibrated));
+  if (info.calibration) $("#cal-version").textContent = `experimental v${info.calibration.split(" ")[0]}`;
   $("#variable").innerHTML = listed.map((k) => `<option value="${k}">${info.variables[k]}</option>`).join("");
   showVariable();
   $("#link-button").onclick = copyLink;
@@ -1515,6 +1521,11 @@ async function main() {
   setupMenus();
   $("#water").onchange = () => {  // the same variable with or without rivers and lakes (its twin)
     state.variable = info.looks[state.variable].twin;
+    showVariable();
+    loadData();
+  };
+  $("#cal").onchange = () => {  // the same variable calibrated or not
+    state.variable = info.looks[state.variable].cal;
     showVariable();
     loadData();
   };
