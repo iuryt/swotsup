@@ -52,9 +52,14 @@ be resumed here (`claude --resume`).
     fetches one array and passage at a time, all at once: a vectorized read of a subset fetches its chunks nearly one
     by one (the Gulf Stream, 12 days of Expert: ~35 s -> 1.6 s from biomix). From AWS the stores read ~10x faster
     than from biomix (Unsmoothed, 2 days of the Gulf Stream, 644 MB: 0.6 s on a c7i.2xlarge in us-east-1);
-  - variables (`Variable`: arrays summed, quality flag, dB or not, default colormap, kind, units): L2 SSHA (+ xover
-    or not), sigma0 (in dB), SWH and wind speed, each kept only where its own flag is 0 (over land and ice SSHA reaches
-    kilometres); only SSHA and sigma0 have 250 m (Unsmoothed). Colormaps (`COLORMAPS`, matplotlib and cmocean): each
+  - variables (`Variable`: arrays summed, quality flag, surface classes kept, dB or not, default colormap, kind,
+    units, twin): L2 SSHA from `ssha_karin_2_xover` (swot_cloud: + xover, on water, no bad bit; one array), on the open
+    ocean by default (`ancillary_surface_classification_flag` 0; in Expert one per pass: `of_passage`, `block` and the
+    Hovmöller take each passage's pass) with a twin that keeps rivers and lakes (Display: "Rivers and lakes"); SSHA
+    without the correction, sigma0 (in dB), SWH and wind speed, each kept only where its own flag is 0; only SSHA and
+    sigma0 have 250 m (Unsmoothed). Colors by default: the median ± 2 x 1.4826 x MAD ("Robust", `color_limits`; rivers,
+    lakes and wild pixels push percentiles to metres), percentiles as options. Overviews on disk are named with what
+    their variable is made of (a new definition is a new overview). Colormaps (`COLORMAPS`, matplotlib and cmocean): each
     variable has its own (SSHA RdBu_r, sigma0 cmo.gray, SWH cmo.dense, wind cmo.speed), and the Display menu offers
     them all (remembered per variable in the browser; tiles take `cmap`). "level" variables open with nothing
     subtracted and colors not about zero;
