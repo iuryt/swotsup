@@ -103,9 +103,10 @@ def distance(lat1, lon1, lat2, lon2):
     return 2 * EARTH_RADIUS * np.arcsin(np.sqrt(a))
 
 
-def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None, mask=None, db=False):
+def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None, mask=None, db=False, surface=None):
     """Mean of `var` over the pixels within `radius` km of (lon, lat), one value per passage (with `mask`, a
-    quality flag: only where it is 0; `db`: of its values in dB, as sigma0 is shown). Passages with fewer than `min_pixels` valid pixels there (nadir gap, swath
+    quality flag: only where it is 0; `db`: of its values in dB, as sigma0 is shown; `surface`: only on these classes
+    of ancillary_surface_classification_flag, e.g. (0,) the open ocean). Passages with fewer than `min_pixels` valid pixels there (nadir gap, swath
     edge) are dropped: by default a quarter of what the circle holds on the 2 km grid, at least 1 (5 km: 5)."""
     if min_pixels is None:
         min_pixels = max(1, round(np.pi * radius**2 / 4 / 4))
@@ -113,10 +114,15 @@ def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None,
     dlon = radius / (km_per_deg * np.cos(np.deg2rad(lat)))
     # lat(along) is the nadir latitude: swath edges lean up to ~0.3 deg away from it
     dlat = radius / km_per_deg + 0.5
-    sub = subset(ds, lon - dlon, lon + dlon, lat - dlat, lat + dlat)[[var, "latitude", "longitude"] + ([mask] if mask else [])].load()
+    surf = "ancillary_surface_classification_flag"
+    sub = subset(ds, lon - dlon, lon + dlon, lat - dlat, lat + dlat)
+    sub = sub[[var, "latitude", "longitude"] + ([mask] if mask else []) + ([surf] if surface else [])].load()
     near = sub[var].where(distance(sub.latitude, sub.longitude, lat, lon) <= radius)
     if mask:
         near = near.where(sub[mask] == 0)
+    if surface:  # one per pass in Expert: each passage's pass
+        classes = sub[surf].sel(pass_number=sub.pass_id) if "pass_number" in sub[surf].dims else sub[surf]
+        near = near.where(classes.isin(list(surface)))
     if db:
         near = 10 * np.log10(near.where(near > 0))
     count = near.count(("along", "cross"))

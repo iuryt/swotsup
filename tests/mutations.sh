@@ -79,3 +79,8 @@ mutate app/server.py 's/        if day not in salts:/        if not salts:/' "on
 mutate app/server.py 's/    if TELEMETRY and isinstance(body, dict) and body.get("event") in EVENTS:/    if TELEMETRY and isinstance(body, dict):/' "unknown events kept"
 mutate app/server.py 's/    if TELEMETRY and request.url.path.startswith("\/api\/") and request.url.path != "\/api\/event":/    if False:/' "request times not kept"
 mutate app/server.py 's/        if not tile or next(tiles_seen) % TILE_SAMPLE == 0:/        if True:/' "every tile request kept"
+mutate app/server.py 's/    spread = 2 \* 1.4826 \* np.median(np.abs(v - median))/    spread = 2 * np.std(v)/' "robust colors from the standard deviation (rivers stretch it)"
+mutate app/server.py 's/    spread = 2 \* 1.4826 \* np.median(np.abs(v - median))/    spread = 2 * np.median(np.abs(v - median))/' "robust colors without the 1.4826 (too narrow)"
+mutate app/server.py 's/            v = np.where(np.isin(get(SURFACE), self.surface), v, np.nan)/            pass/' "rivers and lakes on the ocean-only map"
+mutate app/server.py 's/    return (a.isel(time=k) if "time" in a.dims else a.sel(pass_number=int(sub.pass_id.values\[k\]))).values/    return (a.isel(time=k) if "time" in a.dims else a.isel(pass_number=k)).values/' "classes of another pass"
+mutate app/swot_view.py 's/        near = near.where(classes.isin(list(surface)))/        pass/' "a series on every surface"

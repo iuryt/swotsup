@@ -629,3 +629,49 @@ def test_anonymous_usage(store_path, tmp_path, monkeypatch):
     assert {"endpoint": "/api/info", "status": 200, "sample": 1} == {k: requests[0][k] for k in ("endpoint", "status", "sample")}
     tiles = [r for r in requests if r["endpoint"] == "/api/tile/{z}/{x}/{y}.png"]
     assert len(tiles) == 2 and all(r["sample"] == 10 for r in tiles)
+
+
+
+def test_robust_color_limits(client):
+    """The default colors: the median ± 2 x 1.4826 x MAD of the values, about two standard deviations, where 5 % of
+    pixels on rivers at 5 m push the 98th percentile to 5 m."""
+    import server
+
+    rng = np.random.default_rng(0)
+    v = np.r_[rng.normal(0, 0.1, 9500), np.full(500, 5.0)]
+    q, robust = server.color_limits(v)
+    assert q[980] > 4 and abs(robust[0] + 0.2) < 0.03 and abs(robust[1] - 0.21) < 0.03
+
+
+
+def test_ocean_only_with_classes_kept_once_per_pass(client):
+    """SSHA on the ocean only: its surface classes (in L2 Expert one array per pass, not per passage) are read for
+    each passage's own pass, and only open ocean (0) is kept; its twin keeps rivers and lakes (2)."""
+    import server
+    import xarray as xr
+
+    dims = ("time", "along", "cross")
+    surface = np.zeros((2, 3, 2))  # pass 7: all ocean; pass 20: continental water on its second line
+    surface[1, 1] = 2
+    sub = xr.Dataset({"v": (dims, np.ones((2, 3, 2))), "line_time": (("time", "along"), np.zeros((2, 3), "datetime64[ns]")),
+                      server.SURFACE: (("pass_number", "along", "cross"), surface)},
+                     coords={"latitude": (dims, np.zeros((2, 3, 2))), "longitude": (dims, np.zeros((2, 3, 2))),
+                             "pass_number": [7, 20], "pass_id": ("time", [20, 7])})
+    data, _ = server.read(sub, ["v", server.SURFACE])
+    np.testing.assert_array_equal(data[server.SURFACE].values, surface[[1, 0]])  # passage 0 is pass 20
+    ocean = server.Variable("", ["v"], surface=(0,)).values(lambda n: data[n].values)
+    assert np.isnan(ocean[0, 1]).all() and np.isfinite(ocean[0, [0, 2]]).all() and np.isfinite(ocean[1]).all()
+    assert np.isfinite(server.Variable("", ["v"]).values(lambda n: data[n].values)).all()
+
+
+def test_series_on_the_ocean_only(fine_store_path):
+    """A point's series kept to the ocean leaves out the pixels classed otherwise (here the swath's east half)."""
+    import swot_view
+
+    ds = swot_view.open_store(fine_store_path)
+    classes = np.zeros((ds.sizes["pass_number"], ds.sizes["along"], ds.sizes["cross"]))
+    classes[:, :, ds.sizes["cross"] // 2:] = 2
+    ds = ds.assign({"ancillary_surface_classification_flag": (("pass_number", "along", "cross"), classes)})
+    every = swot_view.point_series(ds, 30.0, 2.0, "ssha_filtered", radius=5)
+    ocean = swot_view.point_series(ds, 30.0, 2.0, "ssha_filtered", radius=5, surface=(0,))
+    assert (ocean.pixels.values < every.pixels.values * 0.7).all() and (ocean.pixels.values > 0).all()

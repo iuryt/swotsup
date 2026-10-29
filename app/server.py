@@ -43,18 +43,25 @@ class Variable:
     """What a map shows: the arrays summed (`names`), their quality flag (values kept where it is 0), in dB or not,
     its default colormap and kind ("anomaly": a spatial mean subtracted, colors symmetric; "level": as stored)."""
 
-    def __init__(self, label, names, flag=None, db=False, cmap="RdBu_r", kind="anomaly", units="m"):
+    def __init__(self, label, names, flag=None, db=False, cmap="RdBu_r", kind="anomaly", units="m", surface=None,
+                 twin=None):
         self.label, self.names, self.flag, self.db = label, list(names), flag, db
         self.cmap, self.kind, self.units = cmap, kind, units
+        # the surface classes kept (SURFACE: 0 open ocean, 2 continental water...), and the variable that is the same
+        # with another choice of them (the Display menu's "Rivers and lakes" switches between the two)
+        self.surface, self.twin = surface, twin
 
     @property
     def arrays(self):
         """Every array the values need."""
-        return self.names + ([self.flag] if self.flag else [])
+        return self.names + ([self.flag] if self.flag else []) + ([SURFACE] if self.surface else [])
 
     def values(self, get):
-        """The values, from `get(name)` -> each array: summed, NaN where the flag is not 0, in dB if so."""
+        """The values, from `get(name)` -> each array: summed, NaN where the flag is not 0 or the surface is not one
+        kept, in dB if so."""
         v = masked(sum(get(n) for n in self.names), get(self.flag) if self.flag else None)
+        if self.surface:
+            v = np.where(np.isin(get(SURFACE), self.surface), v, np.nan)
         if self.db:
             with np.errstate(divide="ignore", invalid="ignore"):
                 v = np.where(v > 0, 10 * np.log10(v), np.nan)
@@ -63,9 +70,16 @@ class Variable:
 
 # L2: values kept only where their quality flag is 0 (over land and ice SSHA reaches kilometres; until #3 lets the
 # user choose how strict). Sigma0 is in dB; SWH and wind are only at 2 km.
+# SSHA with the crossover correction, on water (swot_cloud: open ocean or continental water, no bad_* bit; NaN
+# elsewhere): one array instead of ssha_karin_2, height_cor_xover, their flag and the surface classification
+# (its rivers and lakes are metres above the mean sea surface: the ocean only by default, they on request)
+SURFACE = "ancillary_surface_classification_flag"  # Expert: one per pass (pass_number), Unsmoothed: per passage
 SSHA_L2 = {
-    "ssha_karin_2": Variable("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2", "height_cor_xover"], "ssha_karin_2_qual"),
-    "ssha_karin_2_raw": Variable("SSHA (KaRIn 2), no correction", ["ssha_karin_2"], "ssha_karin_2_qual")}
+    "ssha_karin_2_xover": Variable("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2_xover"], surface=(0,),
+                                   twin="ssha_karin_2_xover_water"),
+    "ssha_karin_2_xover_water": Variable("SSHA (KaRIn 2) + crossover correction, rivers and lakes too",
+                                         ["ssha_karin_2_xover"], twin="ssha_karin_2_xover"),
+    "ssha_karin_2": Variable("SSHA (KaRIn 2), no correction", ["ssha_karin_2"], "ssha_karin_2_qual")}
 SIGMA0 = Variable("Sigma0 (KaRIn 2)", ["sig0_karin_2"], "sig0_karin_2_qual", db=True, cmap="cmo.gray", kind="level",
                   units="dB")
 # the product the store holds (SWOT_PRODUCT): its name, variables and opening view
@@ -102,6 +116,18 @@ CONFIGURED = "SWOT_STORE" in os.environ
 PRODUCT = PRODUCTS[os.environ.get("SWOT_PRODUCT", "l3" if CONFIGURED else "expert")]
 MAX_PIXELS = float(os.environ.get("SWOT_MAX_PIXELS", PRODUCT.get("max_pixels", 60e6)))
 VARIABLES = PRODUCT["variables"]
+
+
+def color_limits(v):
+    """The colors' limits for values: their quantiles (0 to 100 % by 0.1) and a robust range, the median ± 2 x 1.4826
+    x MAD (two standard deviations for normal values): in coastal scenes rivers and lakes push the 2-98 % percentiles
+    to metres and the ocean fades, not this one."""
+    if not len(v):
+        return [], []
+    median = np.median(v)
+    spread = 2 * 1.4826 * np.median(np.abs(v - median))
+    return (np.quantile(v, np.linspace(0, 1, 1001)).round(4).tolist(),
+            [round(float(median - spread), 4), round(float(median + spread), 4)])
 
 
 def masked(values, flag):
@@ -336,11 +362,10 @@ class Loaded:
         # colors: quantiles of each mode from the sample (sorting all would take most of a load)
         ok = np.isfinite(sample)
         passage = idx[ok] // max(values[0].size if len(values) else 1, 1)
-        self.quantiles = {}
+        self.quantiles, self.robust = {}, {}
         for mode, shift in self.shift.items():
             v = sample[ok] - shift[passage]
-            v = v[np.isfinite(v)]
-            self.quantiles[mode] = np.quantile(v, np.linspace(0, 1, 1001)).round(4).tolist() if len(v) else []
+            self.quantiles[mode], self.robust[mode] = color_limits(v[np.isfinite(v)])
 
     def value(self, mode, i, lines=slice(None)):
         """A passage's values (on some of its lines), minus what the mode subtracts."""
@@ -486,11 +511,13 @@ class Overview:
         self.sum = {mode: np.zeros((size, size), "float32") for mode in ("none", "passage")}
         self.count = np.zeros((size, size), "float32")
         self._shift = {mode: np.zeros(len(self.times), "float32") for mode in ("none", "box", "passage")}
-        self.samples, self.quantiles, self.pixels, self.seconds = [], {}, 0, 0.0
+        self.samples, self.quantiles, self.robust, self.pixels, self.seconds = [], {}, {}, 0, 0.0
         self.done, self.started = 0, None  # passages read so far, and when the build started (progress)
         self.error = None  # why the build failed, if it did (then it is "ready", with nothing to show)
         box = "_".join(f"{view[k]:g}" for k in ("west", "east", "south", "north"))
-        self.file = (os.path.join(CACHE_DIR, f"overview-{COMMIT.id}-{box}-{view['start']}-{view['days']}-{variable}.npz")
+        # with what the variable is made of: a change of it (arrays, flag, surfaces, dB) is another overview
+        spec = hashlib.sha1(repr((self.var.arrays, self.var.surface, self.var.db)).encode()).hexdigest()[:6]
+        self.file = (os.path.join(CACHE_DIR, f"overview-{COMMIT.id}-{box}-{view['start']}-{view['days']}-{variable}-{spec}.npz")
                      if CACHE_DIR else None)
 
     @property
@@ -534,18 +561,17 @@ class Overview:
         self._shift["box"][:] = np.median(v) if len(v) else np.nan
         for mode, shift in self._shift.items():
             w = v - shift[at]
-            w = w[np.isfinite(w)]
-            self.quantiles[mode] = np.quantile(w, np.linspace(0, 1, 1001)).round(4).tolist() if len(w) else []
+            self.quantiles[mode], self.robust[mode] = color_limits(w[np.isfinite(w)])
         self.samples = []
         self.ready.set()
         if self.file:  # kept for a restart (those of older commits go); if it cannot be, it is only not kept
             try:
-                for old in Path(CACHE_DIR).glob(f"overview-*-{self.variable}.npz"):
+                for old in Path(CACHE_DIR).glob(f"overview-*-{self.variable}-*.npz"):
                     if not old.name.startswith(f"overview-{COMMIT.id}-"):
                         old.unlink()
                 np.savez(self.file, none=self.sum["none"], passage=self.sum["passage"], count=self.count,
                          shift=self._shift["passage"], box=self._shift["box"][:1], pixels=self.pixels,
-                         quantiles=np.array([json.dumps(self.quantiles)]))
+                         quantiles=np.array([json.dumps(self.quantiles)]), robust=np.array([json.dumps(self.robust)]))
             except OSError as e:
                 print(f"overview not kept on disk: {e}", flush=True)
 
@@ -559,6 +585,7 @@ class Overview:
             self._shift["box"][:] = f["box"][0]
             self.pixels = int(f["pixels"])  # read now from disk, not from the cloud: no seconds to show
             self.quantiles = json.loads(str(f["quantiles"][0]))
+            self.robust = json.loads(str(f["robust"][0])) if "robust" in f else {}
         self.ready.set()
         return True
 
@@ -650,14 +677,21 @@ def read(sub, names):
     n = sub.sizes["time"]
     arrays = names + ["latitude", "longitude", "line_time"]
     with ThreadPoolExecutor(64) as pool:
-        parts = list(pool.map(lambda job: sub[job[0]].isel(time=job[1]).values, [(a, k) for a in arrays for k in range(n)]))
+        parts = list(pool.map(lambda job: of_passage(sub, job[0], job[1]), [(a, k) for a in arrays for k in range(n)]))
     out = {a: np.stack(parts[j * n:(j + 1) * n]) if n else sub[a].values for j, a in enumerate(arrays)}
-    data = sub[names]
+    timed = [a for a in names if "time" in sub[a].dims]  # the others are one per pass (Expert's surface classes)
+    data = sub[timed]
     data = data.drop_vars([c for c in data.coords if c not in data.indexes and c not in ("latitude", "longitude", "cycle", "pass_id")])
-    dims = data[names[0]].dims
-    data = data.copy(data={a: out[a] for a in names}).assign_coords(latitude=(dims, out["latitude"]),
+    dims = data[timed[0]].dims
+    data = data.copy(data={a: out[a] for a in timed}).assign_coords(latitude=(dims, out["latitude"]),
                                                                      longitude=(dims, out["longitude"]))
-    return data.load(), out["line_time"]
+    return data.assign({a: (dims, out[a]) for a in names if a not in timed}).load(), out["line_time"]
+
+
+def of_passage(sub, name, k):
+    """An array of a subset's passage `k`: its own, or its pass's for arrays kept once per pass."""
+    a = sub[name]
+    return (a.isel(time=k) if "time" in a.dims else a.sel(pass_number=int(sub.pass_id.values[k]))).values
 
 
 def load(west, east, south, north, start, days, variable):
@@ -849,7 +883,8 @@ def info():
                 passages=ds.sizes["time"], passes=ds.sizes["pass_number"], max_days=MAX_DAYS, default=DEFAULT,
                 variables={k: v.label for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
                 # each variable's kind, units and default colormap; the colormaps on offer as 16 stops each
-                looks={k: dict(kind=v.kind, units=v.units, cmap=v.cmap, fine=has_detail(k)) for k, v in VARIABLES.items()},
+                looks={k: dict(kind=v.kind, units=v.units, cmap=v.cmap, fine=has_detail(k), twin=v.twin, water=not v.surface)
+                       for k, v in VARIABLES.items()},
                 colormaps={name: ["#%02x%02x%02x" % tuple(int(255 * c) for c in cm(x)[:3]) for x in np.linspace(0, 1, 16)]
                            for name, cm in COLORMAPS.items()}, diverging=list(COLORMAPS)[:DIVERGING],
                 netcdf=NETCDF, product=PRODUCT["label"], credit=PRODUCT["credit"],
@@ -881,7 +916,7 @@ def load_view(west: float, east: float, south: float, north: float, start: str, 
         seconds = data.seconds
     end = pd.Timestamp(start) + pd.Timedelta(days=days - 1)
     return dict(passages=data.sub.sizes["time"], seconds=round(seconds, 2),
-                pixels=data.pixels, quantiles=data.quantiles,
+                pixels=data.pixels, quantiles=data.quantiles, robust=data.robust,
                 code=swot_view.snippet(west, east, south, north, start, str(end.date()), data.names[0]))
 
 
@@ -924,7 +959,10 @@ def block(src, product, i, c, variable):
     and positions, as float32, and when each line was."""
     n = src.ds.line_time.encoding["chunks"][1]
     var = product["variables"][variable]
-    sub = src.ds[var.arrays + ["latitude", "longitude", "line_time"]].isel(time=i, along=slice(c * n, (c + 1) * n)).load()
+    sub = src.ds[var.arrays + ["latitude", "longitude", "line_time"]].isel(time=i, along=slice(c * n, (c + 1) * n))
+    if "pass_number" in sub.dims:  # arrays kept once per pass: this passage's pass
+        sub = sub.sel(pass_number=int(src.index.pass_id.values[i]))
+    sub = sub.load()
     values = var.values(lambda k: sub[k].values)
     return (values.astype("float32"), sub.latitude.values.astype("float32"),
             sub.longitude.values.astype("float32"), sub.line_time.values)
@@ -1159,7 +1197,9 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
     cols = [np.tile(col, len(times)) for _, times, _, _, col, _ in found]
     if found:
         where = {dim: xr.DataArray(np.concatenate(v), dims="pixel") for dim, v in (("time", at), ("along", rows), ("cross", cols))}
-        values = var.values(lambda n: ds[n].isel(where).values)
+        per_pass = {**where, "pass_number": xr.DataArray(np.searchsorted(ds.pass_number.values, index.pass_id.values[where["time"]]), dims="pixel")}
+        per_pass.pop("time")
+        values = var.values(lambda n: ds[n].isel(where if "time" in ds[n].dims else per_pass).values)
     out, k0 = [], 0
     for p, times, hit, row, col, offset in found:
         v = values[k0:k0 + len(times) * len(hit)].reshape(len(times), len(hit))  # (passages, points hit)
@@ -1213,7 +1253,7 @@ def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool 
             raise HTTPException(404, "no 250 m product for this variable")
         return detail_series(lon, lat, variable, radius)
     var = VARIABLES[variable]
-    s = sum(swot_view.point_series(ds, lon, lat, n, radius, mask=var.flag, db=var.db)[n] for n in var.names)
+    s = sum(swot_view.point_series(ds, lon, lat, n, radius, mask=var.flag, db=var.db, surface=var.surface)[n] for n in var.names)
     return dict(time=(s.time.to_index().astype("int64") // 10**6).tolist(), value=s.values.round(4).tolist())
 
 
