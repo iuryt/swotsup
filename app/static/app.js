@@ -138,18 +138,10 @@ function watchDetail() {
   let asked = new Set(), came = new Set();
   const update = () => {
     for (const k of asked) if (!map.getSource(k.split("/")[0])) { asked.delete(k); came.delete(k); }  // layers swapped out
-    // the base stays under the 250 m until all its tiles in view have come (a new 250 m layer: once it is loaded), then
-    // fades out (where it covers the dates)
-    const fine = showTiles.now?.detail, base = showTiles.now?.swot;
-    const pending = came.size < asked.size || (fine && map.getZoom() >= info.detail.zoom - 1 && !map.isSourceLoaded(fine.id));
-    if (pending !== state.detailPending && base && map.getLayer(base.id))
-      map.setPaintProperty(base.id, "raster-opacity", pending ? 1 : state.baseFade ?? 1);
-    state.detailPending = pending;
-    if (!pending) { asked = new Set(); came = new Set(); showProgress("detail", null); return; }
+    if (came.size >= asked.size) { asked = new Set(); came = new Set(); showProgress("detail", null); return; }
     showProgress("detail", "Reading the 250 m here from the cloud", came.size / asked.size, `${came.size} of ${asked.size} tiles`);
   };
   const id = (e) => e.sourceId?.startsWith("detail-") && e.tile ? `${e.sourceId}/${e.tile.tileID.key}` : null;
-  watchDetail.update = update;  // a new 250 m layer counts as pending until it is loaded
   map.on("dataloading", (e) => { const k = id(e); if (k != null) { asked.add(k); update(); } });
   for (const done of ["sourcedata", "dataabort", "error"]) {
     map.on(done, (e) => { const k = id(e); if (k != null && asked.has(k) && (done !== "sourcedata" || e.tile.state === "loaded"
@@ -244,15 +236,10 @@ function setColors() {
   const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}&cmap=${cmapOf()}`;
   const raster = { "raster-fade-duration": 0, "raster-resampling": "nearest" };
   if (!info.detail) return showTiles("swot", url, { paint: raster });
-  // the finer product over it, from a zoom on: it fades in over half a zoom level; where it covers the dates, the
-  // base then fades out (its 2 km would show at the 250 m swath's edges), else the base stays (the only data). The
-  // base's tiles are whole at every zoom: zooming out, they are there at once
-  const z = info.detail.zoom, day = (t) => Math.floor(t / DAY) * DAY;
-  const covered = info.looks[state.variable].fine && state.start >= day(Date.parse(info.detail.first + "Z"))
-    && state.start + state.days * DAY <= day(Date.parse(info.detail.last + "Z")) + DAY;
-  state.baseFade = covered ? ["interpolate", ["linear"], ["zoom"], z - 0.4, 1, z, 0] : 1;
-  showTiles("swot", url, { paint: { ...raster, "raster-opacity": state.detailPending ? 1 : state.baseFade,
-                                    "raster-opacity-transition": { duration: 300 } } });
+  // the finer product over it, from a zoom on: it fades in over half a zoom level, over the base, which stays: under
+  // it the server draws the base inside its swath (no 2 km at its edges), so where it has no tile yet the base shows
+  const z = info.detail.zoom;
+  showTiles("swot", url, { paint: raster });
   showTiles("detail", url.replace("/api/tile/", "/api/detail/"), { minzoom: z - 1, paint: { ...raster,
     "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z - 0.4, 1] } }, { minzoom: z - 1 });
 }
@@ -261,7 +248,7 @@ function setColors() {
 // tiles: the map never goes blank in between (setting a source's tiles drops every tile on screen first)
 function showTiles(kind, url, layer, source = {}) {
   const now = (showTiles.now ??= {}), cur = now[kind];
-  if (cur?.url === url) {  // the same tiles: only how they show (the base's fading follows the dates)
+  if (cur?.url === url) {  // the same tiles: only how they show
     for (const [k, v] of Object.entries(layer.paint)) map.setPaintProperty(cur.id, k, v);
     return;
   }
@@ -270,7 +257,6 @@ function showTiles(kind, url, layer, source = {}) {
   map.addSource(id, { type: "raster", tiles: [url], tileSize: 256, ...source });
   map.addLayer({ type: "raster", ...layer, id, source: id }, before);
   now[kind] = { id, url };
-  if (kind === "detail") watchDetail.update?.();
   if (!cur) return;
   const drop = () => {
     map.off("sourcedata", loaded);
