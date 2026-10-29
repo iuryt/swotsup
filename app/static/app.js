@@ -51,8 +51,11 @@ function toast(text) {
 // --- up close on the whole globe, the view read is the area in view (with a margin), followed as the map moves:
 // the whole globe's 21 days take a minute, the area on screen seconds; farther out than AREA_ZOOM, the globe
 const AREA_ZOOM = 4;
+// the whole globe on dates the daily rasters have: one view at every zoom (no area in view, #98)
+const fromRasters = () => !!(info.rasters && info.looks[state.variable].rasters && isGlobe(state.box)
+  && state.start >= Date.parse(info.rasters.first) && state.start + (state.days - 1) * DAY <= Date.parse(info.rasters.last));
 function areaWanted() {
-  if (!map || !isGlobe(state.box) || map.getZoom() < AREA_ZOOM) return state.box;
+  if (!map || !isGlobe(state.box) || map.getZoom() < AREA_ZOOM || fromRasters()) return state.box;
   const b = map.getBounds(), [w, e, s, n] = [b.getWest(), b.getEast(), b.getSouth(), b.getNorth()];
   const dx = (e - w) * 0.5, dy = (n - s) * 0.5;  // half the view more on each side: small moves read nothing
   let area = { west: Math.floor(w - dx), east: Math.ceil(e + dx), south: Math.max(Math.floor(s - dy), -90), north: Math.min(Math.ceil(n + dy), 90) };
@@ -247,7 +250,8 @@ function setColors() {
   linkSoon();
   if (!state.data) return;
   if (transect && transect.key !== lineKey()) fillLine();
-  const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}&cmap=${cmapOf()}`;
+  // swot://: the page colors the tiles (`colorTile`): new colors read no tile again
+  const url = `swot://api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}&cmap=${cmapOf()}`;
   const raster = { "raster-fade-duration": 0, "raster-resampling": "nearest" };
   const credit = { attribution: info.looks[state.variable].dtu ? "MSS: DTU25 (DTU Space, CC BY 4.0)" : undefined };
   if (!info.detail) return showTiles("swot", url, { paint: raster }, credit);
@@ -259,6 +263,89 @@ function setColors() {
     "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z - 0.4, 1] } }, { minzoom: z - 1 });
 }
 
+// --- ?debug=1 (a test server): the map's events go to the server (/api/debug), to see what a browser drew and when
+const DEBUG = new URLSearchParams(location.search).get("debug") === "1", debugLog = [];
+const dbg = (e) => DEBUG && debugLog.push({ t: Math.round(performance.now()), ...e });
+function setupDebug() {
+  const ours = (id) => id && /^(swot|detail)-/.test(id);
+  map.on("dataloading", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "ask", s: e.sourceId, k: e.tile.tileID.key,
+                                                                   z: e.tile.tileID.canonical.z }));
+  map.on("sourcedata", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "tile", s: e.sourceId, k: e.tile.tileID.key, st: e.tile.state }));
+  map.on("error", (e) => dbg({ ev: "error", s: e.sourceId, msg: String(e.error?.message ?? e.error) }));
+  map.on("moveend", () => dbg({ ev: "moveend", z: +map.getZoom().toFixed(2), c: map.getCenter().toArray().map((v) => +v.toFixed(3)) }));
+  setInterval(() => {
+    dbg({ ev: "layers", ids: map.getStyle().layers.map((l) => l.id).filter(ours), z: +map.getZoom().toFixed(2) });
+    if (debugLog.length) fetch("/api/debug", { method: "POST", body: JSON.stringify(debugLog.splice(0)) }).catch(() => {});
+  }, 2000);
+}
+
+// --- tiles colored here: the server sends each pixel's value (24 bits in red, green and blue, VALUE_SCALE units; the
+// alpha says where there is data), fetched once (the browser keeps it), and the colormap and limits are applied here
+const VALUE_SCALE = 1e4, LUTS = {};
+function tileColors(name) {  // 256 colors interpolated from the colormap's 16 stops
+  if (LUTS[name]) return LUTS[name];
+  const stops = info.colormaps[name].map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)));
+  const out = new Uint8Array(256 * 3);
+  for (let k = 0; k < 256; k++) {
+    const f = k / 255 * (stops.length - 1), i = Math.min(Math.floor(f), stops.length - 2), t = f - i;
+    for (let c = 0; c < 3; c++) out[k * 3 + c] = Math.round(stops[i][c] * (1 - t) + stops[i + 1][c] * t);
+  }
+  return (LUTS[name] = out);
+}
+// the value tiles fetched, kept decoded (and those on their way, shared): new colors repaint from memory, and a tile is
+// never asked twice (VALUES_KEPT: ~65 MB). A tile on its way is cancelled when no layer waits for it any more (the
+// map moved on): a browser asks a server only a few at once, and old ones would hold the new ones back
+const VALUES = new Map(), VALUES_KEPT = 250;
+async function fetchValues(url, signal) {
+  const res = await fetch(url, { signal });
+  if (!res.ok) throw new Error(`${res.status} ${new URL(url).pathname}`);
+  const bmp = await createImageBitmap(await res.blob(), { premultiplyAlpha: "none", colorSpaceConversion: "none" });
+  const ctx = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0);
+  return ctx.getImageData(0, 0, bmp.width, bmp.height);
+}
+async function colorTile(params, abort) {
+  const u = new URL("/" + params.url.slice("swot://".length), location.href), q = u.searchParams;
+  const [vmin, vmax, cmap] = [Number(q.get("vmin")), Number(q.get("vmax")), q.get("cmap")];
+  for (const k of ["vmin", "vmax", "cmap"]) q.delete(k);
+  q.set("values", "1");
+  const key = u.toString();
+  let got = VALUES.get(key);
+  if (got) VALUES.delete(key);  // most recent last
+  else {
+    const ctl = new AbortController();
+    got = { ctl, waiting: 0, done: false };
+    got.values = fetchValues(key, ctl.signal).then((v) => { got.done = true; return v; })
+      .catch((e) => { if (VALUES.get(key) === got) VALUES.delete(key); throw e; });
+  }
+  VALUES.set(key, got);
+  for (const [old, o] of VALUES) { if (VALUES.size <= VALUES_KEPT) break; if (o.done) VALUES.delete(old); }
+  got.waiting++;
+  let left = false;
+  const leave = () => {
+    if (left) return;
+    left = true;
+    if (--got.waiting === 0 && !got.done) { got.ctl.abort(); if (VALUES.get(key) === got) VALUES.delete(key); }
+  };
+  abort?.signal.addEventListener("abort", leave, { once: true });
+  let values;
+  try { values = await got.values; } finally { abort?.signal.removeEventListener("abort", leave); if (!got.done) leave(); else if (!left) { left = true; got.waiting--; } }
+  const img = new ImageData(new Uint8ClampedArray(values.data), values.width, values.height);
+  const canvas = new OffscreenCanvas(img.width, img.height), ctx = canvas.getContext("2d");
+  const p = img.data, colors = tileColors(cmap), scale = 255 / (vmax - vmin);
+  for (let i = 0; i < p.length; i += 4) {
+    if (!p[i + 3]) continue;
+    const v = (((p[i] << 16) | (p[i + 1] << 8) | p[i + 2]) - 8388608) / VALUE_SCALE;
+    const k = Math.max(0, Math.min(255, Math.round((v - vmin) * scale))) * 3;
+    p[i] = colors[k]; p[i + 1] = colors[k + 1]; p[i + 2] = colors[k + 2];
+  }
+  ctx.putImageData(img, 0, 0);
+  return { data: await (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer() };
+}
+maplibregl.addProtocol("swot", colorTile);
+// more images at once than MapLibre's 16: the basemap's (another server, sometimes slow) would hold the data's back
+maplibregl.setMaxParallelImageRequests(64);
+
 // new tiles (other colors, another view) come as a new layer over the old one, which goes once the new one has its
 // tiles: the map never goes blank in between (setting a source's tiles drops every tile on screen first)
 function showTiles(kind, url, layer, source = {}) {
@@ -268,19 +355,32 @@ function showTiles(kind, url, layer, source = {}) {
     return;
   }
   const id = `${kind}-${(showTiles.n = (showTiles.n ?? 0) + 1)}`, order = map.getStyle().layers.map((l) => l.id);
+  dbg({ ev: "layer+", id, replaces: cur?.id, url: url.split("?")[1]?.replace(/west=.*?&variable=/, "") });
   const before = cur ? order[order.indexOf(cur.id) + 1] : kind === "swot" ? order.find((l) => l.startsWith("detail-")) ?? "box" : "box";
   map.addSource(id, { type: "raster", tiles: [url], tileSize: 256, ...source });
   map.addLayer({ type: "raster", ...layer, id, source: id }, before);
   now[kind] = { id, url };
   if (!cur) return;
-  const drop = () => {
-    map.off("sourcedata", loaded);
-    clearTimeout(timer);
-    if (map.getLayer(cur.id)) map.removeLayer(cur.id);
-    if (map.getSource(cur.id)) map.removeSource(cur.id);
+  const remove = (old) => {
+    dbg({ ev: "layer-", id: old });
+    if (map.getLayer(old)) map.removeLayer(old);
+    if (map.getSource(old)) map.removeSource(old);
   };
-  const loaded = (e) => { if (e.sourceId === id && map.isSourceLoaded(id)) drop(); };
-  const timer = setTimeout(drop, 15000);  // at most that long under the new one
+  // the old layer stays until the new one has its tiles, however long; a newer one meanwhile replaces the one still
+  // loading (the old stays under it): two at most
+  const waiting = (showTiles.waiting ??= {})[kind];
+  if (waiting) {
+    remove(cur.id);
+    waiting.next = id;
+    return;
+  }
+  const entry = (showTiles.waiting[kind] = { old: cur.id, next: id });
+  const loaded = (e) => {
+    if (e.sourceId !== entry.next || !map.isSourceLoaded(entry.next)) return;
+    map.off("sourcedata", loaded);
+    delete showTiles.waiting[kind];
+    remove(entry.old);
+  };
   map.on("sourcedata", loaded);
 }
 
@@ -1484,7 +1584,7 @@ async function main() {
     const lat = Math.max(-80, Math.min(80, y / Y * 90)), lon = x / (X * Math.cos(lat * Math.PI / 180 * 0.8)) * 180;
     map.flyTo({ center: [Math.max(-180, Math.min(180, lon)), lat] });
   };
-  map.on("load", () => {
+  map.once("style.load", () => {  // not "load": that waits for the basemap's tiles, which can take seconds
     setProjection(globe);
     $("#projection").onclick = () => setProjection(!document.body.classList.contains("globe"));
     map.addSource("box", { type: "geojson", data: { type: "Feature", geometry: { type: "Point", coordinates: [0, 0] } } });
@@ -1499,6 +1599,7 @@ async function main() {
     setupCoords();
     watchDetail();
     setupCmap();
+    if (DEBUG) setupDebug();
     state.afterLoad = () => { track("open", { from_link: !!link.view }); if (link.point || link.line) restoreLink(link); };
     setBox({ west: d.west, east: d.east, south: d.south, north: d.north });
     drawOverview();

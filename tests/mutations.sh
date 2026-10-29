@@ -108,3 +108,5 @@ mutate app/swot_view.py 's/        b = sub.cross.values\[col\] - 0.25 \* shift\[
 mutate app/swot_view.py 's/    side, k = (cross > 0).astype(int), np.arange(len(col))/    side, k = (cross < 0).astype(int), np.arange(len(col))/' "the line code's calibration of the other side"
 mutate app/swot_view.py 's/^ssha = ssha - xr.where(sub.cross > 0, east, west)/ssha = ssha + 0 * xr.where(sub.cross > 0, east, west)/' "the region code uncalibrated"
 mutate app/server.py 's/    dims = sub\["latitude"\].dims  # (time, along, cross)/    dims = data[timed[0]].dims  # (time, along, cross)/' "a view's positions with the first array's dims"
+mutate app/server.py 's/    return png(tiles.mean_on("shifted", xr_, yr_, 256, 256), vmin, vmax, colormap(cmap, variable), encode)/    return png(tiles.mean_on("shifted", xr_, yr_, 256, 256), vmin, vmax, colormap(cmap, variable))/' "the detail's value tiles colored"
+mutate app/server.py 's/        v = np.clip(np.round(np.nan_to_num(mean) \* VALUE_SCALE) + 2\*\*23, 0, 2\*\*24 - 1).astype(np.uint32)/        v = np.clip(np.round(np.nan_to_num(mean) * VALUE_SCALE), 0, 2**24 - 1).astype(np.uint32)/' "value tiles without their offset"

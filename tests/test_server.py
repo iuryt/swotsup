@@ -865,3 +865,24 @@ def test_read_arrays_in_any_order(dtu_store_path, shifted_fine_store_path, monke
     sub = server.ds.isel(time=[0, 1], along=slice(400, 450))
     data, _ = server.read(sub, sorted(server.VARIABLES["cal"].arrays))
     assert data.latitude.dims == ("time", "along", "cross") and data.cal_bias.dims == ("time", "along", "side")
+
+
+def test_value_tiles_carry_the_means(store_path, monkeypatch):
+    """A tile asked with values=1 (the page colors it) holds each pixel's mean in 24 bits (VALUE_SCALE units), with
+    data where the colored tile has it, and colored with the same colormap and limits it is that tile: for the map's
+    tiles and the detail's."""
+    server, c = detail_server(store_path[0], monkeypatch)
+    view = PASS_7 | dict(mode="box", vmin=-100, vmax=100, cmap="RdBu_r")  # the fake values minus the box's median
+    c.get("/api/load", params=PASS_7)
+    z, lon, lat = 6, 30.0, 5.0
+    fx, fy = (lon + 180) / 360 * 2**z, (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+    for kind in ("tile", "detail"):
+        get = lambda **p: np.asarray(Image.open(io.BytesIO(c.get(  # noqa: E731
+            f"/api/{kind}/{z}/{int(fx)}/{int(fy)}.png", params=view | p).content)).convert("RGBA")).astype(int)
+        colored, coded = get(), get(values=1)
+        on = coded[..., 3] == 255
+        assert on.sum() > 100 and (on == (colored[..., 3] == 255)).all()
+        v = (((coded[..., 0] << 16) | (coded[..., 1] << 8) | coded[..., 2]) - 2**23) / server.VALUE_SCALE
+        assert np.abs(v[on]).max() < 150  # not clipped
+        want = (server.COLORMAPS["RdBu_r"](np.clip((v[on] + 100) / 200, 0, 1)) * 255).astype(int)[:, :3]
+        assert np.abs(want - colored[on][:, :3]).max() <= 1
