@@ -892,7 +892,9 @@ def info():
                 public_url=os.environ.get("SWOT_PUBLIC_URL"),  # what a copied link starts with (the EC2's wake link)
                 telemetry=bool(TELEMETRY),
                 detail=None if detail is None else dict(zoom=DETAIL_ZOOM, product=DETAIL_PRODUCT["label"],
-                                                        commit=detail.commit.id[:8]),
+                                                        commit=detail.commit.id[:8],  # and the dates it covers so far
+                                                        first=str(pd.Timestamp(detail.index.time.values.min())),
+                                                        last=str(pd.Timestamp(detail.index.time.values.max()))),
                 commit=dict(id=COMMIT.id[:8], time=str(pd.Timestamp(COMMIT.written_at).tz_convert(None)), message=COMMIT.message))
 
 
