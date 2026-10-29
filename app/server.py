@@ -79,7 +79,8 @@ SSHA_L2 = {
                                    twin="ssha_karin_2_xover_water"),
     "ssha_karin_2_xover_water": Variable("SSHA (KaRIn 2) + crossover correction, rivers and lakes too",
                                          ["ssha_karin_2_xover"], twin="ssha_karin_2_xover"),
-    "ssha_karin_2": Variable("SSHA (KaRIn 2), no correction", ["ssha_karin_2"], "ssha_karin_2_qual")}
+    # its flag alone keeps nearly all the land in Unsmoothed: the open ocean only, as the default
+    "ssha_karin_2": Variable("SSHA (KaRIn 2), no correction", ["ssha_karin_2"], "ssha_karin_2_qual", surface=(0,))}
 SIGMA0 = Variable("Sigma0 (KaRIn 2)", ["sig0_karin_2"], "sig0_karin_2_qual", db=True, cmap="cmo.gray", kind="level",
                   units="dB")
 # the product the store holds (SWOT_PRODUCT): its name, variables and opening view
