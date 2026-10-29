@@ -103,6 +103,9 @@ def distance(lat1, lon1, lat2, lon2):
     return 2 * EARTH_RADIUS * np.arcsin(np.sqrt(a))
 
 
+CAL = ("cal_bias", "cal_slope")
+
+
 def per_passage(sub, names):
     """A subset's arrays `names`, those kept once per pass (pass_number, e.g. Expert's mss_cor_dtu25) taken at each
     passage's pass: in memory."""
@@ -111,9 +114,18 @@ def per_passage(sub, names):
             else sub[n].load() for n in names}
 
 
-def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None, mask=None, db=False, surface=None):
-    """Mean of `var` (or of the sum of a list of arrays: "value") over the pixels within `radius` km of (lon, lat),
-    one value per passage (with `mask`, a quality flag: only where it is 0; `db`: of its values in dB, as sigma0 is shown; `surface`: only on these classes
+def calibrated(sub, value):
+    """`value` minus the experimental calibration (swot_cloud v0.1: cal_bias and cal_slope, each line's per side),
+    bias + slope x cross / 60 on each pixel's side of nadir."""
+    east = sub.cal_bias.isel(side=1) + sub.cal_slope.isel(side=1) * sub.cross / 60
+    west = sub.cal_bias.isel(side=0) + sub.cal_slope.isel(side=0) * sub.cross / 60
+    return value - xr.where(sub.cross > 0, east, west)
+
+
+def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None, mask=None, db=False, surface=None,
+                 calibrate=False):
+    """Mean of `var` (or of the sum of a list of arrays: "value"; `calibrate`: minus the calibration) over the pixels
+    within `radius` km of (lon, lat), one value per passage (with `mask`, a quality flag: only where it is 0; `db`: of its values in dB, as sigma0 is shown; `surface`: only on these classes
     of ancillary_surface_classification_flag, e.g. (0,) the open ocean). Passages with fewer than `min_pixels` valid pixels there (nadir gap, swath
     edge) are dropped: by default a quarter of what the circle holds on the 2 km grid, at least 1 (5 km: 5)."""
     if min_pixels is None:
@@ -127,8 +139,11 @@ def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None,
     sub = subset(ds, lon - dlon, lon + dlon, lat - dlat, lat + dlat)
     arrays = per_passage(sub, names + ([surf] if surface else []))  # surface classes: one per pass in Expert
     classes = arrays.pop(surf, None)
-    sub = sub[["latitude", "longitude"] + ([mask] if mask else [])].load()
-    near = sum(arrays.values()).where(distance(sub.latitude, sub.longitude, lat, lon) <= radius)
+    sub = sub[["latitude", "longitude"] + ([mask] if mask else []) + (list(CAL) if calibrate else [])].load()
+    value = sum(arrays.values())
+    if calibrate:
+        value = calibrated(sub, value)
+    near = value.where(distance(sub.latitude, sub.longitude, lat, lon) <= radius)
     if mask:
         near = near.where(sub[mask] == 0)
     if surface:
@@ -162,10 +177,11 @@ ds = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, chunk
 '''
 
 
-def snippet(west, east, south, north, start, end, var="ssha_filtered", target=STORE, dtu=False):
+def snippet(west, east, south, north, start, end, var="ssha_filtered", target=STORE, dtu=False, cal=False):
     """The code a user runs to get the same subset, with icechunk + xarray only. The longitude filter and
     the latitude cut are left out when they keep everything (west == east, e.g. -180 to 180, is all longitudes).
-    `dtu`: plus the store's correction to the DTU25 mean sea surface, each passage's pass's."""
+    `dtu`: plus the store's correction to the DTU25 mean sea surface, each passage's pass's; `cal`: minus its
+    calibration."""
     # the generated code is text at column 0
     lats = "" if south <= -90 and north >= 90 else f", lat=slice({south:g}, {north:g})"
     lons = "" if (east - west) % 360 == 0 else f'''west, east = {west:g}, {east:g}
@@ -173,12 +189,18 @@ first = (sub.lon_min - west) % 360  # how far east of `west` each line starts
 hit = ((first <= (east - west) % 360) | (first + sub.lon_max - sub.lon_min >= 360)).any("along")
 sub = sub.isel(time=sub.pass_id.isin(sub.pass_number[hit]).values)
 '''
-    corrected = f"""# the DTU25 mean sea surface instead of the L2's (CNES_CLS22): the correction, kept once per pass
-ssha = sub.{var} + ds.mss_cor_dtu25.sel(pass_number=np.unique(sub.pass_id), along=sub.along.values).load().sel(pass_number=sub.pass_id)
-""" if dtu else ""
+    corrected = (f"ssha = sub.{var}\n" if dtu or cal else "") + ("""# the DTU25 mean sea surface instead of the L2's (CNES_CLS22): the correction, kept once per pass
+ssha = ssha + ds.mss_cor_dtu25.sel(pass_number=np.unique(sub.pass_id), along=sub.along.values).load().sel(pass_number=sub.pass_id)
+""" if dtu else "") + ("""# the experimental calibration (swot_cloud v0.1, may change): each line's bias and cross-track slope, on each
+# pixel's side of nadir
+east = sub.cal_bias.isel(side=1) + sub.cal_slope.isel(side=1) * sub.cross / 60
+west = sub.cal_bias.isel(side=0) + sub.cal_slope.isel(side=0) * sub.cross / 60
+ssha = ssha - xr.where(sub.cross > 0, east, west)
+""" if cal else "")
+    arrays = ", ".join(f'"{n}"' for n in [var] + (["cal_bias", "cal_slope"] if cal else []))
     return f'''{(DTU25_CREDIT if dtu else "") + opening(target, "import numpy as np\n" if dtu else "")}
 sub = ds.sel(time=slice("{start}", "{end}"){lats})
-{lons}sub = sub[["{var}"]].load()  # dims (time, along, cross); latitude/longitude come along
+{lons}sub = sub[[{arrays}]].load()  # dims (time, along, cross); latitude/longitude come along
 {corrected}'''
 
 
@@ -195,23 +217,55 @@ def dtu25_250m(sub):
     pixels' along and cross (both stores count them in km from the same reference track), past its edges too."""
     near = ds.mss_cor_dtu25.sel(along=slice(float(sub.along[0]) - 4, float(sub.along[-1]) + 4)).drop_vars("lat")
     return xr.concat([near.sel(pass_number=p).interp(along=sub.along.values, cross=sub.cross.values,
-                                                     kwargs={"fill_value": None}) for p in sub.pass_id.values], "time")
+                                                     kwargs={"fill_value": None}).reset_coords(drop=True)
+                      for p in sub.pass_id.values], "time")
+'''
+CAL_HERE = '''
+
+def calibration(sub):
+    """The experimental calibration (swot_cloud v0.1, may change), subtracted: each line's bias and cross-track slope,
+    on each pixel's side of nadir."""
+    cal = sub[["cal_bias", "cal_slope"]].load()
+    east = cal.cal_bias.isel(side=1) + cal.cal_slope.isel(side=1) * sub.cross / 60
+    west = cal.cal_bias.isel(side=0) + cal.cal_slope.isel(side=0) * sub.cross / 60
+    return -xr.where(sub.cross > 0, east, west)
+'''
+CAL_FROM_EXPERT = '''
+
+def calibration_250m(sub):
+    """The Unsmoothed store has no calibration yet: the Expert's (ds, experimental v0.1) of the passage with the same
+    cycle and pass, interpolated along track, at each pixel's distance to nadir (its line was moved by whole 250 m
+    columns: cross_shift), subtracted."""
+    row = {(c, p): i for i, (c, p) in enumerate(zip(ds.cycle.values, ds.pass_id.values))}
+    near = ds[["cal_bias", "cal_slope"]].sel(along=slice(float(sub.along[0]) - 4, float(sub.along[-1]) + 4)).drop_vars("lat")
+    def one(c, p):  # NaN if the Expert has no such passage
+        i = row.get((c, p))
+        e = near.isel(time=i or 0).interp(along=sub.along.values, kwargs={"fill_value": None}).reset_coords(drop=True)
+        return e if i is not None else e * np.nan
+
+    cal = xr.concat([one(c, p) for c, p in zip(sub.cycle.values, sub.pass_id.values)], "time")
+    b = sub.cross - 0.25 * sub.cross_shift.fillna(0)
+    east = cal.cal_bias.isel(side=1) + cal.cal_slope.isel(side=1) * b / 60
+    west = cal.cal_bias.isel(side=0) + cal.cal_slope.isel(side=0) * b / 60
+    return -xr.where(b > 0, east, west)
 '''
 DTU25_CREDIT = "# DTU25MSS: DTU Space (Nilsson, Andersen et al., ESSD 18, 5027, 2026), doi:10.11583/DTU.29412275, CC BY 4.0\n"
 
 
 def series_snippet(lon, lat, names, radius=5.0, label="", target=STORE, mask=None, pixel=2.0, fine=None, db=False,
-                   units="m", dtu=False):
+                   units="m", dtu=False, cal=False):
     """The code for the time series at a point (as `point_series`), with a figure: the mean within `radius` km of
     the product's `pixel` km pixels (with `mask`, a quality flag: only where it is 0; `dtu`: plus the store's
-    correction to the DTU25 mean sea surface). `fine`, a dict of the same for a finer product (target, names, radius,
-    mask, pixel, label, dtu: the correction from the first store, interpolated), adds its series to the figure."""
-    curves = [(target, names, radius, mask, pixel, "", db, "dtu25" if dtu else None)] + (
+    correction to the DTU25 mean sea surface; `cal`: minus its calibration). `fine`, a dict of the same for a finer
+    product (target, names, radius, mask, pixel, label, dtu and cal: the first store's, interpolated), adds its
+    series to the figure."""
+    fine_dtu, fine_cal = bool(fine and fine.get("dtu")), bool(fine and fine.get("cal"))
+    curves = [(target, names, radius, mask, pixel, "", db, ["dtu25"] * dtu + ["calibration"] * cal)] + (
         [(fine["target"], fine["names"], fine["radius"], fine.get("mask"), fine["pixel"], fine["label"],
-          fine.get("db", False), "dtu25_250m" if fine.get("dtu") else None)] if fine else [])
+          fine.get("db", False), ["dtu25_250m"] * fine_dtu + ["calibration_250m"] * fine_cal)] if fine else [])
     calls = []
     for k, (where, arrays, r, flag, size, name, decibels, correction) in enumerate(curves):
-        more = f", corrections=[{correction}]" if correction else ""
+        more = f", corrections=[{', '.join(correction)}]" if correction else ""
         if k == 0:
             calls.append(f"series = point_series(ds, {list(arrays)}, {r:g}, {size:g}, {flag!r}, {decibels!r}{more})")
         else:
@@ -224,7 +278,7 @@ fine = point_series(fine, {list(arrays)}, {r:g}, {size:g}, {flag!r}, {decibels!r
     plots = (f"""series.plot(marker=".", label="{pixel:g} km pixels, within {radius:g} km")
 fine.plot(marker=".", label="{fine['label']}, within {fine['radius']:g} km")
 plt.legend()""" if fine else 'series.plot(marker=".")')
-    corrections = (DTU25_HERE if dtu else "") + (DTU25_FROM_EXPERT if fine and fine.get("dtu") else "")
+    corrections = (DTU25_HERE * dtu + CAL_HERE * cal + DTU25_FROM_EXPERT * fine_dtu + CAL_FROM_EXPERT * fine_cal)
     return f'''{(DTU25_CREDIT if dtu else "") + opening(target, "import numpy as np\nimport matplotlib.pyplot as plt\n")}
 lon, lat = {lon:.4f}, {lat:.4f}
 km = 6371.0 * np.pi / 180
@@ -264,39 +318,80 @@ plt.show()
 '''
 
 
-LINE_DTU25_HERE = '''
-
-def dtu25(p, row, col):
-    """The DTU25 mean sea surface instead of the L2's (CNES_CLS22): pass p's correction at its pixels (row, col)."""
-    return sub.mss_cor_dtu25.sel(pass_number=p).values[row, col]
-
-'''
-LINE_DTU25_FROM_EXPERT = '''
+LINE_EXPERT = '''
 expert = {repo}
 expert = xr.open_zarr(expert.readonly_session("main").store, consolidated=False, chunks=None)
+'''
+LINE_DTU25_HERE = '''
 
+def dtu25(times, row, col):
+    """The DTU25 mean sea surface instead of the L2's (CNES_CLS22): the pass's correction at its pixels (row, col),
+    the same every cycle."""
+    p = int(sub.pass_id.values[times[0]])
+    return np.tile(sub.mss_cor_dtu25.sel(pass_number=p).values[row, col], (len(times), 1))
+'''
+LINE_DTU25_FROM_EXPERT = '''
 
-def dtu25(p, row, col):
+def dtu25(times, row, col):
     """The Unsmoothed store has no MSS: the Expert's correction to the DTU25 mean sea surface, interpolated at the
     pixels' along and cross (both stores count them in km from the same reference track), past its edges too."""
+    p = int(sub.pass_id.values[times[0]])
     at = dict(along=xr.DataArray(sub.along.values[row], dims="pixel"), cross=xr.DataArray(sub.cross.values[col], dims="pixel"))
     near = expert.mss_cor_dtu25.sel(pass_number=p, along=slice(float(at["along"].min()) - 4, float(at["along"].max()) + 4))
-    return near.interp(at, kwargs={{"fill_value": None}}).values
+    return np.tile(near.interp(at, kwargs={"fill_value": None}).values, (len(times), 1))
+'''
+LINE_CAL_HERE = '''
 
+def calibration(times, row, col):
+    """The experimental calibration (swot_cloud v0.1, may change), subtracted: each passage's bias and cross-track
+    slope of the lines `row`, on each pixel's side of nadir."""
+    at = dict(time=xr.DataArray(times, dims="passage"), along=xr.DataArray(row, dims="pixel"))
+    bias, slope = (sub[n].isel(at).values for n in ("cal_bias", "cal_slope"))  # (passages, pixels, side)
+    cross = sub.cross.values[col]
+    side, k = (cross > 0).astype(int), np.arange(len(col))
+    return -(bias[:, k, side] + slope[:, k, side] * cross / 60)
+'''
+LINE_CAL_FROM_EXPERT = '''
+rows = {(c, p): i for i, (c, p) in enumerate(zip(expert.cycle.values, expert.pass_id.values))}
+
+
+def calibration(times, row, col):
+    """The Unsmoothed store has no calibration yet: the Expert's (experimental v0.1) of each passage with the same
+    cycle and pass, interpolated along track, at each pixel's distance to nadir (its line was moved by whole 250 m
+    columns: cross_shift), subtracted."""
+    along = xr.DataArray(sub.along.values[row], dims="pixel")
+    near = expert[["cal_bias", "cal_slope"]].sel(along=slice(float(along.min()) - 4, float(along.max()) + 4))
+    shift = np.nan_to_num(sub.cross_shift.isel(time=times, along=row).values)  # (passages, pixels)
+    out = []
+    for k, i in enumerate(times):
+        j = rows.get((int(sub.cycle.values[i]), int(sub.pass_id.values[i])))
+        if j is None:  # the Expert has no such passage
+            out.append(np.full(len(col), np.nan))
+            continue
+        e = near.isel(time=j).interp(along=along, kwargs={"fill_value": None})
+        b = sub.cross.values[col] - 0.25 * shift[k]
+        side, n = (b > 0).astype(int), np.arange(len(col))
+        out.append(-(e.cal_bias.values[n, side] + e.cal_slope.values[n, side] * b / 60))
+    return np.array(out)
 '''
 
 
 def line_snippet(points, names, step=2.0, start=None, end=None, mean="time", label="", target=STORE, radius=1.5,
-                 mask=None, db=False, units="m", dtu=None):
+                 mask=None, db=False, units="m", dtu=None, cal=None):
     """The code for the values along a polyline: every `step` km along great circles, each passage's nearest
     pixel within `radius` km (its pass's grid is the same every cycle; with `mask`, a quality flag, only where it is 0). With `start`/`end`, the profile of the passages
     in those dates, one curve each; without, the Hovmöller of the whole mission (minus the mean over time at each
-    point if `mean` is "time"). `dtu`: plus the correction to the DTU25 mean sea surface, the store's own ("here") or
-    interpolated from another one's (its target: the Expert, for the Unsmoothed)."""
-    corrections = "" if dtu is None else LINE_DTU25_HERE if dtu == "here" else LINE_DTU25_FROM_EXPERT.format(repo=repository(dtu)[2])
+    point if `mean` is "time"). `dtu`: plus the correction to the DTU25 mean sea surface, `cal`: minus the
+    calibration; each the store's own ("here") or interpolated from another one's (its target: the Expert, for the
+    Unsmoothed)."""
+    expert = next((t for t in (dtu, cal) if t not in (None, "here")), None)
+    corrections = ((LINE_EXPERT.format(repo=repository(expert)[2]) if expert else "")
+                   + ({None: "", "here": LINE_DTU25_HERE}.get(dtu, LINE_DTU25_FROM_EXPERT))
+                   + ({None: "", "here": LINE_CAL_HERE}.get(cal, LINE_CAL_FROM_EXPERT)))
     value = f"sum(sub[n].isel(pick).values for n in {list(names)})"
-    if dtu:  # the corrections at the pixels, the same every cycle
-        value = f"({value} + np.tile(sum(c(p, row, col) for c in [dtu25]), len(times)))"
+    used = ["dtu25"] * bool(dtu) + ["calibration"] * bool(cal)
+    if used:  # the corrections at the pixels, (passages, pixels)
+        value = f"({value} + sum(c(times, row, col) for c in [{', '.join(used)}]).ravel())"
     window = f'''sub = sub.isel(time=((sub.time >= np.datetime64("{start}")) & (sub.time <= np.datetime64("{end}"))).values)
 ''' if start else ""
     if start:
