@@ -138,10 +138,18 @@ function watchDetail() {
   let asked = new Set(), came = new Set();
   const update = () => {
     for (const k of asked) if (!map.getSource(k.split("/")[0])) { asked.delete(k); came.delete(k); }  // layers swapped out
-    if (came.size >= asked.size) { asked = new Set(); came = new Set(); showProgress("detail", null); return; }
+    // the base stays under the 250 m until all its tiles in view have come (a new 250 m layer: once it is loaded), then
+    // fades out (where it covers the dates)
+    const fine = showTiles.now?.detail, base = showTiles.now?.swot;
+    const pending = came.size < asked.size || (fine && map.getZoom() >= info.detail.zoom - 1 && !map.isSourceLoaded(fine.id));
+    if (pending !== state.detailPending && base && map.getLayer(base.id))
+      map.setPaintProperty(base.id, "raster-opacity", pending ? 1 : state.baseFade ?? 1);
+    state.detailPending = pending;
+    if (!pending) { asked = new Set(); came = new Set(); showProgress("detail", null); return; }
     showProgress("detail", "Reading the 250 m here from the cloud", came.size / asked.size, `${came.size} of ${asked.size} tiles`);
   };
   const id = (e) => e.sourceId?.startsWith("detail-") && e.tile ? `${e.sourceId}/${e.tile.tileID.key}` : null;
+  watchDetail.update = update;  // a new 250 m layer counts as pending until it is loaded
   map.on("dataloading", (e) => { const k = id(e); if (k != null) { asked.add(k); update(); } });
   for (const done of ["sourcedata", "dataabort", "error"]) {
     map.on(done, (e) => { const k = id(e); if (k != null && asked.has(k) && (done !== "sourcedata" || e.tile.state === "loaded"
@@ -242,7 +250,9 @@ function setColors() {
   const z = info.detail.zoom, day = (t) => Math.floor(t / DAY) * DAY;
   const covered = info.looks[state.variable].fine && state.start >= day(Date.parse(info.detail.first + "Z"))
     && state.start + state.days * DAY <= day(Date.parse(info.detail.last + "Z")) + DAY;
-  showTiles("swot", url, { paint: { ...raster, "raster-opacity": covered ? ["interpolate", ["linear"], ["zoom"], z - 0.4, 1, z, 0] : 1 } });
+  state.baseFade = covered ? ["interpolate", ["linear"], ["zoom"], z - 0.4, 1, z, 0] : 1;
+  showTiles("swot", url, { paint: { ...raster, "raster-opacity": state.detailPending ? 1 : state.baseFade,
+                                    "raster-opacity-transition": { duration: 300 } } });
   showTiles("detail", url.replace("/api/tile/", "/api/detail/"), { minzoom: z - 1, paint: { ...raster,
     "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z - 0.4, 1] } }, { minzoom: z - 1 });
 }
@@ -260,6 +270,7 @@ function showTiles(kind, url, layer, source = {}) {
   map.addSource(id, { type: "raster", tiles: [url], tileSize: 256, ...source });
   map.addLayer({ type: "raster", ...layer, id, source: id }, before);
   now[kind] = { id, url };
+  if (kind === "detail") watchDetail.update?.();
   if (!cur) return;
   const drop = () => {
     map.off("sourcedata", loaded);
