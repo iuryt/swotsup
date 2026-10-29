@@ -9,7 +9,7 @@ const BASEMAPS = {
   "Imagery": [ESRI.replace("{}", "World_Imagery"), 0.8],
 };
 
-const state = { mode: "box", preset: "2", symmetric: true, data: null, drawing: false, cmaps: {} };
+const state = { mode: "box", preset: "mad", symmetric: true, data: null, drawing: false, cmaps: {} };
 let info, map, timeline;
 try { state.cmaps = JSON.parse(localStorage.getItem("cmaps") || "{}"); } catch (e) {}
 // the variable shown: its colormap (chosen in this browser, else its own), its stops, its units and kind
@@ -139,9 +139,10 @@ function setupCmap() {
 // --- colors: from percentiles of the loaded values, or typed
 function setColors() {
   const q = state.data?.quantiles[state.mode] ?? [];
-  if (state.preset !== "custom" && q.length) {
+  const robust = state.data?.robust?.[state.mode];
+  if (state.preset !== "custom" && q.length) {  // robust: the median ± 2 x 1.4826 x MAD; else percentiles
     const p = Number(state.preset) * 10;
-    let [lo, hi] = [q[p], q[1000 - p]];
+    let [lo, hi] = state.preset === "mad" && robust ? robust : [q[p], q[1000 - p]];
     if (state.symmetric) [lo, hi] = [-Math.max(-lo, hi), Math.max(-lo, hi)];
     [state.vmin, state.vmax] = [+lo.toFixed(3), +hi.toFixed(3)];
   }
@@ -153,6 +154,9 @@ function setColors() {
   $("#vmin-label").textContent = `Min (${unit()})`;
   $("#vmax-label").textContent = `Max (${unit()})`;
   $("#zero-text").textContent = isAnomaly() || state.symmetric ? "0" : "";
+  const look = info.looks[state.variable];
+  $("#water-row").classList.toggle("hidden", !look.twin);  // rivers and lakes: where the variable has the choice
+  $("#water").checked = look.water;
   cmapMenu();
   const pct = (v) => { // percentile of a value, from the quantiles
     let i = q.findIndex((x) => x >= v);
@@ -1237,7 +1241,7 @@ const lineFields = () => transect && { line: transect.points.map(([x, y]) => `${
 
 // --- the link: the address keeps what is on screen, after the # (kept up to date as people move, without a reload
 // or history entries), and opening it rebuilds it all. view=W,E,S,N,start,days,variable & map=lon,lat,zoom,globe|flat
-// & mode & cmap & range=1|2|5|vmin,vmax & point=lon,lat[,series] & line=lon,lat;lon,lat/profile|hovmoller/step/hovMode
+// & mode & cmap & range=mad|1|2|5|vmin,vmax & point=lon,lat[,series] & line=lon,lat;lon,lat/profile|hovmoller/step/hovMode
 function linkNow() {
   if (!map || !state.box) return;
   const f = (x, n = 4) => +Number(x).toFixed(n), b = state.box, c = map.getCenter();
@@ -1269,7 +1273,7 @@ function readLink() {  // what the address after the # asks for (anything malfor
       else if (key === "range") {
         const v = value.split(",").map(Number);
         if (v.length === 2 && v.every(Number.isFinite)) out.range = { vmin: v[0], vmax: v[1] };
-        else if (["1", "2", "5"].includes(value)) out.range = { preset: value };
+        else if (["mad", "1", "2", "5"].includes(value)) out.range = { preset: value };
       } else if (key === "point") {
         const v = value.split(",");
         if (Number.isFinite(Number(v[0])) && Number.isFinite(Number(v[1]))) out.point = { lngLat: new maplibregl.LngLat(Number(v[0]), Number(v[1])), series: v[2] === "series" };
@@ -1322,8 +1326,10 @@ async function main() {
   if (link.cmap) state.cmaps[state.variable] = link.cmap;
   if (link.range?.preset) state.preset = link.range.preset;
   if (link.range?.vmin != null) Object.assign(state, { preset: "custom", vmin: link.range.vmin, vmax: link.range.vmax });
-  $("#variable").innerHTML = Object.entries(info.variables).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
-  $("#variable").value = state.variable;
+  // one entry per variable: a twin with rivers and lakes is the Display menu's checkbox, not an entry
+  const listed = Object.keys(info.variables).filter((k) => !(info.looks[k].twin && info.looks[k].water));
+  $("#variable").innerHTML = listed.map((k) => `<option value="${k}">${info.variables[k]}</option>`).join("");
+  $("#variable").value = listed.includes(state.variable) ? state.variable : info.looks[state.variable].twin;
   $("#link-button").onclick = copyLink;
   document.querySelectorAll(".max-days").forEach((e) => (e.textContent = info.max_days));
   $("#about-coverage").textContent = `${dayText(Date.parse(info.first))} to ${dayText(Date.parse(info.last))}, ` +
@@ -1398,6 +1404,10 @@ async function main() {
     state.justDrew = false;
   });
   setupMenus();
+  $("#water").onchange = () => {  // the same variable with or without rivers and lakes (its twin)
+    state.variable = info.looks[state.variable].twin;
+    loadData();
+  };
   lucide.createIcons();
 }
 main().catch((e) => toast(e.message));

@@ -62,9 +62,10 @@
     <p class="hint">Shows the gradients where the whole region sits high or low.</p>
     <div class="label">Color range</div>
     <div class="segmented" id="preset">
-      <button data-value="1">1–99 %</button><button data-value="2">2–98 %</button><button data-value="5">5–95 %</button><button data-value="custom">Custom</button>
+      <button data-value="mad" title="The median ± 2 × 1.4826 × MAD of the values shown (two standard deviations for normal values): rivers, lakes and a few wild pixels do not stretch it">Robust</button><button data-value="1">1–99 %</button><button data-value="2">2–98 %</button><button data-value="5">5–95 %</button><button data-value="custom">Custom</button>
     </div>
     <label class="check"><input type="checkbox" id="symmetric"> Symmetric about zero</label>
+    <label class="check" id="water-row" title="Rivers and lakes are relative to the mean sea surface too, and can be metres above it"><input type="checkbox" id="water"> Rivers and lakes</label>
     <div class="grid2">
       <label><span id="vmin-label">Min (m)</span><input type="number" id="vmin" step="0.01"></label>
       <label><span id="vmax-label">Max (m)</span><input type="number" id="vmax" step="0.01"></label>
