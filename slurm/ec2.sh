@@ -146,12 +146,13 @@ domain)
   aws acm wait certificate-validated --certificate-arn "$cert"
   echo "certificate $cert: $(aws acm describe-certificate --certificate-arn "$cert" --query Certificate.Status --output text)"
   if [ "$(distribution Id)" = None ]; then
-    policy() { aws cloudfront list-$1-policies --type managed --query "${2}PolicyList.Items[?${2}PolicyConfig.Name=='$3'].Id | [0]" --output text; }
-    nocache=$(policy cache Cache Managed-CachingDisabled) bycontrol=$(policy cache Cache Managed-UseOriginCacheControlHeaders-QueryStrings)
+    policy() { aws cloudfront list-$1-policies --type managed --query "${2}PolicyList.Items[?${2}Policy.${2}PolicyConfig.Name=='$3'].${2}Policy.Id | [0]" --output text; }
+    nocache=$(policy cache Cache Managed-CachingDisabled) bycontrol=$(policy cache Cache UseOriginCacheControlHeaders-QueryStrings)
     viewer=$(policy origin-request OriginRequest Managed-AllViewerExceptHostHeader)
+    for id in "$nocache" "$bycontrol" "$viewer"; do [ "$id" != None ] || { echo "a managed CloudFront policy was not found"; exit 1; }; done
     lambda=$(aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text | sed 's|https://||; s|/$||')
     origin() {  # id, host, read timeout, extra fields
-      echo "{\"Id\":\"$1\",\"DomainName\":\"$2\",\"ConnectionAttempts\":1,\"ConnectionTimeout\":3,$4
+      echo "{\"Id\":\"$1\",\"DomainName\":\"$2\",\"ConnectionAttempts\":1,\"ConnectionTimeout\":3,${4:-}
         \"CustomOriginConfig\":{\"HTTPPort\":80,\"HTTPSPort\":443,\"OriginProtocolPolicy\":\"https-only\",
         \"OriginSslProtocols\":{\"Quantity\":1,\"Items\":[\"TLSv1.2\"]},\"OriginReadTimeout\":$3,\"OriginKeepaliveTimeout\":5}}"
     }
