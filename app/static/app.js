@@ -137,10 +137,11 @@ function showProgress(kind, text, fraction, count) {
 function watchDetail() {
   let asked = new Set(), came = new Set();
   const update = () => {
+    for (const k of asked) if (!map.getSource(k.split("/")[0])) { asked.delete(k); came.delete(k); }  // layers swapped out
     if (came.size >= asked.size) { asked = new Set(); came = new Set(); showProgress("detail", null); return; }
     showProgress("detail", "Reading the 250 m here from the cloud", came.size / asked.size, `${came.size} of ${asked.size} tiles`);
   };
-  const id = (e) => e.sourceId === "detail" && e.tile ? e.tile.tileID.key : null;
+  const id = (e) => e.sourceId?.startsWith("detail-") && e.tile ? `${e.sourceId}/${e.tile.tileID.key}` : null;
   map.on("dataloading", (e) => { const k = id(e); if (k != null) { asked.add(k); update(); } });
   for (const done of ["sourcedata", "dataabort", "error"]) {
     map.on(done, (e) => { const k = id(e); if (k != null && asked.has(k) && (done !== "sourcedata" || e.tile.state === "loaded"
@@ -233,22 +234,42 @@ function setColors() {
   if (!state.data) return;
   if (transect && transect.key !== lineKey()) fillLine();
   const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}&cmap=${cmapOf()}`;
-  const source = map.getSource("swot");
-  if (source) source.setTiles([url]);
-  else {
-    map.addSource("swot", { type: "raster", tiles: [url], tileSize: 256 });
-    map.addLayer({ id: "swot", type: "raster", source: "swot", paint: { "raster-fade-duration": 0, "raster-resampling": "nearest" } }, "box");
+  const raster = { "raster-fade-duration": 0, "raster-resampling": "nearest" };
+  if (!info.detail) return showTiles("swot", url, { paint: raster });
+  // the finer product over it, from a zoom on: it fades in over half a zoom level; where it covers the dates, the
+  // base then fades out (its 2 km would show at the 250 m swath's edges), else the base stays (the only data). The
+  // base's tiles are whole at every zoom: zooming out, they are there at once
+  const z = info.detail.zoom, day = (t) => Math.floor(t / DAY) * DAY;
+  const covered = info.looks[state.variable].fine && state.start >= day(Date.parse(info.detail.first + "Z"))
+    && state.start + state.days * DAY <= day(Date.parse(info.detail.last + "Z")) + DAY;
+  showTiles("swot", url, { paint: { ...raster, "raster-opacity": covered ? ["interpolate", ["linear"], ["zoom"], z - 0.4, 1, z, 0] : 1 } });
+  showTiles("detail", url.replace("/api/tile/", "/api/detail/"), { minzoom: z - 1, paint: { ...raster,
+    "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z - 0.4, 1] } }, { minzoom: z - 1 });
+}
+
+// new tiles (other colors, another view) come as a new layer over the old one, which goes once the new one has its
+// tiles: the map never goes blank in between (setting a source's tiles drops every tile on screen first)
+function showTiles(kind, url, layer, source = {}) {
+  const now = (showTiles.now ??= {}), cur = now[kind];
+  if (cur?.url === url) {  // the same tiles: only how they show (the base's fading follows the dates)
+    for (const [k, v] of Object.entries(layer.paint)) map.setPaintProperty(cur.id, k, v);
+    return;
   }
-  if (!info.detail) return;
-  // the finer product over it, from a zoom on: it fades in over one zoom level, and where it has no data (passages
-  // not there yet, its gaps) the base still shows, so zooming in turns one into the other
-  const detail = url.replace("/api/tile/", "/api/detail/"), z = info.detail.zoom;
-  if (map.getSource("detail")) map.getSource("detail").setTiles([detail]);
-  else {
-    map.addSource("detail", { type: "raster", tiles: [detail], tileSize: 256, minzoom: z - 1 });
-    map.addLayer({ id: "detail", type: "raster", source: "detail", minzoom: z - 1, paint: { "raster-fade-duration": 0,
-      "raster-resampling": "nearest", "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z, 1] } }, "box");
-  }
+  const id = `${kind}-${(showTiles.n = (showTiles.n ?? 0) + 1)}`, order = map.getStyle().layers.map((l) => l.id);
+  const before = cur ? order[order.indexOf(cur.id) + 1] : kind === "swot" ? order.find((l) => l.startsWith("detail-")) ?? "box" : "box";
+  map.addSource(id, { type: "raster", tiles: [url], tileSize: 256, ...source });
+  map.addLayer({ type: "raster", ...layer, id, source: id }, before);
+  now[kind] = { id, url };
+  if (!cur) return;
+  const drop = () => {
+    map.off("sourcedata", loaded);
+    clearTimeout(timer);
+    if (map.getLayer(cur.id)) map.removeLayer(cur.id);
+    if (map.getSource(cur.id)) map.removeSource(cur.id);
+  };
+  const loaded = (e) => { if (e.sourceId === id && map.isSourceLoaded(id)) drop(); };
+  const timer = setTimeout(drop, 15000);  // at most that long under the new one
+  map.on("sourcedata", loaded);
 }
 
 // --- the dates: from the timeline, or a click on a time series
