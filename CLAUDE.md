@@ -94,6 +94,10 @@ be resumed here (`claude --resume`).
   reaching halfway to the next passage at most 4 px, so it looks filled until zoomed; minus the mean over time at
   each point by default (points with few passages left empty), or as stored (done in the page, no new read);
   box zoom, wheel on the time, double-click back; a click moves the map to that passage's date).
+  With the whole globe as the region, from zoom 4 (`AREA_ZOOM`) the view read is the area in view with half of it
+  more on each side, rounded to degrees (`areaWanted`), followed once the map stops if it left what was read
+  (`followArea`; a drawn line stays inside it); farther out, the whole globe. No rectangle: the region stays "Whole
+  globe", the legend says the mean is the area in view's (the whole globe's 21 days take a minute, an area seconds).
   The address keeps the view after the # (`linkNow`/`readLink`: region, dates, variable, map position and projection,
   mode, colormap, color range, the clicked point and whether its series is open, the drawn line with its kind and
   step), updated as people move (replaceState); opening it rebuilds it all. "Link" copies it with the public address
