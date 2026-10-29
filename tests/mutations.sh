@@ -86,3 +86,6 @@ mutate app/server.py 's/    return (a.isel(time=k) if "time" in a.dims else a.se
 mutate app/swot_view.py 's/        near = near.where(classes.isin(list(surface)))/        pass/' "a series on every surface"
 mutate app/server.py 's/                                                        last=str(pd.Timestamp(detail.index.time.values.max()))),/                                                        last=str(pd.Timestamp(index.time.values.max()))),/' "the dates 250 m covers taken from the base"
 mutate app/server.py 's/    inside = ((lon - west) % 360 <= width) \& (lat >= south) \& (lat <= north)/    inside = np.ones(len(lon), bool)/' "colors of the whole view, not of the screen"
+mutate app/server.py 's/            mesh = xr.DataArray(inner(v) if i in trimmed else v,/            mesh = xr.DataArray(v,/' "the 2 km whole under the 250 m"
+mutate app/server.py 's/    return np.where(ok\[:, 1:-1\] \& ok\[:, :-2\] \& ok\[:, 2:\], v, np.nan)/    return np.where(ok[:, 1:-1] \& ok[:, 2:], v, np.nan)/' "the 2 km trimmed on one side only"
+mutate app/server.py 's/    trim = DETAIL_PASSAGES if z >= DETAIL_ZOOM - 1 and has_detail(variable) else frozenset()/    trim = DETAIL_PASSAGES if z >= DETAIL_ZOOM and has_detail(variable) else frozenset()/' "the 2 km trimmed a zoom later than the 250 m shows"
