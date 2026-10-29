@@ -44,12 +44,18 @@ class Variable:
     its default colormap and kind ("anomaly": a spatial mean subtracted, colors symmetric; "level": as stored)."""
 
     def __init__(self, label, names, flag=None, db=False, cmap="RdBu_r", kind="anomaly", units="m", surface=None,
-                 twin=None):
+                 twin=None, mss=None):
         self.label, self.names, self.flag, self.db = label, list(names), flag, db
         self.cmap, self.kind, self.units = cmap, kind, units
         # the surface classes kept (SURFACE: 0 open ocean, 2 continental water...), and the variable that is the same
-        # with another choice of them (the Display menu's "Rivers and lakes" switches between the two)
-        self.surface, self.twin = surface, twin
+        # with another choice of them (the Display menu's "Rivers and lakes" switches between the two); `mss`: the
+        # same with the other mean sea surface (the Display menu's "Mean sea surface")
+        self.surface, self.twin, self.mss = surface, twin, mss
+
+    @property
+    def dtu(self):
+        """Whether it uses DTU25MSS (its credit is then shown)."""
+        return DTU in self.names
 
     @property
     def arrays(self):
@@ -74,11 +80,20 @@ class Variable:
 # elsewhere): one array instead of ssha_karin_2, height_cor_xover, their flag and the surface classification
 # (its rivers and lakes are metres above the mean sea surface: the ocean only by default, they on request)
 SURFACE = "ancillary_surface_classification_flag"  # Expert: one per pass (pass_number), Unsmoothed: per passage
+# by default the mean sea surface is DTU25MSS (swot_cloud: the correction from the L2's CNES_CLS22 to it, one per pass
+# in Expert; it removes geoid errors at 15-70 km, ~20 % of SSHA's power there); Unsmoothed has no MSS: the
+# correction comes from Expert, interpolated at its pixels (`from_base`)
+DTU = "mss_cor_dtu25"
+XOVER, XOVER_DTU = ["ssha_karin_2_xover"], ["ssha_karin_2_xover", DTU]
 SSHA_L2 = {
-    "ssha_karin_2_xover": Variable("SSHA (KaRIn 2) + crossover correction", ["ssha_karin_2_xover"], surface=(0,),
-                                   twin="ssha_karin_2_xover_water"),
-    "ssha_karin_2_xover_water": Variable("SSHA (KaRIn 2) + crossover correction, rivers and lakes too",
-                                         ["ssha_karin_2_xover"], twin="ssha_karin_2_xover"),
+    "ssha_dtu25": Variable("SSHA (KaRIn 2) + crossover correction", XOVER_DTU, surface=(0,), twin="ssha_dtu25_water",
+                           mss="ssha_karin_2_xover"),
+    "ssha_dtu25_water": Variable("SSHA (KaRIn 2) + crossover correction, rivers and lakes too", XOVER_DTU,
+                                 twin="ssha_dtu25", mss="ssha_karin_2_xover_water"),
+    "ssha_karin_2_xover": Variable("SSHA (KaRIn 2) + crossover correction, L2 MSS", XOVER, surface=(0,),
+                                   twin="ssha_karin_2_xover_water", mss="ssha_dtu25"),
+    "ssha_karin_2_xover_water": Variable("SSHA (KaRIn 2) + crossover correction, L2 MSS, rivers and lakes too",
+                                         XOVER, twin="ssha_karin_2_xover", mss="ssha_dtu25_water"),
     # its flag alone keeps nearly all the land in Unsmoothed: the open ocean only, as the default
     "ssha_karin_2": Variable("SSHA (KaRIn 2), no correction", ["ssha_karin_2"], "ssha_karin_2_qual", surface=(0,))}
 SIGMA0 = Variable("Sigma0 (KaRIn 2)", ["sig0_karin_2"], "sig0_karin_2_qual", db=True, cmap="cmo.gray", kind="level",
@@ -933,7 +948,8 @@ def info():
                 passages=ds.sizes["time"], passes=ds.sizes["pass_number"], max_days=MAX_DAYS, default=DEFAULT,
                 variables={k: v.label for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
                 # each variable's kind, units and default colormap; the colormaps on offer as 16 stops each
-                looks={k: dict(kind=v.kind, units=v.units, cmap=v.cmap, fine=has_detail(k), twin=v.twin, water=not v.surface)
+                looks={k: dict(kind=v.kind, units=v.units, cmap=v.cmap, fine=has_detail(k), twin=v.twin, water=not v.surface,
+                                   mss=v.mss, dtu=v.dtu)
                        for k, v in VARIABLES.items()},
                 colormaps={name: ["#%02x%02x%02x" % tuple(int(255 * c) for c in cm(x)[:3]) for x in np.linspace(0, 1, 16)]
                            for name, cm in COLORMAPS.items()}, diverging=list(COLORMAPS)[:DIVERGING],
@@ -969,7 +985,8 @@ def load_view(west: float, east: float, south: float, north: float, start: str, 
     end = pd.Timestamp(start) + pd.Timedelta(days=days - 1)
     return dict(passages=data.sub.sizes["time"], seconds=round(seconds, 2),
                 pixels=data.pixels, quantiles=data.quantiles, robust=data.robust,
-                code=swot_view.snippet(west, east, south, north, start, str(end.date()), data.names[0]))
+                code=swot_view.snippet(west, east, south, north, start, str(end.date()), stored(VARIABLES[variable])[0],
+                                       dtu=VARIABLES[variable].dtu))
 
 
 def colormap(name, variable):
@@ -1013,14 +1030,25 @@ def block(src, product, i, c, variable):
     """A passage's (time index `i`) chunk `c` of lines of a store (`src`): a variable's values (as its product says)
     and positions, as float32, and when each line was."""
     n = src.ds.line_time.encoding["chunks"][1]
-    var = product["variables"][variable]
-    sub = src.ds[var.arrays + ["latitude", "longitude", "line_time"]].isel(time=i, along=slice(c * n, (c + 1) * n))
+    var, p = product["variables"][variable], int(src.index.pass_id.values[i])
+    own = [k for k in var.arrays if k in src.ds]  # the others from the base store (`from_base`)
+    sub = src.ds[own + ["latitude", "longitude", "line_time"]].isel(time=i, along=slice(c * n, (c + 1) * n))
     if "pass_number" in sub.dims:  # arrays kept once per pass: this passage's pass
-        sub = sub.sel(pass_number=int(src.index.pass_id.values[i]))
+        sub = sub.sel(pass_number=p)
     sub = sub.load()
-    values = var.values(lambda k: sub[k].values)
+    values = var.values(lambda k: sub[k].values if k in sub else from_base(k, p, sub.along.values, sub.cross.values))
     return (values.astype("float32"), sub.latitude.values.astype("float32"),
             sub.longitude.values.astype("float32"), sub.line_time.values)
+
+
+def from_base(name, p, along, cross):
+    """An array of the base store kept once per pass (Expert's DTU25 MSS correction) at a finer store's pixels of
+    pass `p`, which lacks it: interpolated at their along and cross (both stores count them in km from the same
+    reference track), linearly, and beyond the base's outermost pixels (the swath's edges). `along` and `cross`: the
+    lines' and pixels' of a grid, or DataArrays of points (dims "pixel")."""
+    a = base.ds[name].sel(pass_number=p)
+    a = a.sel(along=slice(float(np.min(along)) - 4, float(np.max(along)) + 4))
+    return a.interp(along=along, cross=cross, kwargs={"fill_value": None}).values
 
 
 @lru_cache(maxsize=int(os.environ.get("SWOT_DETAIL_BLOCKS", 1024)))  # ~3.4 MB each at 512 x 551 (float32)
@@ -1254,7 +1282,19 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
         where = {dim: xr.DataArray(np.concatenate(v), dims="pixel") for dim, v in (("time", at), ("along", rows), ("cross", cols))}
         per_pass = {**where, "pass_number": xr.DataArray(np.searchsorted(ds.pass_number.values, index.pass_id.values[where["time"]]), dims="pixel")}
         per_pass.pop("time")
-        values = var.values(lambda n: ds[n].isel(where if "time" in ds[n].dims else per_pass).values)
+        passes = index.pass_id.values[where["time"]]
+
+        def get(n):
+            if n in ds:
+                return ds[n].isel(where if "time" in ds[n].dims else per_pass).values
+            out = np.empty(len(passes))  # only in the base store: at the pixels' along and cross, pass by pass
+            for p in np.unique(passes):
+                k = np.flatnonzero(passes == p)
+                out[k] = from_base(n, int(p), xr.DataArray(ds.along.values[where["along"].values[k]], dims="pixel"),
+                                   xr.DataArray(ds.cross.values[where["cross"].values[k]], dims="pixel"))
+            return out
+
+        values = var.values(get)
     out, k0 = [], 0
     for p, times, hit, row, col, offset in found:
         v = values[k0:k0 + len(times) * len(hit)].reshape(len(times), len(hit))  # (passages, points hit)
@@ -1308,7 +1348,7 @@ def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool 
             raise HTTPException(404, "no 250 m product for this variable")
         return detail_series(lon, lat, variable, radius)
     var = VARIABLES[variable]
-    s = sum(swot_view.point_series(ds, lon, lat, n, radius, mask=var.flag, db=var.db, surface=var.surface)[n] for n in var.names)
+    s = swot_view.point_series(ds, lon, lat, var.names, radius, mask=var.flag, db=var.db, surface=var.surface)["value"]
     return dict(time=(s.time.to_index().astype("int64") // 10**6).tolist(), value=s.values.round(4).tolist())
 
 
@@ -1380,10 +1420,15 @@ def series_code(lon: float, lat: float, variable: str, radius: float = 5):
     var, fine = VARIABLES[variable], None
     if has_detail(variable):
         f = DETAIL_PRODUCT["variables"][variable]
-        fine = dict(target=DETAIL_STORE, names=f.names, radius=FINE_SERIES_RADIUS, mask=f.flag, db=f.db,
-                    pixel=DETAIL_PRODUCT["pixel"], label="250 m pixels")
-    return dict(code=swot_view.series_snippet(lon, lat, var.names, radius, f"{var.label}, ", target=STORE, mask=var.flag,
-                                              db=var.db, fine=fine, units=var.units))
+        fine = dict(target=DETAIL_STORE, names=stored(f), radius=FINE_SERIES_RADIUS, mask=f.flag, db=f.db,
+                    pixel=DETAIL_PRODUCT["pixel"], label="250 m pixels", dtu=f.dtu)
+    return dict(code=swot_view.series_snippet(lon, lat, stored(var), radius, f"{var.label}, ", target=STORE, mask=var.flag,
+                                              db=var.db, fine=fine, units=var.units, dtu=var.dtu))
+
+
+def stored(var):
+    """A variable's arrays summed in the code people copy, the DTU25 correction aside (its own lines there)."""
+    return [n for n in var.names if n != DTU]
 
 
 @app.get("/api/code/line")
@@ -1396,10 +1441,11 @@ def line_code(points: str, variable: str, step: float = 2.0, start: str = None, 
     title = f"{label}, " + (f"{start} to {end[:10]}" if start else "whole mission")
     if step < FINE and has_detail(variable):  # 250 m
         f = DETAIL_PRODUCT["variables"][variable]
-        return dict(code=swot_view.line_snippet(vertices, f.names, step, start, end, mean, title, target=DETAIL_STORE,
-                                                radius=FINE_RADIUS, mask=f.flag, db=f.db, units=f.units))
-    return dict(code=swot_view.line_snippet(vertices, var.names, step, start, end, mean, title, target=STORE,
-                                            mask=var.flag, db=var.db, units=var.units))
+        return dict(code=swot_view.line_snippet(vertices, stored(f), step, start, end, mean, title, target=DETAIL_STORE,
+                                                radius=FINE_RADIUS, mask=f.flag, db=f.db, units=f.units,
+                                                dtu=(STORE if DTU not in detail.ds else "here") if f.dtu else None))
+    return dict(code=swot_view.line_snippet(vertices, stored(var), step, start, end, mean, title, target=STORE,
+                                            mask=var.flag, db=var.db, units=var.units, dtu="here" if var.dtu else None))
 
 
 @app.get("/api/netcdf")

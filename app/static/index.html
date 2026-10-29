@@ -55,6 +55,13 @@
   </section>
 
   <section class="panel popover hidden" id="display-menu">
+    <div id="mss-row">
+      <div class="label">Mean sea surface</div>
+      <div class="segmented" id="mss">
+        <button data-value="dtu" title="DTU25MSS (DTU Space), a mean sea surface made with SWOT data">DTU25</button><button data-value="l2" title="The L2 product's own, CNES_CLS22">L2 original</button>
+      </div>
+      <p class="hint">DTU25 removes geoid errors at 15–70 km (an MSS made with SWOT data).</p>
+    </div>
     <div class="label">Subtract the spatial mean</div>
     <div class="segmented" id="mode">
       <button data-value="box">Box mean</button><button data-value="passage">Each passage</button><button data-value="none">Nothing</button>
@@ -156,6 +163,10 @@
       south to north, and along/cross-track distances and per-pass geometry are added. The map shows averages of the
       passages on screen pixels, by default minus the mean over the region; time series are means within a radius.
       This tool is not endorsed by CNES, AVISO or DUACS.</p>
+    <p class="hint" id="dtu-credit">The mean sea surface, by default: DTU25MSS Mean Sea Surface, DTU Space (Nilsson,
+      Andersen et al., ESSD 18, 5027, 2026), <a href="https://doi.org/10.11583/DTU.29412275" target="_blank">doi:10.11583/DTU.29412275</a>,
+      licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank">CC BY 4.0</a>; the maps,
+      series and lines add the L2 product's correction from its mean sea surface to it.</p>
     <p class="hint">To understand how the explorer is used, we record anonymous usage: what is viewed, and the country
       the connection comes from, found from its address, which we do not keep. No cookies and no personal information.
       Countries: <a href="https://db-ip.com" target="_blank">IP Geolocation by DB-IP</a> (CC BY 4.0).</p>
