@@ -32,7 +32,9 @@ for month in $(date +%Y-%m) $(date -d "-1 month" +%Y-%m); do
   curl -sfL "https://download.db-ip.com/free/dbip-country-lite-$month.mmdb.gz" | gunzip > $geo.new && mv $geo.new $geo && break
 done
 chown 1000:1000 $geo 2>/dev/null
-docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=0 -e SWOT_CACHE_GB=6 \
+# downloads: of L2 (NASA/JPL, CNES), not of L3 (the AVISO License does not allow redistributing it unchanged)
+netcdf=$([ -n "$token" ] && echo 1 || echo 0)
+docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=$netcdf -e SWOT_CACHE_GB=6 \
   -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
   -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" -v /opt/telemetry:/telemetry -e SWOT_TELEMETRY_DIR=/telemetry \
   -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb "${store[@]}" swot
