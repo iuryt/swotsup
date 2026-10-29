@@ -147,9 +147,17 @@ domain)
   echo "certificate $cert: $(aws acm describe-certificate --certificate-arn "$cert" --query Certificate.Status --output text)"
   if [ "$(distribution Id)" = None ]; then
     policy() { aws cloudfront list-$1-policies --type managed --query "${2}PolicyList.Items[?${2}Policy.${2}PolicyConfig.Name=='$3'].${2}Policy.Id | [0]" --output text; }
-    nocache=$(policy cache Cache Managed-CachingDisabled) bycontrol=$(policy cache Cache UseOriginCacheControlHeaders-QueryStrings)
-    viewer=$(policy origin-request OriginRequest Managed-AllViewerExceptHostHeader)
-    for id in "$nocache" "$bycontrol" "$viewer"; do [ "$id" != None ] || { echo "a managed CloudFront policy was not found"; exit 1; }; done
+    nocache=$(policy cache Cache Managed-CachingDisabled) viewer=$(policy origin-request OriginRequest Managed-AllViewerExceptHostHeader)
+    for id in "$nocache" "$viewer"; do [ "$id" != None ] || { echo "a managed CloudFront policy was not found"; exit 1; }; done
+    # tiles: cached by their whole URL as long as the server says; no header in the key (the managed policies that
+    # follow Cache-Control put the Host in it, and so send the domain's to the origins, which refuse it: 403)
+    bycontrol=$(aws cloudfront list-cache-policies --type custom --output text \
+      --query "CachePolicyList.Items[?CachePolicy.CachePolicyConfig.Name=='swot-tiles'].CachePolicy.Id | [0]")
+    [ "$bycontrol" != None ] || bycontrol=$(aws cloudfront create-cache-policy --query CachePolicy.Id --output text \
+      --cache-policy-config '{"Name":"swot-tiles","DefaultTTL":0,"MaxTTL":86400,"MinTTL":0,
+        "ParametersInCacheKeyAndForwardedToOrigin":{"EnableAcceptEncodingGzip":true,"EnableAcceptEncodingBrotli":true,
+        "HeadersConfig":{"HeaderBehavior":"none"},"CookiesConfig":{"CookieBehavior":"none"},
+        "QueryStringsConfig":{"QueryStringBehavior":"all"}}}')
     lambda=$(aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text | sed 's|https://||; s|/$||')
     origin() {  # id, host, read timeout, extra fields
       echo "{\"Id\":\"$1\",\"DomainName\":\"$2\",\"ConnectionAttempts\":1,\"ConnectionTimeout\":3,${4:-}
