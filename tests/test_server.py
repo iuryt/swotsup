@@ -1,4 +1,5 @@
 import io
+import itertools
 import json
 import sys
 
@@ -731,18 +732,20 @@ def test_base_inside_the_detail_swath(store_path, monkeypatch):
     assert b[0] > f[0] and b[-1] < f[-1]
 
 
-def dtu_server(dtu_store_path, fine_store_path, monkeypatch):
-    """The server on a store with a DTU25 MSS correction (pass / 100 + 0.001 per km of along) and a detail store
-    without it (pass 7 only), with a variable that adds it."""
-    server, c = detail_server(dtu_store_path, monkeypatch, fine=fine_store_path)
+def dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch):
+    """The server on a store with a DTU25 MSS correction (pass / 100 + 0.001 per km of along) and a calibration, and a
+    detail store without either (pass 7 only, its lines moved 2 km), with variables that add the one, or both."""
+    server, c = detail_server(dtu_store_path, monkeypatch, fine=shifted_fine_store_path)
     monkeypatch.setitem(server.VARIABLES, "dtu", server.Variable("SSHA, DTU25 MSS", ["ssha_filtered", server.DTU]))
+    monkeypatch.setitem(server.VARIABLES, "cal", server.Variable("SSHA, DTU25, calibrated", ["ssha_filtered", server.DTU],
+                                                                 calibrated=True))
     return server, c
 
 
-def test_dtu25_correction_of_each_passage_pass_at_2_km_and_250_m(dtu_store_path, fine_store_path, monkeypatch):
+def test_dtu25_correction_of_each_passage_pass_at_2_km_and_250_m(dtu_store_path, shifted_fine_store_path, monkeypatch):
     """The DTU25 correction is added at each passage's pass (passes 7 and 20 cross the point) in the 2 km series, and
     interpolated from the base store at the 250 m pixels' along (the detail store lacks it)."""
-    server, c = dtu_server(dtu_store_path, fine_store_path, monkeypatch)
+    server, c = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
     lon, lat = 30.1, 2.0
     along = float(np.interp(lat, server.ds.lat.values, server.ds.along.values))
     for fine, atol in ((False, 0.002), (True, 0.0006)):
@@ -756,9 +759,9 @@ def test_dtu25_correction_of_each_passage_pass_at_2_km_and_250_m(dtu_store_path,
         np.testing.assert_allclose(np.subtract(dtu["value"], plain["value"]), np.array(passes) / 100 + 0.001 * along, atol=atol)
 
 
-def test_dtu25_correction_in_the_250_m_hovmoller(dtu_store_path, fine_store_path, monkeypatch):
+def test_dtu25_correction_in_the_250_m_hovmoller(dtu_store_path, shifted_fine_store_path, monkeypatch):
     """The 250 m Hovmöller adds the correction at each pixel's along, interpolated from the base store."""
-    server, c = dtu_server(dtu_store_path, fine_store_path, monkeypatch)
+    server, c = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
     points = "29.8,4;29.8,6"
     get = lambda v: c.get("/api/hovmoller", params=dict(points=points, variable=v, step=0.25)).json()  # noqa: E731
     dtu, plain = get("dtu"), get("ssha_filtered")
@@ -772,34 +775,93 @@ def test_dtu25_correction_in_the_250_m_hovmoller(dtu_store_path, fine_store_path
         np.testing.assert_allclose(diff[ok], 0.07 + 0.001 * along[k][ok], atol=0.0005)
 
 
-def test_dtu25_correction_interpolated_between_the_base_pixels(dtu_store_path, fine_store_path, monkeypatch):
+def test_dtu25_correction_interpolated_between_the_base_pixels(dtu_store_path, shifted_fine_store_path, monkeypatch):
     """At points between the base store's pixels, its correction is interpolated linearly (here exact)."""
-    server, _ = dtu_server(dtu_store_path, fine_store_path, monkeypatch)
+    server, _ = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
     along = server.ds.along.values[100:110] + 0.37 * np.diff(server.ds.along.values[100:111])
     cross = np.linspace(-40, 40, 7)
     np.testing.assert_allclose(server.from_base(server.DTU, 20, along, cross), 0.2 + 0.001 * along[:, None] + 0 * cross,
                                rtol=1e-6)
 
 
-def test_dtu25_line_code_gives_the_app_values(dtu_store_path, fine_store_path, monkeypatch):
-    """The code users copy for a line adds the DTU25 correction as the app does: from the store at 2 km, interpolated
-    from it at 250 m (the detail store's pixels fall between its own)."""
+def test_dtu25_line_code_gives_the_app_values(dtu_store_path, shifted_fine_store_path, monkeypatch):
+    """The code users copy for a line adds the DTU25 correction and subtracts the calibration as the app does: from the
+    store at 2 km, interpolated from it at 250 m (the detail store's pixels fall between its own; its lines are moved)."""
     import swot_view
     from test_view import run_with_stores
 
-    server, c = dtu_server(dtu_store_path, fine_store_path, monkeypatch)
-    paths, points = {"expert": dtu_store_path, "fine": fine_store_path}, [(29.8, 4.0), (29.8, 6.0)]
-    for step, target, dtu in ((2, "s3://b/expert", "here"), (0.25, "s3://b/fine", "s3://b/expert")):
+    server, c = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
+    paths, points = {"expert": dtu_store_path, "fine": shifted_fine_store_path}, [(29.8, 4.0), (29.8, 6.0)]
+    for (step, target, here), variable in itertools.product(((2, "s3://b/expert", "here"), (0.25, "s3://b/fine", "s3://b/expert")),
+                                                          ("dtu", "cal")):
         app = {v: c.get("/api/hovmoller", params=dict(points="29.8,4;29.8,6", variable=v, step=step)).json()
-               for v in ("dtu", "ssha_filtered")}
-        code = {d: run_with_stores(swot_view.line_snippet(points, ["ssha_filtered"], step=step, mean="none", target=target,
-                                                          radius=server.FINE_RADIUS if step < 1 else 1.5, dtu=d), paths, monkeypatch)
-                for d in (dtu, None)}
-        diff = code[dtu]["values"] - code[None]["values"]
-        assert len(app["dtu"]["passages"]) == len(diff) >= 1
-        for row, a, b in zip(diff, app["dtu"]["passages"], app["ssha_filtered"]["passages"]):
+               for v in (variable, "ssha_filtered")}
+        corrections = dict(dtu=here, cal=here if variable == "cal" else None)
+        code = [run_with_stores(swot_view.line_snippet(points, ["ssha_filtered"], step=step, mean="none", target=target,
+                                                       radius=server.FINE_RADIUS if step < 1 else 1.5, **d), paths, monkeypatch)
+                for d in (corrections, {})]
+        diff = code[0]["values"] - code[1]["values"]
+        assert len(app[variable]["passages"]) == len(diff) >= 1
+        for row, a, b in zip(diff, app[variable]["passages"], app["ssha_filtered"]["passages"]):
             want = np.full(len(row), np.nan)
             want[a["first"]:a["first"] + len(a["value"])] = np.array(a["value"], float) - np.array(b["value"], float)
             ok = np.isfinite(want)
             assert ok.sum() > 50
             np.testing.assert_allclose(row[ok], want[ok], atol=2e-4)
+
+
+def test_calibration_at_2_km_and_from_the_expert_passage_at_250_m(dtu_store_path, shifted_fine_store_path, monkeypatch):
+    """Calibrated minus not: each pixel's side's bias + slope x cross / 60 (east here, cross ~11 km), the cross at 250 m
+    taken from the satellite's nadir (the detail store's lines are moved 8 columns: 2 km)."""
+    import swot_view
+
+    server, c = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
+    lon, lat = 30.1, 2.0
+    grid = np.array([[0.0, -5.0, 3.0]])  # one line, three pixels: the function itself, both sides
+    np.testing.assert_allclose(server.calibration(np.array([[1.0, 2.0]]), np.array([[60.0, 120.0]]), grid[0]),
+                               [[1.0, 1.0 - 5.0, 2.0 + 6.0]])
+    for fine, radius, store, shift in ((False, 5, dtu_store_path, 0.0), (True, 1, shifted_fine_store_path, 2.0)):
+        get = lambda v: c.get("/api/series", params=dict(lon=lon, lat=lat, variable=v, fine=fine, radius=radius)).json()  # noqa: E731
+        cal, dtu = get("cal"), get("dtu")
+        assert cal["time"] == dtu["time"] and len(dtu["time"]) >= 1
+        own = swot_view.open_store(store)
+        sub = swot_view.subset(own, lon - 0.6, lon + 0.6, lat - 0.6, lat + 0.6)[["latitude", "longitude"]].load()
+        sub = sub.isel(time=np.isin(sub.time.values.astype("datetime64[ms]").astype("int64"), dtu["time"]))
+        near = swot_view.distance(sub.latitude, sub.longitude, lat, lon) <= radius
+        b = (sub.cross + 0 * sub.latitude).where(near).mean(("along", "cross")).values - shift  # each passage's, to nadir
+        side = (b > 0).astype(int)
+        along = float(np.interp(lat, own.lat.values, own.along.values))
+        assert (np.abs(b) > 5).all() and (fine or set(side) == {0, 1})  # at 2 km, passes 7 (east of it) and 20 (west)
+        want = -(0.01 + 0.02 * side + 0.005 * sub.cycle.values + 0.0001 * along + 0.06 * (1 + side) * b / 60)
+        np.testing.assert_allclose(np.subtract(cal["value"], dtu["value"]), want, atol=5e-4)
+
+
+def test_calibrated_series_and_region_code_give_the_app_values(dtu_store_path, shifted_fine_store_path, monkeypatch):
+    """The code users copy for a point's series (2 km and 250 m) and for the region, with DTU25 and the calibration,
+    gives the app's numbers."""
+    import swot_view
+    from test_view import run_with_stores
+
+    server, c = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
+    paths = {"expert": dtu_store_path, "fine": shifted_fine_store_path}
+    fine = dict(target="s3://b/fine", names=["ssha_filtered"], radius=1, mask=None, pixel=2.0, label="250 m", dtu=True, cal=True)
+    code = run_with_stores(swot_view.series_snippet(30.1, 2.0, ["ssha_filtered"], 5, target="s3://b/expert", fine=fine,
+                                                    dtu=True, cal=True), paths, monkeypatch)
+    for name, is_fine, radius in (("series", False, 5), ("fine", True, 1)):
+        app = c.get("/api/series", params=dict(lon=30.1, lat=2.0, variable="cal", fine=is_fine, radius=radius)).json()
+        assert len(app["time"]) >= 2
+        np.testing.assert_allclose(code[name].values, app["value"], atol=2e-4)
+    region = run_with_stores(swot_view.snippet(29, 31, 0, 4, "2024-01-01", "2024-01-31", "ssha_filtered",
+                                               target="s3://b/expert", dtu=True, cal=True), paths, monkeypatch)
+    view = dict(west=29, east=31, south=0, north=4, start="2024-01-01", days=21)
+    values = server.load(*view.values(), "cal")[0].raw  # (passages, lines, pixels) as the map draws them
+    np.testing.assert_allclose(region["ssha"].transpose("time", "along", "cross").values, values, atol=1e-5)
+
+
+def test_read_arrays_in_any_order(dtu_store_path, shifted_fine_store_path, monkeypatch):
+    """A view's arrays are read with their positions whatever their order (overviews sort them: the calibration's,
+    per line and side, first)."""
+    server, _ = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
+    sub = server.ds.isel(time=[0, 1], along=slice(400, 450))
+    data, _ = server.read(sub, sorted(server.VARIABLES["cal"].arrays))
+    assert data.latitude.dims == ("time", "along", "cross") and data.cal_bias.dims == ("time", "along", "side")

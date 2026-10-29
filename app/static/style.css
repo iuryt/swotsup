@@ -29,6 +29,8 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 12px; }
 label.check { flex-direction: row; align-items: center; gap: 6px; margin: 8px 0; color: var(--fg); }
 label.check input { width: auto; margin: 0; }  /* not stretched as the number boxes are */
+.tag { font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--orange);
+       border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
 
 button, .button, select, input { font: inherit; color: var(--fg); border-radius: 8px; border: 1px solid var(--border);
   background: rgba(30, 41, 59, 0.8); padding: 6px 10px; }
