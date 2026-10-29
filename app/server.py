@@ -119,6 +119,20 @@ MAX_PIXELS = float(os.environ.get("SWOT_MAX_PIXELS", PRODUCT.get("max_pixels", 6
 VARIABLES = PRODUCT["variables"]
 
 
+SCREEN_SAMPLE = 1_000_000  # pixels kept with their positions, for the colors of what is on screen
+
+
+def screen_limits(screen, shift, west, east, south, north):
+    """The robust limits of each mode from the pixels of a sample (lon, lat, value, passage) inside a box; None with
+    too few there."""
+    lon, lat, v, at = screen
+    width = (east - west) % 360 or 360
+    inside = ((lon - west) % 360 <= width) & (lat >= south) & (lat <= north)
+    if inside.sum() < 500:
+        return None
+    return {mode: color_limits((v[inside] - s[at[inside]]).astype("float64"))[1] for mode, s in shift.items()}
+
+
 def color_limits(v):
     """The colors' limits for values: their quantiles (0 to 100 % by 0.1) and a robust range, the median ± 2 x 1.4826
     x MAD (two standard deviations for normal values): in coastal scenes rivers and lakes push the 2-98 % percentiles
@@ -337,6 +351,9 @@ class Loaded:
         in_box = lambda lo: (lo - w) % 360 <= e - w  # noqa: E731
         sample = values.ravel()[idx]
         inside = sample[in_box(lon.ravel()[idx]) & np.isfinite(sample)]
+        keep = idx[:SCREEN_SAMPLE][np.isfinite(sample[:SCREEN_SAMPLE])]  # with positions: the colors of a screen
+        self.screen = (((lon.ravel()[keep] + 180) % 360 - 180).astype("float32"), lat.ravel()[keep].astype("float32"),
+                       values.ravel()[keep], (keep // max(int(np.prod(values.shape[1:])), 1)).astype("int32"))
         per = [np.where(in_box(lon[i].ravel()[::7]), values[i].ravel()[::7], np.nan) for i in range(len(values))]
         with warnings.catch_warnings(action="ignore"):  # passages without data in the box: NaN
             self.shift = {"none": np.zeros(len(values), "float32"),
@@ -519,6 +536,7 @@ class Overview:
         self.count = np.zeros((size, size), "float32")
         self._shift = {mode: np.zeros(len(self.times), "float32") for mode in ("none", "box", "passage")}
         self.samples, self.quantiles, self.robust, self.pixels, self.seconds = [], {}, {}, 0, 0.0
+        self.screen = None  # a sample of pixels with their positions (the colors of a screen), once read
         self.done, self.started = 0, None  # passages read so far, and when the build started (progress)
         self.error = None  # why the build failed, if it did (then it is "ready", with nothing to show)
         box = "_".join(f"{view[k]:g}" for k in ("west", "east", "south", "north"))
@@ -549,7 +567,8 @@ class Overview:
         v, which = values[ok], np.broadcast_to(np.arange(len(at))[:, None, None], values.shape)[ok]
         self.pixels += int(ok.sum())
         pick = rng.integers(0, max(len(v), 1), min(len(v), 200_000))
-        self.samples.append((v[pick], at[which[pick]]))
+        self.samples.append((v[pick], at[which[pick]], ((lon[ok][pick] + 180) % 360 - 180).astype("float32"),
+                             lat[ok][pick].astype("float32")))
         # the raster's pixel of each cell (rows from the south), summed with one count each (as datashader's points)
         size = self.count.shape[0]
         col = np.floor((x + WORLD / 2) / WORLD * size).astype(int)
@@ -563,8 +582,12 @@ class Overview:
 
     def finish(self):
         """What the box mode subtracts (the median), and the colors' quantiles, from the samples."""
-        v = np.concatenate([a for a, _ in self.samples]) if self.samples else np.zeros(0, "float32")
-        at = np.concatenate([b for _, b in self.samples]) if self.samples else np.zeros(0, int)
+        v = np.concatenate([a for a, *_ in self.samples]) if self.samples else np.zeros(0, "float32")
+        at = np.concatenate([b for _, b, *_ in self.samples]) if self.samples else np.zeros(0, int)
+        lon = np.concatenate([c for *_, c, _ in self.samples]) if self.samples else np.zeros(0, "float32")
+        lat = np.concatenate([d for *_, d in self.samples]) if self.samples else np.zeros(0, "float32")
+        keep = np.random.default_rng(0).permutation(len(v))[:SCREEN_SAMPLE]
+        self.screen = (lon[keep], lat[keep], v[keep], at[keep].astype("int32"))
         self._shift["box"][:] = np.median(v) if len(v) else np.nan
         for mode, shift in self._shift.items():
             w = v - shift[at]
@@ -578,7 +601,8 @@ class Overview:
                         old.unlink()
                 np.savez(self.file, none=self.sum["none"], passage=self.sum["passage"], count=self.count,
                          shift=self._shift["passage"], box=self._shift["box"][:1], pixels=self.pixels,
-                         quantiles=np.array([json.dumps(self.quantiles)]), robust=np.array([json.dumps(self.robust)]))
+                         quantiles=np.array([json.dumps(self.quantiles)]), robust=np.array([json.dumps(self.robust)]),
+                         screen_lon=self.screen[0], screen_lat=self.screen[1], screen_v=self.screen[2], screen_at=self.screen[3])
             except OSError as e:
                 print(f"overview not kept on disk: {e}", flush=True)
 
@@ -593,6 +617,8 @@ class Overview:
             self.pixels = int(f["pixels"])  # read now from disk, not from the cloud: no seconds to show
             self.quantiles = json.loads(str(f["quantiles"][0]))
             self.robust = json.loads(str(f["robust"][0])) if "robust" in f else {}
+            if "screen_v" in f:
+                self.screen = (f["screen_lon"], f["screen_lat"], f["screen_v"], f["screen_at"])
         self.ready.set()
         return True
 
@@ -873,6 +899,15 @@ def page():
     if not NETCDF:
         html = "\n".join(line for line in html.splitlines() if 'id="download"' not in line)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/limits")
+def limits(lon0: float, lon1: float, lat0: float, lat1: float, data=Depends(view)):
+    """The robust color limits of each mode from the view's pixels on screen (the box lon0-lon1, lat0-lat1): red and
+    blue at any zoom; the whole view's where too few pixels are on screen."""
+    screen = getattr(data, "screen", None)
+    out = screen_limits(screen, data.shift, lon0, lon1, lat0, lat1) if screen is not None else None
+    return out or data.robust
 
 
 @app.get("/api/progress")
