@@ -6,6 +6,9 @@ IDLE=30
 cd /opt/app
 t=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')
 ip=$(curl -s -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/public-ipv4)
+# the disk (30 GB) keeps every image built: the build cache goes before building, the unused images once the new
+# container runs (a full disk failed an update, and the instance kept the old image)
+docker builder prune -af >/dev/null 2>&1
 docker build -t swot .
 docker rm -f swot caddy
 # the stores: the server's default, L2 Expert with L2 Unsmoothed from a zoom on, on Arraylake (Earthmover), if its
@@ -36,6 +39,8 @@ docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF
 set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860
+docker image prune -af >/dev/null 2>&1
+df -h / | tail -1
 # the anonymous usage, copied to S3 every 10 minutes and before the machine stops (it may only write there)
 sync="aws s3 sync --only-show-errors /opt/telemetry s3://iuryt-shared-east/telemetry/swot-explorer/"
 systemctl stop swot-telemetry.timer 2>/dev/null
