@@ -161,6 +161,8 @@ sbatch slurm/pixi_install.sbatch   # after changing dependencies (also installs 
 sbatch -c 8 -o logs/bench-%j.out slurm/run.sbatch scripts/bench_server.py   # timings (AWS_PROFILE=swot-read)
 sbatch -o logs/ec2-%j.out slurm/ec2.sh up|status|update|down   # test server on EC2 (c7i.2xlarge, us-east-1),
                                    # profile swot-deploy. Ask the user before update/up/down: people may be using it
+sbatch -o logs/ec2-%j.out slurm/ec2.sh domain   # https://swotsup.org: CloudFront (EC2, failing over to the Lambda's
+                                   # waiting page at the same address), ACM certificate, Route 53 records; then `update`
 ```
 
 Screenshots: after every visible change, take them with `slurm/screenshot.sbatch` and give the user their
