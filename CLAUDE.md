@@ -53,7 +53,11 @@ be resumed here (`claude --resume`).
     by one (the Gulf Stream, 12 days of Expert: ~35 s -> 1.6 s from biomix). From AWS the stores read ~10x faster
     than from biomix (Unsmoothed, 2 days of the Gulf Stream, 644 MB: 0.6 s on a c7i.2xlarge in us-east-1);
   - variables (`Variable`: arrays summed, quality flag, surface classes kept, dB or not, default colormap, kind,
-    units, twin): L2 SSHA from `ssha_karin_2_xover` (swot_cloud: + xover, on water, no bad bit; one array), on the open
+    units, twin, mss): L2 SSHA from `ssha_karin_2_xover` (swot_cloud: + xover, on water, no bad bit; one array) plus
+    `mss_cor_dtu25` by default (`ssha_dtu25`: the DTU25 mean sea surface instead of the L2's CNES_CLS22, one per pass in
+    Expert; Unsmoothed has none: `from_base` interpolates Expert's at its pixels' along/cross; credit in the map's corner
+    and About, CC BY 4.0; Display: "Mean sea surface" switches to the `mss` twin; the copied code adds it with a
+    `dtu25` function), on the open
     ocean by default (`ancillary_surface_classification_flag` 0; in Expert one per pass: `of_passage`, `block` and the
     Hovmöller take each passage's pass) with a twin that keeps rivers and lakes (Display: "Rivers and lakes"); SSHA
     without the correction, sigma0 (in dB), SWH and wind speed, each kept only where its own flag is 0; only SSHA and

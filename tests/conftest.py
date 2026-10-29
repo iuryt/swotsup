@@ -72,3 +72,24 @@ def fine_store_path(tmp_path_factory):
         append(session.store, fake_l3(files_dir, cycle, 7, day=day, n_lines=1001, n_pixels=51), along_chunk=100, time_chunk=1)
     session.commit("fine grid")
     return path
+
+
+@pytest.fixture(scope="session")
+def dtu_store_path(tmp_path_factory):
+    """Passes 7 (3 Jan) and 20 (4 Jan, lon 30.5) of cycle 3 on a ~2.5 km grid (not fine_store_path's), with a fake
+    mss_cor_dtu25 (pass_number, along, cross) as L2 Expert's: pass / 100 + 0.001 per km of along, linear so that
+    interpolating it is exact. Built once (read only)."""
+    files_dir = tmp_path_factory.mktemp("dtu_files")
+    path = str(tmp_path_factory.mktemp("dtu"))
+    session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
+    for pass_id, lon0, day in ((7, 30.0, 3), (20, 30.5, 4)):
+        append(session.store, fake_l3(files_dir, 3, pass_id, lon0=lon0, day=day, n_lines=901, n_pixels=45),
+               along_chunk=100, time_chunk=1)
+    session.commit("passes")
+    session = icechunk.Repository.open(icechunk.local_filesystem_storage(path)).writable_session("main")
+    ds = xr.open_zarr(session.store, consolidated=False, chunks=None)
+    cor = ds.pass_number / 100 + 0.001 * ds.along + 0 * ds.cross
+    cor = cor.astype("float32").transpose("pass_number", "along", "cross").reset_coords(drop=True)
+    xr.Dataset({"mss_cor_dtu25": cor}).to_zarr(session.store, mode="a", consolidated=False)
+    session.commit("dtu25")
+    return path

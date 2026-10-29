@@ -82,6 +82,14 @@ function followArea() {  // once the map stops: read another area if the view le
   }, 1000);
 }
 
+// the variable's entry in the menu: its rivers-and-lakes and mean-sea-surface choices are in the Display menu
+function showVariable() {
+  let k = state.variable;
+  if (info.looks[k].twin && info.looks[k].water) k = info.looks[k].twin;
+  if (info.looks[k].mss && !info.looks[k].dtu) k = info.looks[k].mss;
+  $("#variable").value = k;
+}
+
 async function loadData() {
   $("#busy").classList.remove("hidden");
   state.area = areaWanted();
@@ -215,6 +223,8 @@ function setColors() {
   const look = info.looks[state.variable];
   $("#water-row").classList.toggle("hidden", !look.twin);  // rivers and lakes: where the variable has the choice
   $("#water").checked = look.water;
+  $("#mss-row").classList.toggle("hidden", !look.mss);  // which mean sea surface: where the variable has the choice
+  document.querySelectorAll("#mss button").forEach((b) => b.classList.toggle("active", (b.dataset.value === "dtu") === look.dtu));
   cmapMenu();
   const pct = (v) => { // percentile of a value, from the quantiles
     let i = q.findIndex((x) => x >= v);
@@ -235,11 +245,12 @@ function setColors() {
   if (transect && transect.key !== lineKey()) fillLine();
   const url = `/api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}&cmap=${cmapOf()}`;
   const raster = { "raster-fade-duration": 0, "raster-resampling": "nearest" };
-  if (!info.detail) return showTiles("swot", url, { paint: raster });
+  const credit = { attribution: info.looks[state.variable].dtu ? "MSS: DTU25 (DTU Space, CC BY 4.0)" : undefined };
+  if (!info.detail) return showTiles("swot", url, { paint: raster }, credit);
   // the finer product over it, from a zoom on: it fades in over half a zoom level, over the base, which stays: under
   // it the server draws the base inside its swath (no 2 km at its edges), so where it has no tile yet the base shows
   const z = info.detail.zoom;
-  showTiles("swot", url, { paint: raster });
+  showTiles("swot", url, { paint: raster }, credit);
   showTiles("detail", url.replace("/api/tile/", "/api/detail/"), { minzoom: z - 1, paint: { ...raster,
     "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z - 0.4, 1] } }, { minzoom: z - 1 });
 }
@@ -1421,10 +1432,11 @@ async function main() {
   if (link.cmap) state.cmaps[state.variable] = link.cmap;
   if (link.range?.preset) state.preset = link.range.preset;
   if (link.range?.vmin != null) Object.assign(state, { preset: "custom", vmin: link.range.vmin, vmax: link.range.vmax });
-  // one entry per variable: a twin with rivers and lakes is the Display menu's checkbox, not an entry
-  const listed = Object.keys(info.variables).filter((k) => !(info.looks[k].twin && info.looks[k].water));
+  // one entry per variable: a twin with rivers and lakes, or with the L2's mean sea surface, is a choice in the
+  // Display menu, not an entry
+  const listed = Object.keys(info.variables).filter((k) => !(info.looks[k].twin && info.looks[k].water) && !(info.looks[k].mss && !info.looks[k].dtu));
   $("#variable").innerHTML = listed.map((k) => `<option value="${k}">${info.variables[k]}</option>`).join("");
-  $("#variable").value = listed.includes(state.variable) ? state.variable : info.looks[state.variable].twin;
+  showVariable();
   $("#link-button").onclick = copyLink;
   document.querySelectorAll(".max-days").forEach((e) => (e.textContent = info.max_days));
   $("#about-coverage").textContent = `${dayText(Date.parse(info.first))} to ${dayText(Date.parse(info.last))}, ` +
@@ -1503,6 +1515,14 @@ async function main() {
   setupMenus();
   $("#water").onchange = () => {  // the same variable with or without rivers and lakes (its twin)
     state.variable = info.looks[state.variable].twin;
+    showVariable();
+    loadData();
+  };
+  $("#mss").onclick = (e) => {  // the same variable with the other mean sea surface
+    const look = info.looks[state.variable];
+    if (!e.target.dataset.value || (e.target.dataset.value === "dtu") === look.dtu) return;
+    state.variable = look.mss;
+    showVariable();
     loadData();
   };
   lucide.createIcons();
