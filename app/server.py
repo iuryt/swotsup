@@ -181,6 +181,8 @@ DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE", None if CONFIGURED else L2 + 
 DETAIL_PRODUCT = PRODUCTS[os.environ.get("SWOT_DETAIL_PRODUCT", "unsmoothed")]
 DETAIL_ZOOM = int(os.environ.get("SWOT_DETAIL_ZOOM", 9))
 detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial"), geometry) if DETAIL_STORE else None
+# the passages it has, (cycle, pass): drawn by it alone from its zoom on
+DETAIL_PASSAGES = frozenset(zip(detail.index.cycle.values.tolist(), detail.index.pass_id.values.tolist())) if detail else frozenset()
 DEFAULT = PRODUCT["default"]
 if DEFAULT is None:  # the latest passage's day, 6 x 6 degrees around its nadir at the latitude nearest the equator
     last = int(np.argmax(index.time.values))
@@ -376,14 +378,18 @@ class Loaded:
     def pixels(self):
         return int(np.isfinite(self.raw).sum())
 
-    def blocks(self, x_range, y_range):
+    def blocks(self, x_range, y_range, hide=frozenset()):
         """Each mesh's lines in view, with the world's copies (the map repeats it east and west): (passage, its
-        lines in view, their x and y)."""
+        lines in view, their x and y); none of the passages `hide` ((cycle, pass) pairs)."""
         x0, x1, y0, y1 = self.bounds.T
+        hidden = {i for i, key in enumerate(zip(self.sub.cycle.values.tolist(), self.sub.pass_id.values.tolist()))
+                  if key in hide} if hide else set()
         for shift in (-WORLD, 0, WORLD):
             hit = (x1 + shift >= x_range[0]) & (x0 + shift <= x_range[1]) & (y1 >= y_range[0]) & (y0 <= y_range[1])
             for m in np.flatnonzero(hit):
                 i, rows, x, y, line_y0, line_y1, _ = self.levels[1][1][m]
+                if i in hidden:
+                    continue
                 # lines run south to north: the first reaching the view from the south and the last from the north
                 # (a small view can fall between two lines: then these two are the cell around it)
                 above, below = np.flatnonzero(line_y1 >= y_range[0]), np.flatnonzero(line_y0 <= y_range[1])
@@ -394,16 +400,16 @@ class Loaded:
                 lines = slice(rows.start + block.start, rows.start + min(block.stop, len(x)))
                 yield i, lines, x[block] + shift, y[block]
 
-    def rasters(self, mode, x_range, y_range, width, height):
+    def rasters(self, mode, x_range, y_range, width, height, hide=frozenset()):
         """Each mesh in view on a width x height grid: (passage, first line of the block, its x and y, raster)."""
         canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
-        for i, lines, xs, ys in self.blocks(x_range, y_range):
+        for i, lines, xs, ys in self.blocks(x_range, y_range, hide):
             mesh = xr.DataArray(self.value(mode, i, lines), name="v", dims=("along", "cross"),
                                 coords={"x": (("along", "cross"), xs), "y": (("along", "cross"), ys)})
             yield i, lines.start, xs, ys, canvas.quadmesh(mesh, x="x", y="y").values
 
-    def mean_on(self, mode, x_range, y_range, width, height):
-        """Mean of the passages on a width x height grid, NaN where none. Where the cells are smaller than a pixel
+    def mean_on(self, mode, x_range, y_range, width, height, hide=frozenset()):
+        """Mean of the passages (but `hide`) on a width x height grid, NaN where none. Where the cells are smaller than a pixel
         (on the ground, at the view's middle latitude), all of them in view are drawn as points in one go: from the
         coarsest level whose blocks still are, or the cells themselves (their lines in view, from the meshes).
         Zoomed in further, each passage's cells are drawn as meshes."""
@@ -419,7 +425,7 @@ class Loaded:
                     keep = (x + shift >= x_range[0]) & (x + shift <= x_range[1])
                     xs.append(x[keep] + shift), ys.append(y[keep]), vs.append(v[keep])
             else:
-                for i, lines, x, y in self.blocks(x_range, y_range):
+                for i, lines, x, y in self.blocks(x_range, y_range, hide):
                     xs.append(x.ravel()), ys.append(y.ravel()), vs.append(self.value(mode, i, lines).ravel())
             canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
             if not xs:
@@ -427,7 +433,7 @@ class Loaded:
             frame = pd.DataFrame({"x": np.concatenate(xs), "y": np.concatenate(ys), "v": np.concatenate(vs)})
             return canvas.points(frame, "x", "y", agg=dsh.mean("v")).values
         total, count = np.zeros((height, width)), np.zeros((height, width))
-        for *_, m in self.rasters(mode, x_range, y_range, width, height):
+        for *_, m in self.rasters(mode, x_range, y_range, width, height, hide):
             total, count = total + np.where(np.isfinite(m), m, 0), count + np.isfinite(m)
         with np.errstate(invalid="ignore"):
             return total / count
@@ -597,11 +603,11 @@ class Overview:
             return None
         return int(round(z))
 
-    def mean_on(self, mode, x_range, y_range, width, height):
+    def mean_on(self, mode, x_range, y_range, width, height, hide=frozenset()):
         z = self.tile(x_range, y_range, width, height)
         if z is None:  # closer: the passages that cross the view, a chunk at a time
             data = self.near(*lonlat_box(x_range, y_range))
-            return np.full((height, width), np.nan) if data is None else data.mean_on(mode, x_range, y_range, width, height)
+            return np.full((height, width), np.nan) if data is None else data.mean_on(mode, x_range, y_range, width, height, hide)
         self.ready.wait()
         k, size = 2 ** (self.ZOOM - z), WORLD / 2**z
         c0 = int(round((x_range[0] + WORLD / 2) / size)) * 256 * k
@@ -952,7 +958,10 @@ def tile_ranges(z, x, y):
 @app.get("/api/tile/{z}/{x}/{y}.png")
 def tile(z: int, x: int, y: int, variable: str, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2,
          cmap: str = None, data=Depends(view)):
-    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256), vmin, vmax, colormap(cmap, variable))
+    # from the detail's zoom, the passages the detail product has are its own (no 2 km under the 250 m, which showed
+    # at the swath's edges): the base shows only on dates the detail does not cover yet
+    hide = DETAIL_PASSAGES if z >= DETAIL_ZOOM and has_detail(variable) else frozenset()
+    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256, hide), vmin, vmax, colormap(cmap, variable))
 
 
 # --- the detail product, tile by tile: each passage's lines near the tile, read a chunk at a time and kept
