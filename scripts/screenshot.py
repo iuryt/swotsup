@@ -31,7 +31,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(6000)  # tiles
 
     def shot(name):
-        page.screenshot(path=f"{prefix}-{name}.png")
+        page.screenshot(path=f"{prefix}-{name}.png", timeout=120_000)  # a fresh server is busy building the overview
         print(f"{prefix}-{name}.png", flush=True)
 
     def run(scenario):

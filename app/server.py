@@ -10,6 +10,7 @@ import os
 import threading
 import time
 import tomllib
+import traceback
 import warnings
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -44,13 +45,14 @@ class Variable:
     its default colormap and kind ("anomaly": a spatial mean subtracted, colors symmetric; "level": as stored)."""
 
     def __init__(self, label, names, flag=None, db=False, cmap="RdBu_r", kind="anomaly", units="m", surface=None,
-                 twin=None, mss=None):
+                 twin=None, mss=None, calibrated=False, cal=None):
         self.label, self.names, self.flag, self.db = label, list(names), flag, db
         self.cmap, self.kind, self.units = cmap, kind, units
         # the surface classes kept (SURFACE: 0 open ocean, 2 continental water...), and the variable that is the same
         # with another choice of them (the Display menu's "Rivers and lakes" switches between the two); `mss`: the
-        # same with the other mean sea surface (the Display menu's "Mean sea surface")
-        self.surface, self.twin, self.mss = surface, twin, mss
+        # same with the other mean sea surface (the Display menu's "Mean sea surface"); `calibrated`: minus the
+        # calibration (`calibration`), and `cal` the same with the other choice (the Display menu's "Calibration")
+        self.surface, self.twin, self.mss, self.calibrated, self.cal = surface, twin, mss, calibrated, cal
 
     @property
     def dtu(self):
@@ -60,12 +62,15 @@ class Variable:
     @property
     def arrays(self):
         """Every array the values need."""
-        return self.names + ([self.flag] if self.flag else []) + ([SURFACE] if self.surface else [])
+        return (self.names + ([self.flag] if self.flag else []) + ([SURFACE] if self.surface else [])
+                + (list(CAL) if self.calibrated else []))
 
     def values(self, get):
-        """The values, from `get(name)` -> each array: summed, NaN where the flag is not 0 or the surface is not one
-        kept, in dB if so."""
+        """The values, from `get(name)` -> each array: summed, minus the calibration if so (`get("cross")`: the pixels'
+        distance to nadir), NaN where the flag is not 0 or the surface is not one kept, in dB if so."""
         v = masked(sum(get(n) for n in self.names), get(self.flag) if self.flag else None)
+        if self.calibrated:
+            v = v - calibration(get(CAL[0]), get(CAL[1]), get("cross")).reshape(v.shape)
         if self.surface:
             v = np.where(np.isin(get(SURFACE), self.surface), v, np.nan)
         if self.db:
@@ -84,16 +89,34 @@ SURFACE = "ancillary_surface_classification_flag"  # Expert: one per pass (pass_
 # in Expert; it removes geoid errors at 15-70 km, ~20 % of SSHA's power there); Unsmoothed has no MSS: the
 # correction comes from Expert, interpolated at its pixels (`from_base`)
 DTU = "mss_cor_dtu25"
-XOVER, XOVER_DTU = ["ssha_karin_2_xover"], ["ssha_karin_2_xover", DTU]
-SSHA_L2 = {
-    "ssha_dtu25": Variable("SSHA (KaRIn 2) + crossover correction", XOVER_DTU, surface=(0,), twin="ssha_dtu25_water",
-                           mss="ssha_karin_2_xover"),
-    "ssha_dtu25_water": Variable("SSHA (KaRIn 2) + crossover correction, rivers and lakes too", XOVER_DTU,
-                                 twin="ssha_dtu25", mss="ssha_karin_2_xover_water"),
-    "ssha_karin_2_xover": Variable("SSHA (KaRIn 2) + crossover correction, L2 MSS", XOVER, surface=(0,),
-                                   twin="ssha_karin_2_xover_water", mss="ssha_dtu25"),
-    "ssha_karin_2_xover_water": Variable("SSHA (KaRIn 2) + crossover correction, L2 MSS, rivers and lakes too",
-                                         XOVER, twin="ssha_karin_2_xover", mss="ssha_dtu25_water"),
+# by default also calibrated (swot_cloud, experimental v0.1: Expert's cal_bias and cal_slope, a bias and a cross-track
+# slope per line and side; Unsmoothed takes Expert's, `from_base`)
+CAL = ("cal_bias", "cal_slope")
+
+
+def calibration(bias, slope, cross):
+    """The calibration to subtract: bias + slope x cross / 60 of the pixel's side (west: cross < 0, east), `cross`
+    its distance to nadir (km). `bias`, `slope`: (..., 2), each line's two sides; `cross`: broadcastable to (..., n)."""
+    cross = np.asarray(cross, float)
+    side = np.broadcast_to((cross > 0).astype(int), bias.shape[:-1] + cross.shape[-1:])
+    return np.take_along_axis(bias, side, -1) + np.take_along_axis(slope, side, -1) * cross / 60
+
+
+def ssha_l2():
+    """SSHA with the crossover correction, by each choice of mean sea surface (DTU25 or the L2's), calibration and
+    surfaces (the open ocean, or rivers and lakes too): the defaults first; each a twin of the others by one choice."""
+    out = {}
+    for dtu, cal, water in itertools.product((True, False), (True, False), (False, True)):
+        key = lambda d, c, w: "ssha_" + ("dtu25" if d else "karin_2_xover") + ("_cal" if c else "") + ("_water" if w else "")  # noqa: E731
+        label = ("SSHA (KaRIn 2) + crossover correction" + ("" if dtu else ", L2 MSS") + (", calibrated" if cal else "")
+                 + (", rivers and lakes too" if water else ""))
+        out[key(dtu, cal, water)] = Variable(label, ["ssha_karin_2_xover"] + ([DTU] if dtu else []),
+                                             surface=None if water else (0,), twin=key(dtu, cal, not water),
+                                             mss=key(not dtu, cal, water), calibrated=cal, cal=key(dtu, not cal, water))
+    return out
+
+
+SSHA_L2 = ssha_l2() | {
     # its flag alone keeps nearly all the land in Unsmoothed: the open ocean only, as the default
     "ssha_karin_2": Variable("SSHA (KaRIn 2), no correction", ["ssha_karin_2"], "ssha_karin_2_qual", surface=(0,))}
 SIGMA0 = Variable("Sigma0 (KaRIn 2)", ["sig0_karin_2"], "sig0_karin_2_qual", db=True, cmap="cmo.gray", kind="level",
@@ -204,6 +227,7 @@ def latest_days(times):
 STORE = os.environ.get("SWOT_STORE", L2 + "expert-d")
 base = open_product(STORE, PRODUCT.get("partial"))
 ds, index, geometry, COMMIT = base.ds, base.index, base.geometry, base.commit
+BASE_ROWS = {(c, p): i for i, (c, p) in enumerate(zip(index.cycle.values.tolist(), index.pass_id.values.tolist()))}
 # a finer product over the same passages, drawn over the map from a zoom on (SWOT_DETAIL_STORE: e.g. L2 Unsmoothed
 # at 250 m over L2 Expert at 2 km); read tile by tile, a chunk at a time, never as a whole view
 DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE", None if CONFIGURED else L2 + "unsmoothed-d")
@@ -684,7 +708,7 @@ def build_overviews(view, overviews):
     try:
         build(view, overviews)
     except Exception as e:
-        print(f"overview failed: {e!r}", flush=True)
+        print(f"overview failed: {e!r}\n{traceback.format_exc()}", flush=True)
         for o in overviews:
             if not o.ready.is_set():
                 o.error = repr(e)
@@ -738,7 +762,7 @@ def read(sub, names):
     timed = [a for a in names if "time" in sub[a].dims]  # the others are one per pass (Expert's surface classes)
     data = sub[timed]
     data = data.drop_vars([c for c in data.coords if c not in data.indexes and c not in ("latitude", "longitude", "cycle", "pass_id")])
-    dims = data[timed[0]].dims
+    dims = sub["latitude"].dims  # (time, along, cross): not every array's (the calibration's are per line and side)
     data = data.copy(data={a: out[a] for a in timed}).assign_coords(latitude=(dims, out["latitude"]),
                                                                      longitude=(dims, out["longitude"]))
     return data.assign({a: (dims, out[a]) for a in names if a not in timed}).load(), out["line_time"]
@@ -948,8 +972,9 @@ def info():
                 passages=ds.sizes["time"], passes=ds.sizes["pass_number"], max_days=MAX_DAYS, default=DEFAULT,
                 variables={k: v.label for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
                 # each variable's kind, units and default colormap; the colormaps on offer as 16 stops each
+                calibration=ds[CAL[0]].attrs.get("version") if CAL[0] in ds else None,  # its version
                 looks={k: dict(kind=v.kind, units=v.units, cmap=v.cmap, fine=has_detail(k), twin=v.twin, water=not v.surface,
-                                   mss=v.mss, dtu=v.dtu)
+                                   mss=v.mss, dtu=v.dtu, cal=v.cal, calibrated=v.calibrated)
                        for k, v in VARIABLES.items()},
                 colormaps={name: ["#%02x%02x%02x" % tuple(int(255 * c) for c in cm(x)[:3]) for x in np.linspace(0, 1, 16)]
                            for name, cm in COLORMAPS.items()}, diverging=list(COLORMAPS)[:DIVERGING],
@@ -986,7 +1011,7 @@ def load_view(west: float, east: float, south: float, north: float, start: str, 
     return dict(passages=data.sub.sizes["time"], seconds=round(seconds, 2),
                 pixels=data.pixels, quantiles=data.quantiles, robust=data.robust,
                 code=swot_view.snippet(west, east, south, north, start, str(end.date()), stored(VARIABLES[variable])[0],
-                                       dtu=VARIABLES[variable].dtu))
+                                       dtu=VARIABLES[variable].dtu, cal=VARIABLES[variable].calibrated))
 
 
 def colormap(name, variable):
@@ -1030,25 +1055,50 @@ def block(src, product, i, c, variable):
     """A passage's (time index `i`) chunk `c` of lines of a store (`src`): a variable's values (as its product says)
     and positions, as float32, and when each line was."""
     n = src.ds.line_time.encoding["chunks"][1]
-    var, p = product["variables"][variable], int(src.index.pass_id.values[i])
+    var, p, cycle = product["variables"][variable], int(src.index.pass_id.values[i]), int(src.index.cycle.values[i])
     own = [k for k in var.arrays if k in src.ds]  # the others from the base store (`from_base`)
-    sub = src.ds[own + ["latitude", "longitude", "line_time"]].isel(time=i, along=slice(c * n, (c + 1) * n))
+    shifted = var.calibrated and CAL[0] not in src.ds and SHIFT in src.ds  # its lines moved off the base's nadir
+    sub = src.ds[own + ["latitude", "longitude", "line_time"] + ([SHIFT] if shifted else [])].isel(
+        time=i, along=slice(c * n, (c + 1) * n))
     if "pass_number" in sub.dims:  # arrays kept once per pass: this passage's pass
         sub = sub.sel(pass_number=p)
     sub = sub.load()
-    values = var.values(lambda k: sub[k].values if k in sub else from_base(k, p, sub.along.values, sub.cross.values))
+
+    def get(k):
+        if k == "cross":
+            return to_nadir(sub.cross.values, sub[SHIFT].values[:, None] if shifted else 0)
+        return sub[k].values if k in sub else from_base(k, p, sub.along.values, sub.cross.values, cycle)
+
+    values = var.values(get)
     return (values.astype("float32"), sub.latitude.values.astype("float32"),
             sub.longitude.values.astype("float32"), sub.line_time.values)
 
 
-def from_base(name, p, along, cross):
-    """An array of the base store kept once per pass (Expert's DTU25 MSS correction) at a finer store's pixels of
-    pass `p`, which lacks it: interpolated at their along and cross (both stores count them in km from the same
+def from_base(name, p, along, cross, cycle=None):
+    """An array of the base store at a finer store's pixels of pass `p`, which lacks it: one kept once per pass
+    (Expert's DTU25 MSS correction), or per passage and line (its calibration: the passage of the same `cycle`; NaN
+    if the base has none), interpolated at their along and cross (both stores count them in km from the same
     reference track), linearly, and beyond the base's outermost pixels (the swath's edges). `along` and `cross`: the
     lines' and pixels' of a grid, or DataArrays of points (dims "pixel")."""
-    a = base.ds[name].sel(pass_number=p)
+    a = base.ds[name]
+    if "time" in a.dims:
+        row = BASE_ROWS.get((cycle, p))
+        if row is None:
+            return np.full(np.shape(along) + a.shape[2:], np.nan)
+        a = a.isel(time=row)
+    else:
+        a = a.sel(pass_number=p)
     a = a.sel(along=slice(float(np.min(along)) - 4, float(np.max(along)) + 4))
-    return a.interp(along=along, cross=cross, kwargs={"fill_value": None}).values
+    return a.interp({"along": along} | ({"cross": cross} if "cross" in a.dims else {}), kwargs={"fill_value": None}).values
+
+
+SHIFT = "cross_shift"  # Unsmoothed: whole 250 m columns each line was moved across track, onto its pass's reference
+
+
+def to_nadir(cross, shift):
+    """The pixels' distance to the satellite's nadir (km), from their cross and their line's shift in 250 m columns
+    (NaN: none)."""
+    return cross - 0.25 * np.nan_to_num(shift)
 
 
 @lru_cache(maxsize=int(os.environ.get("SWOT_DETAIL_BLOCKS", 1024)))  # ~3.4 MB each at 512 x 551 (float32)
@@ -1284,14 +1334,23 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
         per_pass.pop("time")
         passes = index.pass_id.values[where["time"]]
 
+        cycles = index.cycle.values[where["time"]]
+        along, cross = ds.along.values[where["along"].values], ds.cross.values[where["cross"].values]
+        shifted = var.calibrated and CAL[0] not in ds and SHIFT in ds  # its lines moved off the base's nadir
+
         def get(n):
+            if n == "cross":
+                return to_nadir(cross, ds[SHIFT].isel(time=where["time"], along=where["along"]).values if shifted else 0)[:, None]
             if n in ds:
-                return ds[n].isel(where if "time" in ds[n].dims else per_pass).values
-            out = np.empty(len(passes))  # only in the base store: at the pixels' along and cross, pass by pass
-            for p in np.unique(passes):
-                k = np.flatnonzero(passes == p)
-                out[k] = from_base(n, int(p), xr.DataArray(ds.along.values[where["along"].values[k]], dims="pixel"),
-                                   xr.DataArray(ds.cross.values[where["cross"].values[k]], dims="pixel"))
+                return ds[n].isel(where if "time" in ds[n].dims else per_pass, missing_dims="ignore").values
+            # only in the base store: at the pixels' along and cross, by pass (or passage: the calibration)
+            keys = np.stack([cycles if "time" in base.ds[n].dims else 0 * cycles, passes], 1)
+            out = None
+            for c, p in np.unique(keys, axis=0):
+                k = np.flatnonzero((keys == (c, p)).all(1))
+                v = from_base(n, int(p), xr.DataArray(along[k], dims="pixel"), xr.DataArray(cross[k], dims="pixel"), int(c))
+                out = np.empty((len(passes),) + v.shape[1:]) if out is None else out
+                out[k] = v
             return out
 
         values = var.values(get)
@@ -1348,7 +1407,8 @@ def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool 
             raise HTTPException(404, "no 250 m product for this variable")
         return detail_series(lon, lat, variable, radius)
     var = VARIABLES[variable]
-    s = swot_view.point_series(ds, lon, lat, var.names, radius, mask=var.flag, db=var.db, surface=var.surface)["value"]
+    s = swot_view.point_series(ds, lon, lat, var.names, radius, mask=var.flag, db=var.db, surface=var.surface,
+                               calibrate=var.calibrated)["value"]
     return dict(time=(s.time.to_index().astype("int64") // 10**6).tolist(), value=s.values.round(4).tolist())
 
 
@@ -1421,9 +1481,9 @@ def series_code(lon: float, lat: float, variable: str, radius: float = 5):
     if has_detail(variable):
         f = DETAIL_PRODUCT["variables"][variable]
         fine = dict(target=DETAIL_STORE, names=stored(f), radius=FINE_SERIES_RADIUS, mask=f.flag, db=f.db,
-                    pixel=DETAIL_PRODUCT["pixel"], label="250 m pixels", dtu=f.dtu)
+                    pixel=DETAIL_PRODUCT["pixel"], label="250 m pixels", dtu=f.dtu, cal=f.calibrated)
     return dict(code=swot_view.series_snippet(lon, lat, stored(var), radius, f"{var.label}, ", target=STORE, mask=var.flag,
-                                              db=var.db, fine=fine, units=var.units, dtu=var.dtu))
+                                              db=var.db, fine=fine, units=var.units, dtu=var.dtu, cal=var.calibrated))
 
 
 def stored(var):
@@ -1443,9 +1503,11 @@ def line_code(points: str, variable: str, step: float = 2.0, start: str = None, 
         f = DETAIL_PRODUCT["variables"][variable]
         return dict(code=swot_view.line_snippet(vertices, stored(f), step, start, end, mean, title, target=DETAIL_STORE,
                                                 radius=FINE_RADIUS, mask=f.flag, db=f.db, units=f.units,
-                                                dtu=(STORE if DTU not in detail.ds else "here") if f.dtu else None))
+                                                dtu=(STORE if DTU not in detail.ds else "here") if f.dtu else None,
+                                                cal=(STORE if CAL[0] not in detail.ds else "here") if f.calibrated else None))
     return dict(code=swot_view.line_snippet(vertices, stored(var), step, start, end, mean, title, target=STORE,
-                                            mask=var.flag, db=var.db, units=var.units, dtu="here" if var.dtu else None))
+                                            mask=var.flag, db=var.db, units=var.units, dtu="here" if var.dtu else None,
+                                            cal="here" if var.calibrated else None))
 
 
 @app.get("/api/netcdf")

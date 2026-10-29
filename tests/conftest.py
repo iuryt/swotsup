@@ -1,3 +1,5 @@
+import shutil
+
 import icechunk
 import numpy as np
 import pandas as pd
@@ -76,20 +78,41 @@ def fine_store_path(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def dtu_store_path(tmp_path_factory):
-    """Passes 7 (3 Jan) and 20 (4 Jan, lon 30.5) of cycle 3 on a ~2.5 km grid (not fine_store_path's), with a fake
+    """Passes 7 (3 Jan) and 20 (4 Jan, lon 30.5) of cycle 3 and pass 7 of cycle 5 (6 Jan), as fine_store_path's, on a
+    ~2.5 km grid (not fine_store_path's), with a fake
     mss_cor_dtu25 (pass_number, along, cross) as L2 Expert's: pass / 100 + 0.001 per km of along, linear so that
-    interpolating it is exact. Built once (read only)."""
+    interpolating it is exact; and a fake calibration: cal_bias 0.01 + 0.02 x side + 0.005 x cycle + 0.0001 per km of
+    along, cal_slope
+    0.06 (west) and 0.12 (east). Built once (read only)."""
     files_dir = tmp_path_factory.mktemp("dtu_files")
     path = str(tmp_path_factory.mktemp("dtu"))
     session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
-    for pass_id, lon0, day in ((7, 30.0, 3), (20, 30.5, 4)):
-        append(session.store, fake_l3(files_dir, 3, pass_id, lon0=lon0, day=day, n_lines=901, n_pixels=45),
+    for cycle, pass_id, lon0, day in ((3, 7, 30.0, 3), (3, 20, 30.5, 4), (5, 7, 30.0, 6)):
+        append(session.store, fake_l3(files_dir, cycle, pass_id, lon0=lon0, day=day, n_lines=901, n_pixels=45),
                along_chunk=100, time_chunk=1)
     session.commit("passes")
     session = icechunk.Repository.open(icechunk.local_filesystem_storage(path)).writable_session("main")
     ds = xr.open_zarr(session.store, consolidated=False, chunks=None)
     cor = ds.pass_number / 100 + 0.001 * ds.along + 0 * ds.cross
     cor = cor.astype("float32").transpose("pass_number", "along", "cross").reset_coords(drop=True)
-    xr.Dataset({"mss_cor_dtu25": cor}).to_zarr(session.store, mode="a", consolidated=False)
+    # and a fake calibration, as Expert's cal_bias and cal_slope (time, along, side): linear along track, a slope per side
+    side = xr.DataArray([0, 1], dims="side")
+    bias = (0.01 + 0.02 * side + 0.005 * ds.cycle + 0.0001 * ds.along).transpose("time", "along", "side")
+    slope = (0.06 * (1 + side) + 0 * ds.along + 0 * ds.time.astype(float)).transpose("time", "along", "side")
+    cal = {n: v.astype("float32").reset_coords(drop=True).drop_vars("time") for n, v in (("cal_bias", bias), ("cal_slope", slope))}
+    xr.Dataset({"mss_cor_dtu25": cor} | cal).to_zarr(session.store, mode="a", consolidated=False)
     session.commit("dtu25")
     return path
+
+
+@pytest.fixture(scope="session")
+def shifted_fine_store_path(fine_store_path, tmp_path_factory):
+    """fine_store_path with a cross_shift as L2 Unsmoothed's: every line moved 8 columns (of 250 m: 2 km)."""
+    path = tmp_path_factory.mktemp("shifted") / "store"
+    shutil.copytree(fine_store_path, path)
+    session = icechunk.Repository.open(icechunk.local_filesystem_storage(str(path))).writable_session("main")
+    ds = xr.open_zarr(session.store, consolidated=False, chunks=None)
+    shift = (8 + 0 * ds.along + 0 * ds.time.astype(float)).astype("float32").transpose("time", "along")
+    xr.Dataset({"cross_shift": shift.reset_coords(drop=True).drop_vars("time")}).to_zarr(session.store, mode="a", consolidated=False)
+    session.commit("cross_shift")
+    return str(path)

@@ -57,7 +57,9 @@ be resumed here (`claude --resume`).
     `mss_cor_dtu25` by default (`ssha_dtu25`: the DTU25 mean sea surface instead of the L2's CNES_CLS22, one per pass in
     Expert; Unsmoothed has none: `from_base` interpolates Expert's at its pixels' along/cross; credit in the map's corner
     and About, CC BY 4.0; Display: "Mean sea surface" switches to the `mss` twin; the copied code adds it with a
-    `dtu25` function), on the open
+    `dtu25` function) and minus swot_cloud's calibration by default (experimental v0.1: `cal_bias`, `cal_slope` per
+    line and side, `calibration`; Unsmoothed takes Expert's passage of the same cycle and pass, at `to_nadir` of
+    its `cross_shift`; Display: "Calibration", the `cal` twin; 8 SSHA variables from `ssha_l2`), on the open
     ocean by default (`ancillary_surface_classification_flag` 0; in Expert one per pass: `of_passage`, `block` and the
     Hovmöller take each passage's pass) with a twin that keeps rivers and lakes (Display: "Rivers and lakes"); SSHA
     without the correction, sigma0 (in dB), SWH and wind speed, each kept only where its own flag is 0; only SSHA and
@@ -160,7 +162,7 @@ sbatch slurm/screenshot.sbatch     # serve and run every screenshot scenario: im
 sbatch slurm/screenshot_versions.sbatch HASH...   # screenshots of past commits into img/history
 sbatch slurm/test.sbatch           # pytest; extra args go to pytest
 sbatch slurm/mutants.sh [PATTERN]  # every injected bug (tests/mutations.sh) must be "caught"; each in its own copy,
-                                   # 8 at once (~4 min for all); PATTERN: only the labels matching (a bash regex)
+                                   # 16 at once (~4 min for all); PATTERN: only the labels matching (a bash regex)
 sbatch slurm/pixi_install.sbatch   # after changing dependencies (also installs chromium for playwright)
 sbatch -c 8 -o logs/bench-%j.out slurm/run.sbatch scripts/bench_server.py   # timings (AWS_PROFILE=swot-read)
 sbatch -o logs/ec2-%j.out slurm/ec2.sh up|status|update|down   # test server on EC2 (c7i.2xlarge, us-east-1),
