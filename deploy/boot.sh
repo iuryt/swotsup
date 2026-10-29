@@ -4,6 +4,8 @@
 # A stopped instance costs only its disk and address; deploy/wake.py starts it again on the next visit.
 IDLE=30
 cd /opt/app
+stage=$(cat stage 2>/dev/null || echo prod)  # dev: the instance for testing branches (slurm/ec2.sh)
+telemetry=s3://iuryt-shared-east/telemetry/swot-explorer$([ "$stage" = dev ] && echo -dev)/
 t=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')
 ip=$(curl -s -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/public-ipv4)
 # the disk (30 GB) keeps every image built: the build cache goes before building, the unused images once the new
@@ -23,8 +25,15 @@ token=$(aws ssm get-parameter --region us-east-1 --name /swot-explorer/arraylake
 store=(-e SWOT_STORE=s3://iuryt-shared-east/icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2 -e SWOT_PRODUCT=l3)
 [ -n "$token" ] && store=(-e "ARRAYLAKE_TOKEN=$token")
 echo "store: $([ -n "$token" ] && echo "L2 on Arraylake" || echo "the L3 copy on S3")"
-install -d -o 1000 -g 1000 /opt/cache /opt/telemetry  # the server runs as user 1000 (Dockerfile)
+install -d -o 1000 -g 1000 /opt/cache /opt/telemetry /opt/telemetry/debug  # the server runs as user 1000 (Dockerfile)
 chown -R 1000:1000 /opt/cache /opt/telemetry
+# the daily rasters (app/rasters.py: the whole globe on any dates at once), the bucket's copy on this disk
+aws s3 sync --only-show-errors --delete s3://iuryt-shared-east/deploy/swot_explorer/rasters/ /opt/rasters/
+rasters=()
+[ -d /opt/rasters/z0 ] && rasters=(-v /opt/rasters:/rasters:ro -e SWOT_RASTERS=/rasters)
+# dev: pages opened with ?debug=1 report the map's events (copied to S3 every minute with the usage)
+debug=()
+[ "$stage" = dev ] && debug=(-e SWOT_DEBUG_DIR=/telemetry/debug)
 # the country of a visitor (anonymous usage): DB-IP Lite, this month's (else last month's), kept with the cache
 geo=/opt/cache/dbip-country-lite.mmdb
 for month in $(date +%Y-%m) $(date -d "-1 month" +%Y-%m); do
@@ -35,16 +44,16 @@ chown 1000:1000 $geo 2>/dev/null
 docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=0 -e SWOT_CACHE_GB=6 \
   -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
   -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" -v /opt/telemetry:/telemetry -e SWOT_TELEMETRY_DIR=/telemetry \
-  -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb "${store[@]}" swot
+  -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb "${rasters[@]}" "${debug[@]}" "${store[@]}" swot
 set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860
 docker image prune -af >/dev/null 2>&1
 df -h / | tail -1
 # the anonymous usage, copied to S3 every 10 minutes and before the machine stops (it may only write there)
-sync="aws s3 sync --only-show-errors /opt/telemetry s3://iuryt-shared-east/telemetry/swot-explorer/"
+sync="aws s3 sync --only-show-errors /opt/telemetry $telemetry"
 systemctl stop swot-telemetry.timer 2>/dev/null
-systemd-run --unit swot-telemetry --on-calendar='*:0/10' bash -c "$sync"
+systemd-run --unit swot-telemetry --on-calendar="$([ "$stage" = dev ] && echo '*:*:00' || echo '*:0/10')" bash -c "$sync"
 # every request shows up in the server's access log; none in the last IDLE minutes (and up for as long): stop
 systemctl stop swot-idle 2>/dev/null
 systemd-run --unit swot-idle bash -c "while sleep 60; do

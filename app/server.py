@@ -25,13 +25,15 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import zarr
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from scipy.spatial import cKDTree
 
+import rasters
 import swot_view
+from rasters import calibration  # noqa: F401 (the server's too)
 
 matplotlib.use("agg")
 # zarr fetches 10 chunks at once by default; S3 answers each in tens of ms, so more at once is faster
@@ -92,14 +94,6 @@ DTU = "mss_cor_dtu25"
 # by default also calibrated (swot_cloud, experimental v0.1: Expert's cal_bias and cal_slope, a bias and a cross-track
 # slope per line and side; Unsmoothed takes Expert's, `from_base`)
 CAL = ("cal_bias", "cal_slope")
-
-
-def calibration(bias, slope, cross):
-    """The calibration to subtract: bias + slope x cross / 60 of the pixel's side (west: cross < 0, east), `cross`
-    its distance to nadir (km). `bias`, `slope`: (..., 2), each line's two sides; `cross`: broadcastable to (..., n)."""
-    cross = np.asarray(cross, float)
-    side = np.broadcast_to((cross > 0).astype(int), bias.shape[:-1] + cross.shape[-1:])
-    return np.take_along_axis(bias, side, -1) + np.take_along_axis(slope, side, -1) * cross / 60
 
 
 def ssha_l2():
@@ -779,6 +773,10 @@ def load(west, east, south, north, start, days, variable):
     key = (west, east, south, north, start, days, variable)
     if key in OVERVIEWS:  # a view too big to keep: its overview (ready or being built)
         return OVERVIEWS[key], 0.0
+    if from_rasters(*key):
+        with cache_lock:
+            OVERVIEWS.setdefault(key, RasterView(dict(zip(("west", "east", "south", "north", "start", "days"), key[:6])), variable))
+        return OVERVIEWS[key], 0.0
     with cache_lock:
         if key in loaded:
             loaded.move_to_end(key)
@@ -811,6 +809,84 @@ def load(west, east, south, north, start, days, variable):
 
 OVERVIEW_PIXELS = float(os.environ.get("SWOT_OVERVIEW_PIXELS", 60e6))  # views bigger than this: overviews
 OVERVIEWS_KEPT = int(os.environ.get("SWOT_OVERVIEWS", 6))  # besides the opening view's (~0.2 GB each)
+
+
+BEYOND = 2  # zooms past the rasters' still drawn from them (their pixels 2 x 2, 4 x 4)
+
+
+class RasterView(Overview):
+    """The whole globe on dates the daily rasters have (#98): tiles up to their zoom are the window's days summed, at
+    once (nothing read); closer, clicks and lines as an overview's (the passages a chunk at a time)."""
+
+    def __init__(self, view, variable):
+        t0 = time.perf_counter()
+        end = pd.Timestamp(view["start"]) + pd.Timedelta(days=view["days"]) - pd.Timedelta(seconds=1)
+        sub = swot_view.subset(ds, view["west"], view["east"], view["south"], view["north"], view["start"], end)
+        self.times = np.flatnonzero(np.isin(ds.time.values, sub.time.values))
+        self.lines = slice(0, ds.sizes["along"])
+        self.var, self.names, self.variable, self.view = VARIABLES[variable], VARIABLES[variable].names, variable, view
+        self.sub = index.isel(time=self.times)
+        self.flags = dict(dtu=self.var.dtu, cal=self.var.calibrated, water=not self.var.surface)
+        self.ready, self.error, self.file, self.started, self.done = threading.Event(), None, None, None, len(self.times)
+        # the colors: the window's means at zoom 2 (~40 km: 16 chunks a day), each pixel at its position (what the
+        # screen's colors sample)
+        m, n = RASTERS.mean(2, slice(None), slice(None), view["start"], view["days"], counts=True, **self.flags)
+        size = m.shape[0]
+        row, col = np.nonzero(np.isfinite(m))
+        v = m[row, col].astype("float32")
+        lon = (col + 0.5) / size * 360 - 180
+        lat = np.rad2deg(2 * np.arctan(np.exp((row + 0.5) / size * 2 * np.pi - np.pi)) - np.pi / 2)
+        median = float(np.median(v)) if len(v) else 0.0
+        k = max(len(self.times), 1)
+        self._shift = {"none": np.zeros(k, "float32"), "passage": np.zeros(k, "float32"), "box": np.full(k, median, "float32")}
+        self.quantiles, self.robust = {}, {}
+        for mode, shift in (("none", 0.0), ("passage", 0.0), ("box", median)):
+            self.quantiles[mode], self.robust[mode] = color_limits(v - shift)
+        self.screen = (lon.astype("float32"), lat.astype("float32"), v, np.zeros(len(v), "int32"))
+        self.pixels, self.seconds = int(n.sum()), time.perf_counter() - t0
+        self.ready.set()
+        # the window's means at every zoom, summed in the background: then a tile is a slice (till then, read alone)
+        self.levels = None
+        threading.Thread(target=self.fill, daemon=True).start()
+
+    def fill(self):
+        t0 = time.perf_counter()
+        self.levels = RASTERS.pyramid(self.view["start"], self.view["days"], **self.flags)
+        print(f"rasters: {self.view['start']} + {self.view['days']} days summed in {time.perf_counter() - t0:.1f} s", flush=True)
+
+    @property
+    def nbytes(self):
+        return sum(a.nbytes for a in self.screen) + sum(a.nbytes for a in (self.levels or {}).values())
+
+    def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset()):
+        z = np.log2(WORLD / (x_range[1] - x_range[0]))
+        if width != 256 or height != 256 or abs(z - round(z)) > 1e-6 or round(z) > rasters.ZOOM + BEYOND:
+            # closer: the passages that cross the view, a chunk at a time
+            return super().mean_on(mode, x_range, y_range, width, height, trim)
+        # a map tile: its raster's block, or up to BEYOND zooms beyond them, theirs drawn larger (instead of reading
+        # passages: the globe asks for tiles a zoom or two finer than the map's near its centre)
+        z = int(round(z))
+        level = min(z, rasters.ZOOM)
+        k = 2 ** (z - level)
+        n, size = 256 // k, WORLD / 2**z
+        c0 = int(round((x_range[0] + WORLD / 2) / size)) * n
+        r0 = int(round((y_range[0] + WORLD / 2) / size)) * n  # rows from the south, as datashader's
+        rows, cols = slice(r0, r0 + n), slice(c0, c0 + n)
+        m = (self.levels[level][rows, cols] if self.levels else
+             RASTERS.mean(level, rows, cols, self.view["start"], self.view["days"], **self.flags))
+        m = np.repeat(np.repeat(m, k, 0), k, 1)
+        return m - (self._shift["box"][0] if mode == "box" else 0)
+
+
+# the daily rasters (SWOT_RASTERS, app/rasters.py): the whole globe on the days they have, for SSHA (#98)
+RASTERS = rasters.Rasters(os.environ["SWOT_RASTERS"]) if os.environ.get("SWOT_RASTERS") else None
+RASTER_VARIABLES = {k for k, v in VARIABLES.items() if v.names[0] == "ssha_karin_2_xover"} if RASTERS else set()
+
+
+def from_rasters(west, east, south, north, start, days, variable):
+    """Whether a view comes from the daily rasters: the whole globe, an SSHA they hold, every day built."""
+    return (variable in RASTER_VARIABLES and (east - west) % 360 == 0 and south <= -90 and north >= 90
+            and RASTERS.covers(start, days))
 
 
 def overview_of(key):
@@ -905,6 +981,20 @@ def address_of(request):
     return forwarded.split(",")[0].strip() or (request.client.host if request.client else "")
 
 
+DEBUG_DIR = os.environ.get("SWOT_DEBUG_DIR")  # a test server's: what pages opened with ?debug=1 report of the map
+
+
+@app.post("/api/debug")
+async def debug_log(request: Request):
+    """A batch of the map's events from a page opened with ?debug=1 (tiles asked, loaded, failed; layers; colors),
+    appended to a file of the day, when SWOT_DEBUG_DIR is set (a test server)."""
+    if DEBUG_DIR:
+        line = json.dumps(dict(at=time.time(), events=json.loads(await request.body())))
+        with open(os.path.join(DEBUG_DIR, f"debug-{time.strftime('%Y-%m-%d')}.jsonl"), "a") as f:
+            f.write(line + "\n")
+    return Response(status_code=204)
+
+
 @app.post("/api/event")
 async def event(request: Request):
     """One event from the page, with what it says of the view (only the fields kept), the time, the visitor of the
@@ -973,8 +1063,9 @@ def info():
                 variables={k: v.label for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
                 # each variable's kind, units and default colormap; the colormaps on offer as 16 stops each
                 calibration=ds[CAL[0]].attrs.get("version") if CAL[0] in ds else None,  # its version
+                rasters=dict(first=str(RASTERS.first), last=str(RASTERS.last)) if RASTERS and RASTERS.first else None,
                 looks={k: dict(kind=v.kind, units=v.units, cmap=v.cmap, fine=has_detail(k), twin=v.twin, water=not v.surface,
-                                   mss=v.mss, dtu=v.dtu, cal=v.cal, calibrated=v.calibrated)
+                                   mss=v.mss, dtu=v.dtu, cal=v.cal, calibrated=v.calibrated, rasters=k in RASTER_VARIABLES)
                        for k, v in VARIABLES.items()},
                 colormaps={name: ["#%02x%02x%02x" % tuple(int(255 * c) for c in cm(x)[:3]) for x in np.linspace(0, 1, 16)]
                            for name, cm in COLORMAPS.items()}, diverging=list(COLORMAPS)[:DIVERGING],
@@ -1023,15 +1114,23 @@ EMPTY = io.BytesIO()
 Image.new("RGBA", (256, 256)).save(EMPTY, format="png")
 
 
-def png(mean, vmin, vmax, cmap):
-    """A tile's means as a PNG in a colormap (transparent where NaN), or the empty tile."""
+def png(mean, vmin, vmax, cmap, values=False):
+    """A tile's means as a PNG in a colormap (transparent where NaN), or the empty tile. `values`: the means
+    themselves for the page to color (VALUE_SCALE: 24 bits in red, green and blue, 0.1 mm from -838 to 838)."""
     if not np.isfinite(mean).any():
         return Response(EMPTY.getvalue(), media_type="image/png")
-    rgba = (COLORMAPS[cmap](np.clip((mean - vmin) / (vmax - vmin), 0, 1)) * 255).astype(np.uint8)
-    rgba[..., 3] = np.where(np.isfinite(mean), 255, 0)
+    if values:
+        v = np.clip(np.round(np.nan_to_num(mean) * VALUE_SCALE) + 2**23, 0, 2**24 - 1).astype(np.uint32)
+        rgba = np.stack([v >> 16, (v >> 8) & 255, v & 255, np.where(np.isfinite(mean), 255, 0)], -1).astype(np.uint8)
+    else:
+        rgba = (COLORMAPS[cmap](np.clip((mean - vmin) / (vmax - vmin), 0, 1)) * 255).astype(np.uint8)
+        rgba[..., 3] = np.where(np.isfinite(mean), 255, 0)
     out = io.BytesIO()
     Image.fromarray(rgba[::-1]).save(out, format="png")  # rows from north to south
     return Response(out.getvalue(), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
+VALUE_SCALE = 1e4  # a value tile's units per unit of the variable
 
 
 def tile_ranges(z, x, y):
@@ -1042,11 +1141,11 @@ def tile_ranges(z, x, y):
 
 @app.get("/api/tile/{z}/{x}/{y}.png")
 def tile(z: int, x: int, y: int, variable: str, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2,
-         cmap: str = None, data=Depends(view)):
+         cmap: str = None, values: bool = False, data=Depends(view)):
     # where the detail product shows (from the zoom before its own, on its passages), the base is drawn inside its
     # swath: always under it, never past its edges, so the page needs no fading between the two
     trim = DETAIL_PASSAGES if z >= DETAIL_ZOOM - 1 and has_detail(variable) else frozenset()
-    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256, trim), vmin, vmax, colormap(cmap, variable))
+    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256, trim), vmin, vmax, colormap(cmap, variable), values)
 
 
 # --- the detail product, tile by tile: each passage's lines near the tile, read a chunk at a time and kept
@@ -1164,7 +1263,8 @@ def offsets(data, mode):
 
 @app.get("/api/detail/{z}/{x}/{y}.png")
 def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mode: str = "box",
-                vmin: float = -0.2, vmax: float = 0.2, cmap: str = None, data=Depends(view)):
+                vmin: float = -0.2, vmax: float = 0.2, cmap: str = None, encode: bool = Query(False, alias="values"),
+                data=Depends(view)):
     """A tile of the detail product (from DETAIL_ZOOM - 1 on), over the base's: its passages in the view's dates
     that cross the tile, minus what the base subtracts. Transparent where it has no data, so the base shows."""
     if z < DETAIL_ZOOM - 1 or not has_detail(variable):
@@ -1192,7 +1292,7 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
     cycles, passes = detail.index.cycle.values[times], detail.index.pass_id.values[times]
     shift = np.array([per.get((int(c), int(p)), box) for c, p in zip(cycles, passes)], "float32")
     tiles.shift["shifted"] = shift
-    return png(tiles.mean_on("shifted", xr_, yr_, 256, 256), vmin, vmax, colormap(cmap, variable))
+    return png(tiles.mean_on("shifted", xr_, yr_, 256, 256), vmin, vmax, colormap(cmap, variable), encode)
 
 
 @app.get("/api/value")
@@ -1552,7 +1652,10 @@ def world_png():
 # the opening view, ready before the first visitor: in memory, or for a product too big to keep (`overview`), its
 # overview, built in the background (or read back from SWOT_CACHE_DIR); other variables on it are built when asked
 OVERVIEWS, OPENING = {}, set()  # views too big to keep: their overviews (OrderedDict order: oldest first)
-if PRODUCT.get("overview"):
+if PRODUCT.get("overview") and RASTERS and from_rasters(*DEFAULT.values()):
+    OPENING.add(key := tuple(DEFAULT.values()))
+    load(**DEFAULT)
+elif PRODUCT.get("overview"):
     OPENING.add(key := tuple(DEFAULT.values()))
     OVERVIEWS[key] = Overview(DEFAULT, DEFAULT["variable"])
     threading.Thread(target=build_overviews, args=(DEFAULT, [OVERVIEWS[key]]), daemon=True).start()

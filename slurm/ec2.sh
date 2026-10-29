@@ -14,13 +14,25 @@
 # waiting page then stays at the same address; `down` leaves the domain's pieces in place.
 # DEPLOY_PROFILE: EC2, the roles swot-explorer and swot-explorer-wake, the Lambda function swot-explorer-wake and
 # deploy/swot_explorer/ in the bucket.
+# STAGE=dev: a second instance for testing branches (swot-explorer-dev: any branch, sent as it is; the production one
+# gets only what was tested there), at its own https://<ip>.sslip.io, without link or domain (`up` starts it, it sleeps
+# when idle as the other), with the production's role and security group; its usage and the map's events of pages
+# opened with ?debug=1 go to telemetry/swot-explorer-dev/ every minute.
+#   STAGE=dev sbatch -o logs/ec2-%j.out slurm/ec2.sh up|update|status|start|down
+# Both copy the daily rasters (app/rasters.py) from deploy/swot_explorer/rasters/ to their disk at every boot.
 #SBATCH -p batch -c 1 --mem 2G -t 30
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
 
-NAME=swot-explorer WAKE=swot-explorer-wake TYPE=${TYPE:-c7i.2xlarge} BUCKET=iuryt-shared-east
+STAGE=${STAGE:-prod}
+NAME=swot-explorer WAKE=swot-explorer-wake TYPE=${TYPE:-c7i.2xlarge} BUCKET=iuryt-shared-east DISK=50
 STORE=icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2 CODE=deploy/swot_explorer/app.tar.gz
 TELEMETRY=telemetry/swot-explorer  # where the instance writes the anonymous usage (write only)
+RASTERS=deploy/swot_explorer/rasters  # the daily rasters, copied to the instances' disks
+ROLE=$NAME  # the production's role (and security group), the dev instance's too
+if [ "$STAGE" = dev ]; then
+  NAME=swot-explorer-dev CODE=deploy/swot_explorer/dev/app.tar.gz TELEMETRY=telemetry/swot-explorer-dev
+fi
 DOMAIN=${DOMAIN:-swotsup.org}
 export AWS_REGION=us-east-1
 aws() { pixi exec --spec awscli aws --profile "${DEPLOY_PROFILE:-swot-deploy}" "$@"; }
@@ -30,22 +42,26 @@ instance() {
 }
 address() { aws ec2 describe-addresses --filters Name=tag:Name,Values=$NAME --query "Addresses[0].$1" --output text; }
 distribution() { aws cloudfront list-distributions --query "DistributionList.Items[?Aliases.Items[0]=='$DOMAIN'].$1 | [0]" --output text; }
-send_code() {  # build context (Dockerfile at the root), the boot script, and the link to share (copied links start with it)
-  if [ "$(distribution Id)" != None ]; then echo "https://$DOMAIN/" > logs/public_url
+send_code() {  # build context (Dockerfile at the root), the boot script, the link to share (copied links start with it)
+  # and the stage (what boot.sh does differently)
+  if [ "$STAGE" = dev ]; then [ "$(address PublicIp)" = None ] && : > logs/public_url || echo "https://$(address PublicIp | tr . -).sslip.io/" > logs/public_url
+  elif [ "$(distribution Id)" != None ]; then echo "https://$DOMAIN/" > logs/public_url
   else aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text > logs/public_url 2>/dev/null || : > logs/public_url; fi
-  tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh -C ../logs public_url
+  echo "$STAGE" > logs/stage
+  tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh -C ../logs public_url stage
   aws s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
-# what the instance may read: the S3 store, the app package, and the secrets under /swot-explorer/ in SSM
-# (the Arraylake token, put there by the user in the console); and write: the anonymous usage, nothing else
+# what the instances may read: the S3 store, the app packages (both stages') and rasters, and the secrets under
+# /swot-explorer/ in SSM (the Arraylake token, put there by the user in the console); and write: the anonymous usage
+# (both stages'), nothing else
 INSTANCE_POLICY="
-    {\"Effect\":\"Allow\",\"Action\":\"s3:GetObject\",\"Resource\":[\"arn:aws:s3:::$BUCKET/$STORE/*\",\"arn:aws:s3:::$BUCKET/$CODE\"]},
+    {\"Effect\":\"Allow\",\"Action\":\"s3:GetObject\",\"Resource\":[\"arn:aws:s3:::$BUCKET/$STORE/*\",\"arn:aws:s3:::$BUCKET/deploy/swot_explorer/*\"]},
     {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::$BUCKET\",
-     \"Condition\":{\"StringLike\":{\"s3:prefix\":\"$STORE/*\"}}},
+     \"Condition\":{\"StringLike\":{\"s3:prefix\":[\"$STORE/*\",\"$RASTERS/*\",\"$RASTERS\"]}}},
     {\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameter\",\"Resource\":\"arn:aws:ssm:us-east-1:*:parameter/swot-explorer/*\"},
-    {\"Effect\":\"Allow\",\"Action\":\"s3:PutObject\",\"Resource\":\"arn:aws:s3:::$BUCKET/$TELEMETRY/*\"},
+    {\"Effect\":\"Allow\",\"Action\":\"s3:PutObject\",\"Resource\":\"arn:aws:s3:::$BUCKET/telemetry/swot-explorer*\"},
     {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::$BUCKET\",
-     \"Condition\":{\"StringLike\":{\"s3:prefix\":\"$TELEMETRY/*\"}}}"
+     \"Condition\":{\"StringLike\":{\"s3:prefix\":\"telemetry/swot-explorer*\"}}}"
 role() {  # name, service that assumes it, inline policy
   aws iam create-role --role-name "$1" --assume-role-policy-document \
     "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"$2\"},\"Action\":\"sts:AssumeRole\"}]}"
@@ -55,15 +71,20 @@ role() {  # name, service that assumes it, inline policy
 case $1 in
 up)
   [ -z "$(instance)" ] || { echo "already there: $(instance)"; exit 1; }
-  send_code
-  role $NAME ec2.amazonaws.com "$INSTANCE_POLICY"
-  aws iam create-instance-profile --instance-profile-name $NAME
-  aws iam add-role-to-instance-profile --instance-profile-name $NAME --role-name $NAME
-  sg=$(aws ec2 create-security-group --group-name $NAME --description "SWOT explorer, web only" --query GroupId --output text)
-  for port in 80 443; do
-    aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr 0.0.0.0/0
-  done
   aws ec2 allocate-address --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=$NAME}]"
+  send_code
+  if [ "$STAGE" = dev ]; then  # the production's role (its policy as now) and security group
+    aws iam put-role-policy --role-name $ROLE --policy-name main --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[$INSTANCE_POLICY]}"
+    sg=$(aws ec2 describe-security-groups --group-names $ROLE --query 'SecurityGroups[0].GroupId' --output text)
+  else
+    role $NAME ec2.amazonaws.com "$INSTANCE_POLICY"
+    aws iam create-instance-profile --instance-profile-name $NAME
+    aws iam add-role-to-instance-profile --instance-profile-name $NAME --role-name $NAME
+    sg=$(aws ec2 create-security-group --group-name $NAME --description "SWOT explorer, web only" --query GroupId --output text)
+    for port in 80 443; do
+      aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr 0.0.0.0/0
+    done
+  fi
   ami=$(aws ec2 describe-images --owners amazon --filters 'Name=name,Values=al2023-ami-2023*-x86_64' \
     --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text)
   # cloud-init installs docker once; at every boot: fetch the package and run its boot.sh
@@ -80,13 +101,14 @@ chmod +x /var/lib/cloud/scripts/per-boot/swot.sh
 EOF
   sleep 10  # a new instance profile takes a few seconds to be usable
   aws ec2 run-instances --image-id "$ami" --instance-type "$TYPE" --security-group-ids "$sg" \
-    --iam-instance-profile Name=$NAME --user-data file://logs/ec2-user-data.sh \
+    --iam-instance-profile Name=$ROLE --user-data file://logs/ec2-user-data.sh \
     --metadata-options HttpTokens=required,HttpPutResponseHopLimit=2 \
-    --block-device-mappings 'DeviceName=/dev/xvda,Ebs={VolumeSize=30,VolumeType=gp3}' \
+    --block-device-mappings "DeviceName=/dev/xvda,Ebs={VolumeSize=$DISK,VolumeType=gp3}" \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$NAME}]" --query 'Instances[0].InstanceId' --output text
   aws ec2 wait instance-running --instance-ids "$(instance)"
   # the fixed address, there long before boot.sh asks for it (installing docker comes first)
   aws ec2 associate-address --instance-id "$(instance)" --allocation-id "$(address AllocationId)"
+  [ "$STAGE" = dev ] && { echo "dev: https://$(address PublicIp | tr . -).sslip.io (in a few minutes)"; exit 0; }
   role $WAKE lambda.amazonaws.com "
     {\"Effect\":\"Allow\",\"Action\":\"ec2:DescribeInstances\",\"Resource\":\"*\"},
     {\"Effect\":\"Allow\",\"Action\":\"ec2:StartInstances\",\"Resource\":\"*\",
@@ -108,23 +130,33 @@ EOF
   done
   ;&
 status)
-  echo "link to share: $(aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text)"
+  [ "$STAGE" = dev ] || echo "link to share: $(aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text)"
   id=$(instance)
   echo "instance $id: $(aws ec2 describe-instances --instance-ids "$id" --query 'Reservations[0].Instances[0].State.Name' \
     --output text), https://$(address PublicIp | tr . -).sslip.io (stops after 30 idle minutes)"
   aws ec2 get-console-output --instance-id "$id" --latest --output text | tail -${LINES_SHOWN:-40} || true
   ;;
 update)
+  # production: only main, as committed (the dev instance takes any branch as it is)
+  if [ "$STAGE" = prod ] && { [ "$(git branch --show-current)" != main ] || ! git diff --quiet HEAD -- app deploy Dockerfile pixi.lock; }; then
+    echo "production gets main as committed: on $(git branch --show-current), test with STAGE=dev"; exit 1
+  fi
   send_code
-  aws iam put-role-policy --role-name $NAME --policy-name main --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[$INSTANCE_POLICY]}"
-  (cd deploy && pixi exec --spec python python -m zipfile -c ../logs/wake.zip wake.py)
-  aws lambda update-function-code --function-name $WAKE --zip-file fileb://logs/wake.zip --query LastModified
+  aws iam put-role-policy --role-name $ROLE --policy-name main --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[$INSTANCE_POLICY]}"
+  if [ "$STAGE" = prod ]; then
+    (cd deploy && pixi exec --spec python python -m zipfile -c ../logs/wake.zip wake.py)
+    aws lambda update-function-code --function-name $WAKE --zip-file fileb://logs/wake.zip --query LastModified
+  fi
   if [ "$(aws ec2 describe-instances --instance-ids "$(instance)" --query 'Reservations[0].Instances[0].State.Name' --output text)" = running ]; then
     aws ec2 reboot-instances --instance-ids "$(instance)"
     echo "rebooting $(instance): it rebuilds and is back in a few minutes at the same address"
   else
     echo "$(instance) is not running: it gets the new package at its next start"
   fi
+  ;;
+start)  # wake it (the dev instance has no link that does)
+  aws ec2 start-instances --instance-ids "$(instance)" --query 'StartingInstances[0].CurrentState.Name' --output text
+  echo "https://$(address PublicIp | tr . -).sslip.io in a few minutes"
   ;;
 domain)
   zone=$(aws route53 list-hosted-zones-by-name --dns-name $DOMAIN --query "HostedZones[?Name=='$DOMAIN.'].Id | [0]" --output text)
@@ -202,10 +234,11 @@ JSON
   echo "https://$DOMAIN/ -> $front (CloudFront takes ~5-15 min to deploy); run update so the page's links use it"
   ;;
 down)
-  aws lambda delete-function --function-name $WAKE || true
+  [ "$STAGE" = dev ] || aws lambda delete-function --function-name $WAKE || true
   id=$(instance)
   if [ -n "$id" ]; then aws ec2 terminate-instances --instance-ids $id; aws ec2 wait instance-terminated --instance-ids $id; fi
   [ "$(address AllocationId)" = None ] || aws ec2 release-address --allocation-id "$(address AllocationId)"
+  [ "$STAGE" = dev ] && { aws s3 rm s3://$BUCKET/$CODE || true; exit 0; }  # the role and security group are the production's
   aws ec2 delete-security-group --group-name $NAME || true
   aws iam remove-role-from-instance-profile --instance-profile-name $NAME --role-name $NAME || true
   aws iam delete-instance-profile --instance-profile-name $NAME || true
