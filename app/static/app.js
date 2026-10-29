@@ -98,11 +98,13 @@ async function loadData() {
     const d = await api("/api/load", view);
     state.data = d;
     state.view = view.toString();
+    state.screen = null;  // the whole view's colors first, then the screen's
     $("#stats").innerHTML = `<b>${d.passages}</b> passages · <b>${d.pixels >= 1e5 ? `${(d.pixels / 1e6).toFixed(1)} M` : `${Math.round(d.pixels / 1e3)} k`}</b> pixels · ` +
       (d.seconds ? `read from the cloud in <b>${d.seconds.toFixed(1)} s</b>` : "from the server's memory");
     state.code = d.code;
     if ($("#download")) $("#download").href = `/api/netcdf?${state.view}`;  // absent where SWOT_NETCDF=0
     setColors();
+    fitColors();
     const after = state.afterLoad;  // a link's point and line, once its view is in
     state.afterLoad = null;
     after?.();
@@ -171,14 +173,33 @@ function setupCmap() {
   };
 }
 
+// --- robust colors of what is on screen: once the map stops, the median ± 2 x 1.4826 x MAD of the pixels in view;
+// taken if they moved by more than ~15 % of the range (a new range draws the tiles again), so red and blue show at
+// any zoom
+async function fitColors() {
+  clearTimeout(fitColors.timer);
+  fitColors.timer = setTimeout(async () => {
+    if (state.preset !== "mad" || !state.data) return;
+    const b = map.getBounds(), view = state.view;
+    const r = await api(`/api/limits?${view}`, { lon0: wrap(b.getWest()), lon1: wrap(b.getEast()),
+      lat0: Math.max(b.getSouth(), -90), lat1: Math.min(b.getNorth(), 90) }).catch(() => null);
+    if (!r?.[state.mode] || state.view !== view || state.preset !== "mad") return;
+    const [lo, hi] = r[state.mode], span = Math.max(state.vmax - state.vmin, 1e-9);
+    state.screen = r;
+    if (Math.abs(lo - state.vmin) > 0.15 * span || Math.abs(hi - state.vmax) > 0.15 * span) setColors();
+  }, 600);
+}
+
 // --- colors: from percentiles of the loaded values, or typed
 function setColors() {
   const q = state.data?.quantiles[state.mode] ?? [];
-  const robust = state.data?.robust?.[state.mode];
-  if (state.preset !== "custom" && q.length) {  // robust: the median ± 2 x 1.4826 x MAD; else percentiles
+  // robust: the median ± 2 x 1.4826 x MAD of what is on screen (fitColors), else of the whole view; else percentiles
+  const robust = state.screen?.[state.mode] ?? state.data?.robust?.[state.mode];
+  if (state.preset !== "custom" && q.length) {
     const p = Number(state.preset) * 10;
     let [lo, hi] = state.preset === "mad" && robust ? robust : [q[p], q[1000 - p]];
-    if (state.symmetric) [lo, hi] = [-Math.max(-lo, hi), Math.max(-lo, hi)];
+    // about zero once a mean is subtracted; with nothing subtracted, robust colors stay about the median
+    if (state.symmetric && !(state.preset === "mad" && state.mode === "none")) [lo, hi] = [-Math.max(-lo, hi), Math.max(-lo, hi)];
     [state.vmin, state.vmax] = [+lo.toFixed(3), +hi.toFixed(3)];
   }
   $("#colorbar").style.background = `linear-gradient(90deg, ${stops().join(", ")})`;
@@ -188,7 +209,8 @@ function setColors() {
   $("#vmax-text").textContent = `${state.vmax} ${unit()}`;
   $("#vmin-label").textContent = `Min (${unit()})`;
   $("#vmax-label").textContent = `Max (${unit()})`;
-  $("#zero-text").textContent = isAnomaly() || state.symmetric ? "0" : "";
+  const middle = (state.vmin + state.vmax) / 2;  // 0 about zero; the median's value when centred on it
+  $("#zero-text").textContent = Math.abs(middle) < 5e-4 ? "0" : `${+middle.toFixed(3)}`;
   const look = info.looks[state.variable];
   $("#water-row").classList.toggle("hidden", !look.twin);  // rivers and lakes: where the variable has the choice
   $("#water").checked = look.water;
@@ -197,7 +219,10 @@ function setColors() {
     let i = q.findIndex((x) => x >= v);
     return i < 0 ? 100 : i / 10;
   };
-  $("#percentiles").textContent = q.length ? `limits at percentiles ${pct(state.vmin)} and ${pct(state.vmax)}` : "";
+  $("#percentiles").innerHTML = !q.length ? "" : state.preset === "custom"  // fixed limits: say so, and the way back
+    ? `custom limits (at percentiles ${pct(state.vmin)} and ${pct(state.vmax)}) · <a href="#" id="to-robust">use Robust</a>`
+    : `limits at percentiles ${pct(state.vmin)} and ${pct(state.vmax)}${state.screen ? " · of the screen" : ""}`;
+  $("#to-robust")?.addEventListener("click", (e) => { e.preventDefault(); state.preset = "mad"; setColors(); fitColors(); });
   $("#legend-variable").textContent = info.variables[state.variable] + (state.mode === "none" ? "" :
     state.mode === "box" ? (isGlobe(state.box) && state.area && !isGlobe(state.area) ? ", minus the mean of the area in view" : ", minus box mean")
     : ", minus passage means");
@@ -1445,6 +1470,7 @@ async function main() {
   map.on("move", drawOverview);
   map.on("moveend", linkSoon);
   map.on("moveend", followArea);
+  map.on("moveend", fitColors);
   map.on("zoomend", () => {  // into the 250 m (once per visit there)
     const fine = info.detail && map.getZoom() >= info.detail.zoom - 1 && info.looks[state.variable].fine;
     if (fine && !state.inFine) track("zoom_250m");

@@ -692,3 +692,19 @@ def test_dates_the_detail_covers(store_path, tmp_path, make_file, monkeypatch):
     server, c = detail_server(store_path[0], monkeypatch, fine=path)
     d = c.get("/api/info").json()["detail"]
     assert d["first"][:10] == "2024-01-10" and d["last"][:10] == "2024-01-12"
+
+
+
+def test_colors_of_what_is_on_screen(fine_store_path, monkeypatch):
+    """The robust limits of the pixels on screen: zoomed into the swath's south end (data = cycle*1000 + line, line
+    growing northward) they are about those lines' values, not the whole view's."""
+    monkeypatch.setenv("SWOT_STORE", fine_store_path)
+    sys.modules.pop("server", None)
+    import server
+
+    view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
+    c = TestClient(server.app)
+    whole = c.get("/api/load", params=view).json()["robust"]["none"]
+    south = c.get("/api/limits", params=view | dict(lon0=29, lon1=31, lat0=-10, lat1=-8)).json()["none"]
+    assert 2950 <= south[0] < south[1] <= 3150 and whole[1] - whole[0] > 600  # lines 0-100 there (3000-3100), of 1001
+    assert c.get("/api/limits", params=view | dict(lon0=100, lon1=101, lat0=0, lat1=1)).json()["none"] == whole  # none there

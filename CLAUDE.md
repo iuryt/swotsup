@@ -58,7 +58,9 @@ be resumed here (`claude --resume`).
     Hovmöller take each passage's pass) with a twin that keeps rivers and lakes (Display: "Rivers and lakes"); SSHA
     without the correction, sigma0 (in dB), SWH and wind speed, each kept only where its own flag is 0; only SSHA and
     sigma0 have 250 m (Unsmoothed). Colors by default: the median ± 2 x 1.4826 x MAD ("Robust", `color_limits`; rivers,
-    lakes and wild pixels push percentiles to metres), percentiles as options. Overviews on disk are named with what
+    lakes and wild pixels push percentiles to metres), percentiles as options; robust colors follow the screen
+    (`/api/limits` from a sample of the view's pixels with positions, taken by the page when the map stops if they moved
+    by more than ~15 %), about the median when nothing is subtracted; custom limits say so in the legend. Overviews on disk are named with what
     their variable is made of (a new definition is a new overview). Colormaps (`COLORMAPS`, matplotlib and cmocean): each
     variable has its own (SSHA RdBu_r, sigma0 cmo.gray, SWH cmo.dense, wind cmo.speed), and the Display menu offers
     them all (remembered per variable in the browser; tiles take `cmap`). "level" variables open with nothing
