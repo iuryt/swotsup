@@ -48,12 +48,47 @@ function toast(text) {
 }
 
 // --- loading data for the region and dates
+// --- up close on the whole globe, the view read is the area in view (with a margin), followed as the map moves:
+// the whole globe's 21 days take a minute, the area on screen seconds; farther out than AREA_ZOOM, the globe
+const AREA_ZOOM = 4;
+function areaWanted() {
+  if (!map || !isGlobe(state.box) || map.getZoom() < AREA_ZOOM) return state.box;
+  const b = map.getBounds(), [w, e, s, n] = [b.getWest(), b.getEast(), b.getSouth(), b.getNorth()];
+  const dx = (e - w) * 0.5, dy = (n - s) * 0.5;  // half the view more on each side: small moves read nothing
+  let area = { west: Math.floor(w - dx), east: Math.ceil(e + dx), south: Math.max(Math.floor(s - dy), -90), north: Math.min(Math.ceil(n + dy), 90) };
+  if (transect) {  // a drawn line stays inside what is read
+    const xs = transect.points.map(([x]) => x), ys = transect.points.map(([, y]) => y);
+    area = { west: Math.min(area.west, Math.floor(Math.min(...xs))), east: Math.max(area.east, Math.ceil(Math.max(...xs))),
+             south: Math.min(area.south, Math.floor(Math.min(...ys))), north: Math.max(area.north, Math.ceil(Math.max(...ys))) };
+  }
+  if (area.east - area.west >= 300) return state.box;  // most of the world: the globe
+  const wrap180 = (x) => ((x + 180) % 360 + 360) % 360 - 180;
+  return { west: wrap180(area.west), east: wrap180(area.east), south: area.south, north: area.north };
+}
+function areaHolds(area, inner) {  // whether an area holds another (longitudes continuous from the area's west)
+  if (isGlobe(area)) return true;
+  if (isGlobe(inner)) return false;
+  const span = ((area.east - area.west) % 360 + 360) % 360, at = (x) => ((x - area.west) % 360 + 360) % 360;
+  const w = at(inner.west), e = w + (((inner.east - inner.west) % 360 + 360) % 360);
+  return w <= span && e <= span && inner.south >= area.south && inner.north <= area.north;
+}
+function followArea() {  // once the map stops: read another area if the view left the one read (or the globe)
+  clearTimeout(followArea.timer);
+  followArea.timer = setTimeout(() => {
+    if (!state.data || !isGlobe(state.box)) return;
+    const want = areaWanted(), b = map.getBounds();
+    const seen = { west: b.getWest(), east: b.getEast(), south: Math.max(b.getSouth(), -90), north: Math.min(b.getNorth(), 90) };
+    if (isGlobe(want) ? !isGlobe(state.area) : (isGlobe(state.area) || !areaHolds(state.area, seen))) loadData();
+  }, 1000);
+}
+
 async function loadData() {
   $("#busy").classList.remove("hidden");
+  state.area = areaWanted();
   // every later request (tiles, values, download) names this view, so the server can read it again
-  const view = new URLSearchParams({ ...state.box, start: isoDay(state.start), days: state.days, variable: state.variable });
+  const view = new URLSearchParams({ ...state.area, start: isoDay(state.start), days: state.days, variable: state.variable });
   // a view too big to keep is read in batches: how far, while it lasts
-  const where = isGlobe(state.box) ? "the whole globe" : "the region";
+  const where = isGlobe(state.area) ? "the whole globe" : isGlobe(state.box) ? "the area in view" : "the region";
   const poll = setInterval(async () => {
     const p = await api("/api/progress", view).catch(() => ({}));
     if (p.total) showProgress("view", `Reading ${state.days} day${state.days > 1 ? "s" : ""} of ${where} from the cloud`,
@@ -63,7 +98,7 @@ async function loadData() {
     const d = await api("/api/load", view);
     state.data = d;
     state.view = view.toString();
-    $("#stats").innerHTML = `<b>${d.passages}</b> passages · <b>${(d.pixels / 1e6).toFixed(1)} M</b> pixels · ` +
+    $("#stats").innerHTML = `<b>${d.passages}</b> passages · <b>${d.pixels >= 1e5 ? `${(d.pixels / 1e6).toFixed(1)} M` : `${Math.round(d.pixels / 1e3)} k`}</b> pixels · ` +
       (d.seconds ? `read from the cloud in <b>${d.seconds.toFixed(1)} s</b>` : "from the server's memory");
     state.code = d.code;
     if ($("#download")) $("#download").href = `/api/netcdf?${state.view}`;  // absent where SWOT_NETCDF=0
@@ -164,7 +199,8 @@ function setColors() {
   };
   $("#percentiles").textContent = q.length ? `limits at percentiles ${pct(state.vmin)} and ${pct(state.vmax)}` : "";
   $("#legend-variable").textContent = info.variables[state.variable] + (state.mode === "none" ? "" :
-    state.mode === "box" ? ", minus box mean" : ", minus passage means");
+    state.mode === "box" ? (isGlobe(state.box) && state.area && !isGlobe(state.area) ? ", minus the mean of the area in view" : ", minus box mean")
+    : ", minus passage means");
   document.querySelectorAll("#preset button").forEach((b) => b.classList.toggle("active", b.dataset.value === state.preset));
   document.querySelectorAll("#mode button").forEach((b) => b.classList.toggle("active", b.dataset.value === state.mode));
   $("#symmetric").checked = state.symmetric;
@@ -808,6 +844,7 @@ function openTransect(points) {
   lucide.createIcons();
   transect = { points, step: 2, card, kind: "profile", hovMode: "time" };
   linkSoon();
+  if (state.area && isGlobe(state.box) && !isGlobe(state.area) && !areaHolds(state.area, areaWanted())) loadData();  // the line left the area read
   updateSheets();
   card.querySelector(".close").onclick = () => {
     card.tip?.remove(); card.remove(); transect = null; showLine([]); showProbe(null); updateSheets(); linkSoon();
@@ -1407,6 +1444,7 @@ async function main() {
   });
   map.on("move", drawOverview);
   map.on("moveend", linkSoon);
+  map.on("moveend", followArea);
   map.on("zoomend", () => {  // into the 250 m (once per visit there)
     const fine = info.detail && map.getZoom() >= info.detail.zoom - 1 && info.looks[state.variable].fine;
     if (fine && !state.inFine) track("zoom_250m");
