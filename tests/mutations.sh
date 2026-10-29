@@ -84,3 +84,4 @@ mutate app/server.py 's/    spread = 2 \* 1.4826 \* np.median(np.abs(v - median)
 mutate app/server.py 's/            v = np.where(np.isin(get(SURFACE), self.surface), v, np.nan)/            pass/' "rivers and lakes on the ocean-only map"
 mutate app/server.py 's/    return (a.isel(time=k) if "time" in a.dims else a.sel(pass_number=int(sub.pass_id.values\[k\]))).values/    return (a.isel(time=k) if "time" in a.dims else a.isel(pass_number=k)).values/' "classes of another pass"
 mutate app/swot_view.py 's/        near = near.where(classes.isin(list(surface)))/        pass/' "a series on every surface"
+mutate app/server.py 's/                                                        last=str(pd.Timestamp(detail.index.time.values.max()))),/                                                        last=str(pd.Timestamp(index.time.values.max()))),/' "the dates 250 m covers taken from the base"
