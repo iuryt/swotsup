@@ -85,3 +85,5 @@ mutate app/server.py 's/            v = np.where(np.isin(get(SURFACE), self.surf
 mutate app/server.py 's/    return (a.isel(time=k) if "time" in a.dims else a.sel(pass_number=int(sub.pass_id.values\[k\]))).values/    return (a.isel(time=k) if "time" in a.dims else a.isel(pass_number=k)).values/' "classes of another pass"
 mutate app/swot_view.py 's/        near = near.where(classes.isin(list(surface)))/        pass/' "a series on every surface"
 mutate app/server.py 's/                                                        last=str(pd.Timestamp(detail.index.time.values.max()))),/                                                        last=str(pd.Timestamp(index.time.values.max()))),/' "the dates 250 m covers taken from the base"
+mutate app/server.py 's/                if i in hidden:/                if False:/' "the 2 km drawn under the 250 m"
+mutate app/server.py 's/    hide = DETAIL_PASSAGES if z >= DETAIL_ZOOM and has_detail(variable) else frozenset()/    hide = DETAIL_PASSAGES if z >= DETAIL_ZOOM + 1 and has_detail(variable) else frozenset()/' "the 2 km under the 250 m for a zoom more"
