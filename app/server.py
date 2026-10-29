@@ -1511,13 +1511,28 @@ def line_code(points: str, variable: str, step: float = 2.0, start: str = None, 
 
 
 @app.get("/api/netcdf")
-def netcdf(data=Depends(view)):
+def netcdf(variable: str, data=Depends(view)):
+    """The view's passages as a file: the values as the map shows them (nothing subtracted), named by the variable,
+    with their positions and line times, and attributes saying what they are made of."""
     if not NETCDF:
         raise HTTPException(404)
     if isinstance(data, Overview):
         raise HTTPException(413, "The whole cycle is too big for one file: select a region")
+    var = VARIABLES[variable]
+    made = " + ".join(var.names) + (" - calibration (bias + slope x cross / 60 of each pixel's side)" if var.calibrated else "")
+    kept = (f"; where {var.flag} is 0" if var.flag else "") + (f"; on surface classes {list(var.surface)} of {SURFACE}"
+                                                                 if var.surface else "") + ("; in dB" if var.db else "")
+    out = data.sub.assign({variable: (data.sub.latitude.dims, data.raw, dict(
+        long_name=var.label, units=var.units, comment=f"{made}{kept}"))})
+    out.attrs = dict(source=f"{PRODUCT['label']} ({PRODUCT['credit']}), {STORE} at commit {COMMIT.id}",
+                     made_by=f"SWOT's Up {RELEASE} ({os.environ.get('SWOT_PUBLIC_URL') or 'https://swotsup.org/'})")
+    if var.dtu:
+        out.attrs["mean_sea_surface"] = ("DTU25MSS Mean Sea Surface, DTU Space (Nilsson, Andersen et al., ESSD 18, 5027, "
+                                         "2026), doi:10.11583/DTU.29412275, CC BY 4.0; mss_cor_dtu25 replaces the L2's")
+    if var.calibrated:
+        out.attrs["calibration"] = f"experimental, swot_cloud {ds[CAL[0]].attrs.get('version', '')}: cal_bias, cal_slope"
     buf = io.BytesIO()
-    data.sub.to_netcdf(buf, engine="h5netcdf")
+    out.to_netcdf(buf, engine="h5netcdf")
     return Response(buf.getvalue(), media_type="application/x-netcdf",
                     headers={"Content-Disposition": 'attachment; filename="swot_subset.nc"'})
 

@@ -108,3 +108,4 @@ mutate app/swot_view.py 's/        b = sub.cross.values\[col\] - 0.25 \* shift\[
 mutate app/swot_view.py 's/    side, k = (cross > 0).astype(int), np.arange(len(col))/    side, k = (cross < 0).astype(int), np.arange(len(col))/' "the line code's calibration of the other side"
 mutate app/swot_view.py 's/^ssha = ssha - xr.where(sub.cross > 0, east, west)/ssha = ssha + 0 * xr.where(sub.cross > 0, east, west)/' "the region code uncalibrated"
 mutate app/server.py 's/    dims = sub\["latitude"\].dims  # (time, along, cross)/    dims = data[timed[0]].dims  # (time, along, cross)/' "a view's positions with the first array's dims"
+mutate app/server.py 's/    out = data.sub.assign({variable: (data.sub.latitude.dims, data.raw, dict(/    out = data.sub.assign({variable: (data.sub.latitude.dims, data.raw * 0 + data.raw.mean(), dict(/' "the region's file without its values"

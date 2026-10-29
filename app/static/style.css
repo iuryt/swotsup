@@ -85,7 +85,11 @@ h1 { font-size: 16px; margin: 0; color: var(--title); font-weight: 600; }
 #selection { color: var(--orange); font-weight: 600; padding: 0; border: 0; background: none; cursor: default; }
 #selection:hover { background: none; }
 #pick { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
-#time-buttons { display: none; }
+/* move the selection by its length, a day less or more: small on the desktop, finger-sized on a phone (below) */
+#time-buttons { display: flex; gap: 3px; margin-left: 8px; }
+#time-buttons button { width: 22px; height: 18px; padding: 0; justify-content: center; }
+#time-buttons svg { width: 13px; height: 13px; }
+.time-top #selection { margin-left: auto; }
 #timeline { width: 100%; height: 46px; display: block; cursor: crosshair; touch-action: none; }
 #time .hint { margin: 2px 0 0; font-size: 11px; }
 
