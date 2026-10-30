@@ -6,6 +6,7 @@ import sys
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -889,3 +890,28 @@ def test_value_tiles_carry_the_means(store_path, monkeypatch):
         assert np.abs(v[on]).max() < 150  # not clipped
         want = (server.COLORMAPS["RdBu_r"](np.clip((v[on] + 100) / 200, 0, 1)) * 255).astype(int)[:, :3]
         assert np.abs(want - colored[on][:, :3]).max() <= 1
+
+
+
+def test_region_netcdf_has_the_values_as_shown(dtu_store_path, shifted_fine_store_path, monkeypatch):
+    """The region's file holds the view's values as the map shows them: SSHA as stored, or plus the DTU25 correction
+    and minus the calibration (each from the fixture's formulas), at the passages' pixels, with what they are made of."""
+    import swot_view
+
+    server, c = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
+    view = dict(west=29, east=31, south=0, north=4, start="2024-01-01", days=21)
+    store = swot_view.subset(swot_view.open_store(dtu_store_path), 29, 31, 0, 4, "2024-01-01", "2024-01-21T23:59:59")
+    for variable in ("ssha_filtered", "cal"):
+        got = c.get("/api/netcdf", params=view | dict(variable=variable))
+        assert got.status_code == 200
+        nc = xr.load_dataset(io.BytesIO(got.content), engine="h5netcdf")
+        sub = store.sel(time=nc.time.values).isel(along=np.isin(store.along.values, nc.along.values))
+        want = sub.ssha_filtered.values
+        if variable == "cal":
+            side = (sub.cross > 0).astype(int)
+            dtu = sub.pass_id / 100 + 0.001 * sub.along
+            cal = 0.01 + 0.02 * side + 0.005 * sub.cycle + 0.0001 * sub.along + 0.06 * (1 + side) * sub.cross / 60
+            want = (sub.ssha_filtered + dtu - cal).transpose("time", "along", "cross").values
+            assert "DTU25" in nc.attrs["mean_sea_surface"] and "calibration" in nc[variable].attrs["comment"]
+        assert nc[variable].shape == want.shape and np.isfinite(want).sum() > 1000
+        np.testing.assert_allclose(nc[variable].values, want, atol=1e-4)
