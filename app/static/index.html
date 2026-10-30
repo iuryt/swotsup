@@ -116,7 +116,19 @@
   </div>
 
   <canvas id="overview" width="170" height="83" title="Click to go there"></canvas>
-  <button id="projection" title="Switch between the globe and a flat map"></button>
+  <div id="map-buttons">
+    <button id="projection" title="Switch between the globe and a flat map"></button>
+    <!-- the compass: its red end points north; a click shows the heading and a reset (#91) -->
+    <div id="compass-wrap">
+      <button id="compass" title="Heading"><svg viewBox="0 0 24 24" width="22" height="22">
+        <path d="M12 2 L16 12 L8 12 Z" fill="#e5484d"/><path d="M12 22 L16 12 L8 12 Z" fill="#d8dde6"/>
+        <circle cx="12" cy="12" r="1.6" fill="#0d1424"/></svg></button>
+      <div id="heading" class="panel hidden">
+        <div id="heading-text"></div>
+        <button id="reset-north" class="ghost"><i data-lucide="rotate-ccw"></i>Reset north</button>
+      </div>
+    </div>
+  </div>
   <div id="coords"></div>
 
   <!-- bottom: time -->
