@@ -325,6 +325,11 @@ with sync_playwright() as p:
             print(f"{prefix}-compass-phone.png", flush=True)
         elif scenario == "timeline":  # zoomed into the Gulf Stream: the ticks are its passages (light blue: 250 m too);
             # then the menu of lengths
+            for close in page.query_selector_all(".card .close"):  # what earlier scenarios left open
+                close.click()
+            if page.is_visible("#globe"):
+                page.click("#globe")
+                page.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
             page.evaluate("map.jumpTo({center: [-65, 38], zoom: 5, bearing: 0, pitch: 0})")
             page.wait_for_timeout(6000)
             page.mouse.move(800, 885)
