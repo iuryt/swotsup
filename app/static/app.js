@@ -157,10 +157,10 @@ function showProgress(kind, text, fraction, count) {
 // new ones, and they went before those came), and come back as soon as it moves or asks for new ones
 function watchUnder() {
   const show = (on) => {
-    const inner = showTiles.now?.inner;
-    if (!inner || !map.getLayer(inner.id)) return;
-    if ((map.getLayoutProperty(inner.id, "visibility") ?? "visible") === (on ? "visible" : "none")) return;
-    map.setLayoutProperty(inner.id, "visibility", on ? "visible" : "none");
+    const under = showTiles.now?.under;
+    if (!under || !map.getLayer(under.id)) return;
+    if ((map.getLayoutProperty(under.id, "visibility") ?? "visible") === (on ? "visible" : "none")) return;
+    map.setLayoutProperty(under.id, "visibility", on ? "visible" : "none");
     dbg({ ev: "under", shown: on });
   };
   map.on("idle", () => { const swot = showTiles.now?.swot; if (map.getZoom() >= 6 && swot && map.isSourceLoaded(swot.id)) show(false); });
@@ -281,17 +281,10 @@ function setColors() {
   const credit = { attribution: info.looks[state.variable].dtu ? "MSS: DTU25 (DTU Space, CC BY 4.0)" : undefined };
   // the whole globe on dates the daily rasters have: their tiles (to zoom 6, drawn larger beyond) always underneath,
   // the passages' only from zoom 7: up close, a place not read yet shows the rasters, never nothing
-  // (alone up to the map's zoom 6; beyond, under the passages', without its pixels at the edges of the swaths, which
-  // would show past theirs)
+  // (one layer at every zoom: from 6, under the passages', it goes once all is loaded, `watchUnder`)
   const under = fromRasters();
-  if (under) {
-    showTiles("under", url, { paint: raster, maxzoom: 6 }, { ...credit, maxzoom: 6 });
-    // (at every zoom from 6: it goes once all is loaded, `watchUnder`; zooming in from afar, nothing else is there yet)
-    showTiles("inner", url.replace(".png?", ".png?inner=1&"), { paint: raster, minzoom: 6 }, { ...credit, maxzoom: 6 });
-  } else {
-    dropTiles("under");
-    dropTiles("inner");
-  }
+  if (under) showTiles("under", url, { paint: raster }, { ...credit, maxzoom: 6 });
+  else dropTiles("under");
   // (the source's tiles from 7; the layer shows from the map's zoom 6, where MapLibre already takes tiles of 7)
   const base = under ? { minzoom: 6 } : {}, tiles = under ? { minzoom: 7 } : {};
   if (!info.detail) return showTiles("swot", url, { paint: raster, ...base }, { ...credit, ...tiles });
@@ -307,7 +300,7 @@ function setColors() {
 const DEBUG = new URLSearchParams(location.search).get("debug") === "1", debugLog = [];
 const dbg = (e) => DEBUG && debugLog.push({ t: Math.round(performance.now()), ...e });
 function setupDebug() {
-  const ours = (id) => id && /^(swot|detail|under|inner)-/.test(id);
+  const ours = (id) => id && /^(swot|detail|under)-/.test(id);
   const tile = (e) => ({ s: e.sourceId, k: e.tile.tileID.key, ...e.tile.tileID.canonical });  // z, x, y
   map.on("dataloading", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "ask", ...tile(e), moving: map.isMoving() }));
   map.on("sourcedata", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "tile", ...tile(e), st: e.tile.state }));
@@ -436,7 +429,7 @@ function showTiles(kind, url, layer, source = {}) {
   dbg({ ev: "layer+", id, replaces: cur?.id, url: url.split("?")[1]?.replace(/west=.*?&variable=/, "") });
   const first = (...kinds) => kinds.map((k) => order.find((l) => l.startsWith(`${k}-`))).find(Boolean);
   const before = cur ? order[order.indexOf(cur.id) + 1]
-    : { under: first("inner", "swot", "detail"), inner: first("swot", "detail"), swot: first("detail") }[kind] ?? "box";
+    : { under: first("swot", "detail"), swot: first("detail") }[kind] ?? "box";
   map.addSource(id, { type: "raster", tiles: [url], tileSize: 256, ...source });
   map.addLayer({ type: "raster", ...layer, id, source: id }, before);
   now[kind] = { id, url };
