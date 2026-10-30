@@ -154,20 +154,29 @@ function showProgress(kind, text, fraction, count) {
 // the 250 m tiles in view: how many were asked and how many came (or were dropped); a bar while some are coming
 // the rasters under the passages' tiles (from the map's zoom 6) only cover what is loading: they go once the map is
 // idle (every tile in view loaded and drawn, nothing moving: "loaded" alone came between a zoom's old tiles and its
-// new ones, and they went before those came), and come back as soon as it moves or asks for new ones
+// new ones), fading out; when it moves they come back only if the passages' tiles have not come 0.4 s later (a
+// place seen before: the zoom's tiles come sooner, and their ~10 km pixels at the swaths' edges are not seen),
+// below zoom 6 at once (they are all there is)
 function watchUnder() {
+  let timer = null;
   const show = (on) => {
     const under = showTiles.now?.under;
     if (!under || !map.getLayer(under.id) || watchUnder.on === on) return;
     watchUnder.on = on;
-    // fading out over 0.4 s (its ~10 km pixels at the swaths' edges go: at once, the swaths seemed to jump), back at once
-    map.setPaintProperty(under.id, "raster-opacity-transition", { duration: on ? 0 : 400 });
+    map.setPaintProperty(under.id, "raster-opacity-transition", { duration: on ? 150 : 400 });
     map.setPaintProperty(under.id, "raster-opacity", on ? 1 : 0);
     dbg({ ev: "under", shown: on });
   };
-  map.on("idle", () => { const swot = showTiles.now?.swot; if (map.getZoom() >= 6 && swot && map.isSourceLoaded(swot.id)) show(false); });
-  map.on("movestart", () => show(true));
-  map.on("dataloading", (e) => e.sourceId && e.sourceId === showTiles.now?.swot?.id && show(true));
+  const loaded = () => { const swot = showTiles.now?.swot; return !!(swot && map.getSource(swot.id) && map.isSourceLoaded(swot.id)); };
+  const wanted = () => {
+    if (map.getZoom() < 6) { clearTimeout(timer); show(true); return; }
+    if (timer) return;
+    timer = setTimeout(() => { timer = null; if (!loaded()) show(true); }, 400);
+  };
+  map.on("idle", () => { clearTimeout(timer); timer = null; if (map.getZoom() >= 6 && loaded()) show(false); });
+  map.on("movestart", wanted);
+  map.on("zoom", () => map.getZoom() < 6 && show(true));
+  map.on("dataloading", (e) => e.sourceId && e.sourceId === showTiles.now?.swot?.id && wanted());
 }
 
 function watchDetail() {
