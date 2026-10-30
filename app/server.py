@@ -226,7 +226,7 @@ BASE_ROWS = {(c, p): i for i, (c, p) in enumerate(zip(index.cycle.values.tolist(
 # at 250 m over L2 Expert at 2 km); read tile by tile, a chunk at a time, never as a whole view
 DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE", None if CONFIGURED else L2 + "unsmoothed-d")
 DETAIL_PRODUCT = PRODUCTS[os.environ.get("SWOT_DETAIL_PRODUCT", "unsmoothed")]
-DETAIL_ZOOM = int(os.environ.get("SWOT_DETAIL_ZOOM", 9))
+DETAIL_ZOOM = int(os.environ.get("SWOT_DETAIL_ZOOM", 8))  # its tiles from this zoom; seen from the map's zoom before
 detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial"), geometry) if DETAIL_STORE else None
 # the passages it has, (cycle, pass): under it, from its zoom on, the base is drawn inside its swath (see `inner`)
 DETAIL_PASSAGES = frozenset(zip(detail.index.cycle.values.tolist(), detail.index.pass_id.values.tolist())) if detail else frozenset()

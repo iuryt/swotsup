@@ -1632,7 +1632,7 @@ async function main() {
     `${info.passages.toLocaleString("en")} passages over ${info.passes} passes of the 21-day orbit`;
   $("#version").textContent = `${info.release} (code ${info.version})`;
   const at = new Date(info.commit.time + "Z");
-  $("#product").textContent = `Sea surface height · ${info.product}` + (info.detail ? ` · ${info.detail.product} from zoom ${info.detail.zoom}` : "") +
+  $("#product").textContent = `Sea surface height · ${info.product}` + (info.detail ? ` · ${info.detail.product} from zoom ${info.detail.zoom - 1}` : "") +
     ` · commit ${info.commit.id}, ${dayText(at)} ${at.toISOString().slice(11, 16)} UTC`;
   $("#product").title = `The store as of this commit (the latest when the server started): ${info.commit.message}`;
   const [url, brightness] = BASEMAPS["Bathymetry, gray"];
