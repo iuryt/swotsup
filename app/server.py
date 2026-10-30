@@ -863,6 +863,21 @@ class RasterView(Overview):
     def nbytes(self):
         return sum(a.nbytes for a in self.screen) + sum(a.nbytes + n.nbytes for a, n in (self.levels or {}).values())
 
+    def screen_limits(self, west, east, south, north):
+        """The robust color limits of each mode from the window's means at ZOOM in a box (a zoomed-in screen holds
+        few of the ~40 km pixels of the sample, and then fell back to the whole globe's); None with too few there."""
+        m = self.levels[rasters.ZOOM][0]
+        size = m.shape[0]
+        lat = np.rad2deg(2 * np.arctan(np.exp((np.arange(size) + 0.5) / size * 2 * np.pi - np.pi)) - np.pi / 2)
+        lon = (np.arange(size) + 0.5) / size * 360 - 180
+        rows = np.flatnonzero((lat >= south) & (lat <= north))
+        cols = np.flatnonzero((lon - west) % 360 <= ((east - west) % 360 or 360))
+        v = m[np.ix_(rows, cols)].ravel()
+        v = v[np.isfinite(v)]
+        if len(v) < 30:
+            return None
+        return {mode: color_limits((v - shift[0]).astype("float64"))[1] for mode, shift in self._shift.items()}
+
     def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset()):
         z = np.log2(WORLD / (x_range[1] - x_range[0]))
         if width != 256 or height != 256 or abs(z - round(z)) > 1e-6 or round(z) > rasters.ZOOM + BEYOND:
@@ -1091,8 +1106,11 @@ def page():
 def limits(lon0: float, lon1: float, lat0: float, lat1: float, data=Depends(view)):
     """The robust color limits of each mode from the view's pixels on screen (the box lon0-lon1, lat0-lat1): red and
     blue at any zoom; the whole view's where too few pixels are on screen."""
-    screen = getattr(data, "screen", None)
-    out = screen_limits(screen, data.shift, lon0, lon1, lat0, lat1) if screen is not None else None
+    if isinstance(data, RasterView) and data.levels:  # the window's ~10 km means on screen (its sample is ~40 km)
+        out = data.screen_limits(lon0, lon1, lat0, lat1)
+    else:
+        screen = getattr(data, "screen", None)
+        out = screen_limits(screen, data.shift, lon0, lon1, lat0, lat1) if screen is not None else None
     return out or data.robust
 
 
