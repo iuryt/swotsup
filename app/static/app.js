@@ -165,9 +165,19 @@ function watchUnder() {
     map.setPaintProperty(under.id, "raster-opacity", on ? 1 : 0);
     dbg({ ev: "under", shown: on });
   };
-  map.on("idle", () => { const swot = showTiles.now?.swot; if (map.getZoom() >= 6 && swot && map.isSourceLoaded(swot.id)) show(false); });
-  map.on("movestart", () => show(true));
-  map.on("dataloading", (e) => e.sourceId && e.sourceId === showTiles.now?.swot?.id && show(true));
+  // the passages' tiles that failed (a server restarting, an error): "loaded" for the map, but nothing drawn; while any
+  // is in view, the rasters stay
+  const failed = new Set(), ours = (e) => e.sourceId && e.sourceId === showTiles.now?.swot?.id;
+  const key = (e) => `${e.sourceId}/${e.tile.tileID.key}`;
+  map.on("idle", () => { const swot = showTiles.now?.swot; if (map.getZoom() >= 6 && swot && map.isSourceLoaded(swot.id) && !failed.size) show(false); });
+  map.on("movestart", () => { failed.clear(); show(true); });
+  map.on("dataloading", (e) => ours(e) && show(true));
+  map.on("sourcedata", (e) => {
+    if (!ours(e) || !e.tile) return;
+    if (e.tile.state === "errored") failed.add(key(e));
+    else if (e.tile.state === "loaded") failed.delete(key(e));
+  });
+  map.on("error", (e) => ours(e) && e.tile && failed.add(key(e)));
 }
 
 function watchDetail() {
