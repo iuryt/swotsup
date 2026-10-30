@@ -239,8 +239,9 @@ function setColors() {
   if (state.preset !== "custom" && q.length) {
     const p = Number(state.preset) * 10;
     let [lo, hi] = state.preset === "mad" && robust ? robust : [q[p], q[1000 - p]];
-    // about zero once a mean is subtracted; with nothing subtracted, robust colors stay about the median
-    if (state.symmetric && !(state.preset === "mad" && state.mode === "none")) [lo, hi] = [-Math.max(-lo, hi), Math.max(-lo, hi)];
+    // percentiles about zero once a mean is subtracted; robust colors about the screen's median whatever is
+    // subtracted (#92: a place far from the mean, e.g. the west Pacific, shows red and blue too, not one color)
+    if (state.symmetric && state.preset !== "mad") [lo, hi] = [-Math.max(-lo, hi), Math.max(-lo, hi)];
     [state.vmin, state.vmax] = [+lo.toFixed(3), +hi.toFixed(3)];
   }
   $("#colorbar").style.background = `linear-gradient(90deg, ${stops().join(", ")})`;
