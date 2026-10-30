@@ -413,6 +413,22 @@ def test_fine_profile_from_the_detail_store(store_path, fine_store_path, monkeyp
     np.testing.assert_allclose(seconds, line[has], atol=0.01)  # one line a second
 
 
+def test_timeline_marks_the_days_the_detail_store_has(store_path, tmp_path, monkeypatch):
+    """The timeline's `fine`: the days with a passage of the detail store over the box too. The detail store here has
+    pass 7 on 6 Jan and pass 150 (far east) on 3 Jan: of the box's days (3, 4 and 6 Jan) only 6 Jan."""
+    import icechunk
+    from conftest import fake_l3
+    from swot_cloud.store import append
+
+    session = icechunk.Repository.create(icechunk.local_filesystem_storage(str(tmp_path / "fine"))).writable_session("main")
+    for cycle, pass_id, lon0, day in ((3, 150, 200.0, 3), (5, 7, 30.0, 6)):  # in time order
+        append(session.store, fake_l3(tmp_path, cycle, pass_id, lon0=lon0, day=day), along_chunk=50, time_chunk=2)
+    session.commit("detail")
+    server, c = detail_server(store_path[0], monkeypatch, fine=str(tmp_path / "fine"))
+    t = c.get("/api/timeline", params=dict(west=29, east=31, south=-1, north=1)).json()
+    assert len(t["day"]) == 3 and t["fine"] == [False, False, True]
+
+
 def test_fine_series_reads_the_detail_store_as_point_series(fine_store_path, monkeypatch):
     """The 250 m series of a point is the mean of the detail store's pixels within the radius, per passage, as
     point_series: with the same store as detail, the same numbers, also near the swath's end (lat 9.9)."""
