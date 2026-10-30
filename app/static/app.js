@@ -158,9 +158,11 @@ function showProgress(kind, text, fraction, count) {
 function watchUnder() {
   const show = (on) => {
     const under = showTiles.now?.under;
-    if (!under || !map.getLayer(under.id)) return;
-    if ((map.getLayoutProperty(under.id, "visibility") ?? "visible") === (on ? "visible" : "none")) return;
-    map.setLayoutProperty(under.id, "visibility", on ? "visible" : "none");
+    if (!under || !map.getLayer(under.id) || watchUnder.on === on) return;
+    watchUnder.on = on;
+    // fading out over 0.4 s (its ~10 km pixels at the swaths' edges go: at once, the swaths seemed to jump), back at once
+    map.setPaintProperty(under.id, "raster-opacity-transition", { duration: on ? 0 : 400 });
+    map.setPaintProperty(under.id, "raster-opacity", on ? 1 : 0);
     dbg({ ev: "under", shown: on });
   };
   map.on("idle", () => { const swot = showTiles.now?.swot; if (map.getZoom() >= 6 && swot && map.isSourceLoaded(swot.id)) show(false); });
@@ -283,7 +285,10 @@ function setColors() {
   // the passages' only from zoom 7: up close, a place not read yet shows the rasters, never nothing
   // (one layer at every zoom: from 6, under the passages', it goes once all is loaded, `watchUnder`)
   const under = fromRasters();
-  if (under) showTiles("under", url, { paint: raster }, { ...credit, maxzoom: 6 });
+  if (under) {
+    if (showTiles.now?.under?.url !== url) watchUnder.on = true;  // a new layer starts shown
+    showTiles("under", url, { paint: raster }, { ...credit, maxzoom: 6 });
+  }
   else dropTiles("under");
   // (the source's tiles from 7; the layer shows from the map's zoom 6, where MapLibre already takes tiles of 7)
   const base = under ? { minzoom: 6 } : {}, tiles = under ? { minzoom: 7 } : {};
