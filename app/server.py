@@ -156,14 +156,21 @@ SCREEN_SAMPLE = 1_000_000  # pixels kept with their positions, for the colors of
 
 
 def screen_limits(screen, shift, west, east, south, north):
-    """The robust limits of each mode from the pixels of a sample (lon, lat, value, passage) inside a box; None with
-    too few there."""
+    """The colors' limits of each mode from the pixels of a sample (lon, lat, value, passage) inside a box: their
+    quantiles and robust range (as `color_limits`, {"quantiles": {mode: ...}, "robust": {mode: ...}}); None with too
+    few there."""
     lon, lat, v, at = screen
     width = (east - west) % 360 or 360
     inside = ((lon - west) % 360 <= width) & (lat >= south) & (lat <= north)
     if inside.sum() < 500:
         return None
-    return {mode: color_limits((v[inside] - s[at[inside]]).astype("float64"))[1] for mode, s in shift.items()}
+    return limits_of({mode: v[inside] - s[at[inside]] for mode, s in shift.items()})
+
+
+def limits_of(values):
+    """{"quantiles": {mode: ...}, "robust": {mode: ...}} of each mode's values."""
+    out = {mode: color_limits(np.asarray(v, "float64")) for mode, v in values.items()}
+    return dict(quantiles={m: q for m, (q, _) in out.items()}, robust={m: r for m, (_, r) in out.items()})
 
 
 def color_limits(v):
@@ -876,7 +883,7 @@ class RasterView(Overview):
         v = v[np.isfinite(v)]
         if len(v) < 30:
             return None
-        return {mode: color_limits((v - shift[0]).astype("float64"))[1] for mode, shift in self._shift.items()}
+        return limits_of({mode: v - shift[0] for mode, shift in self._shift.items()})
 
     def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset()):
         z = np.log2(WORLD / (x_range[1] - x_range[0]))
@@ -1104,14 +1111,14 @@ def page():
 
 @app.get("/api/limits")
 def limits(lon0: float, lon1: float, lat0: float, lat1: float, data=Depends(view)):
-    """The robust color limits of each mode from the view's pixels on screen (the box lon0-lon1, lat0-lat1): red and
-    blue at any zoom; the whole view's where too few pixels are on screen."""
+    """The color limits of each mode (quantiles and robust range) from the view's pixels on screen (the box lon0-lon1,
+    lat0-lat1): red and blue at any zoom; the whole view's where too few pixels are on screen."""
     if isinstance(data, RasterView) and data.levels:  # the window's ~10 km means on screen (its sample is ~40 km)
         out = data.screen_limits(lon0, lon1, lat0, lat1)
     else:
         screen = getattr(data, "screen", None)
         out = screen_limits(screen, data.shift, lon0, lon1, lat0, lat1) if screen is not None else None
-    return out or data.robust
+    return out or dict(quantiles=data.quantiles, robust=data.robust)
 
 
 @app.get("/api/progress")
