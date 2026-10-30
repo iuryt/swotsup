@@ -9,7 +9,9 @@ const BASEMAPS = {
   "Imagery": [ESRI.replace("{}", "World_Imagery"), 0.8],
 };
 
-const state = { mode: "box", preset: "mad", symmetric: true, data: null, drawing: false, cmaps: {} };
+// values as stored by default (#92): the colors follow the screen's median, so nothing needs subtracting to see red
+// and blue; a mean subtracted is a choice of the Display menu
+const state = { mode: "none", preset: "mad", symmetric: false, data: null, drawing: false, cmaps: {} };
 let info, map, timeline;
 try { state.cmaps = JSON.parse(localStorage.getItem("cmaps") || "{}"); } catch (e) {}
 // the variable shown: its colormap (chosen in this browser, else its own), its stops, its units and kind
@@ -1489,18 +1491,18 @@ function setupMenus() {
   $("#tool-projection").onclick = () => setProjection(!document.body.classList.contains("globe"));
   $("#tool-code").onclick = showRegionCode;
   $("#tool-about").onclick = () => $("#about-dialog").showModal();
-  $("#variable").onchange = () => {  // anomalies: a spatial mean subtracted, colors about zero; levels: as stored
+  $("#variable").onchange = () => {  // as stored (a mean subtracted only for anomalies, when chosen)
     const was = isAnomaly();
     state.variable = $("#variable").value;
-    if (isAnomaly() !== was) state.mode = isAnomaly() ? "box" : "none";
-    state.symmetric = isAnomaly() && (state.variable !== "adt" || state.mode !== "none");
+    if (isAnomaly() !== was) state.mode = "none";
+    state.symmetric = isAnomaly() && state.mode !== "none";
     loadData();
   };
   for (const [id, key] of [["#mode", "mode"], ["#preset", "preset"]]) {
     $(id).onclick = (e) => {
       if (!e.target.dataset.value) return;
       state[key] = e.target.dataset.value;
-      if (key === "mode") state.symmetric = state.variable !== "adt" || state.mode !== "none";
+      if (key === "mode") state.symmetric = state.mode !== "none";
       setColors();
     };
   }
