@@ -1042,21 +1042,38 @@ async def event(request: Request):
     return Response(status_code=204)
 
 
-@app.middleware("http")
-async def timing(request: Request, call_next):
-    """The time of every request to the API: its endpoint (the route, not the values asked), seconds and status."""
-    t0 = time.perf_counter()
-    response = await call_next(request)
-    # how long the server took, for the page (?debug=1 tells it apart from the network's and the drawing's)
-    response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - t0) * 1000:.1f}"
-    if TELEMETRY and request.url.path.startswith("/api/") and request.url.path != "/api/event":
-        route = getattr(request.scope.get("route"), "path", request.url.path)
-        tile = route.endswith("{y}.png")
-        if not tile or next(tiles_seen) % TILE_SAMPLE == 0:
-            record("requests", dict(time=pd.Timestamp.now("UTC").isoformat(), endpoint=route, sample=TILE_SAMPLE if tile else 1,
-                                    seconds=round(time.perf_counter() - t0, 3), status=response.status_code)
-                   | (dict(z=int(request.path_params["z"])) if tile else {}))
-    return response
+class Timing:
+    """The time of every request to the API: its endpoint (the route, not the values asked), seconds and status; and
+    the page's Server-Timing (?debug=1 tells the server's time apart from the network's and the drawing's). A plain
+    ASGI middleware: Starlette's @app.middleware hides from the endpoints that a page left a request (`served`)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        t0, status = time.perf_counter(), {}
+
+        async def timed(message):
+            if message["type"] == "http.response.start":
+                status["code"] = message["status"]
+                message = dict(message, headers=list(message.get("headers", [])) + [
+                    (b"server-timing", f"app;dur={(time.perf_counter() - t0) * 1000:.1f}".encode())])
+            await send(message)
+
+        await self.app(scope, receive, timed)
+        path = scope["path"]
+        if TELEMETRY and path.startswith("/api/") and path != "/api/event":
+            route = getattr(scope.get("route"), "path", path)
+            tile = route.endswith("{y}.png")
+            if not tile or next(tiles_seen) % TILE_SAMPLE == 0:
+                record("requests", dict(time=pd.Timestamp.now("UTC").isoformat(), endpoint=route, sample=TILE_SAMPLE if tile else 1,
+                                        seconds=round(time.perf_counter() - t0, 3), status=status.get("code"))
+                       | (dict(z=int(scope["path_params"]["z"])) if tile else {}))
+
+
+app.add_middleware(Timing)
 
 
 @app.get("/")
