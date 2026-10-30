@@ -33,7 +33,7 @@ rasters=()
 [ -d /opt/rasters/z0 ] && rasters=(-v /opt/rasters:/rasters:ro -e SWOT_RASTERS=/rasters)
 # dev: pages opened with ?debug=1 report the map's events (copied to S3 every minute with the usage)
 debug=()
-[ "$stage" = dev ] && debug=(-e SWOT_DEBUG_DIR=/telemetry/debug)
+[ "$stage" = dev ] && debug=(-e SWOT_DEBUG_DIR=/telemetry/debug -e SWOT_TILE_SAMPLE=1)  # and every tile's time
 # the country of a visitor (anonymous usage): DB-IP Lite, this month's (else last month's), kept with the cache
 geo=/opt/cache/dbip-country-lite.mmdb
 for month in $(date +%Y-%m) $(date -d "-1 month" +%Y-%m); do

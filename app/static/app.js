@@ -194,13 +194,17 @@ async function fitColors() {
   clearTimeout(fitColors.timer);
   fitColors.timer = setTimeout(async () => {
     if (state.preset !== "mad" || !state.data) return;
+    // only after a real change of what is on screen since the colors were last fitted: a zoom level, or half a screen
+    const here = { z: map.getZoom(), c: map.getCenter() }, last = fitColors.at;
+    if (last && Math.abs(here.z - last.z) < 1 && map.project(last.c).dist(map.project(here.c)) < map.getCanvas().clientWidth / 2) return;
     const b = map.getBounds(), view = state.view;
     const r = await api(`/api/limits?${view}`, { lon0: wrap(b.getWest()), lon1: wrap(b.getEast()),
       lat0: Math.max(b.getSouth(), -90), lat1: Math.min(b.getNorth(), 90) }).catch(() => null);
     if (!r?.[state.mode] || state.view !== view || state.preset !== "mad") return;
     const [lo, hi] = r[state.mode], span = Math.max(state.vmax - state.vmin, 1e-9);
     state.screen = r;
-    if (Math.abs(lo - state.vmin) > 0.15 * span || Math.abs(hi - state.vmax) > 0.15 * span) setColors();
+    // new colors redraw every tile on screen: only for a change worth it (a 25 % move of the limits)
+    if (Math.abs(lo - state.vmin) > 0.25 * span || Math.abs(hi - state.vmax) > 0.25 * span) { fitColors.at = here; setColors(); }
   }, 600);
 }
 
@@ -254,11 +258,17 @@ function setColors() {
   const url = `swot://api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}&cmap=${cmapOf()}`;
   const raster = { "raster-fade-duration": 0, "raster-resampling": "nearest" };
   const credit = { attribution: info.looks[state.variable].dtu ? "MSS: DTU25 (DTU Space, CC BY 4.0)" : undefined };
-  if (!info.detail) return showTiles("swot", url, { paint: raster }, credit);
+  // the whole globe on dates the daily rasters have: their tiles (to zoom 6, drawn larger beyond) always underneath,
+  // the passages' only from zoom 7: up close, a place not read yet shows the rasters, never nothing
+  const under = fromRasters();
+  if (under) showTiles("under", url, { paint: raster }, { ...credit, maxzoom: 6 });
+  else dropTiles("under");
+  const base = under ? { minzoom: 7 } : {};
+  if (!info.detail) return showTiles("swot", url, { paint: raster, ...base }, { ...credit, ...base });
   // the finer product over it, from a zoom on: it fades in over half a zoom level, over the base, which stays: under
   // it the server draws the base inside its swath (no 2 km at its edges), so where it has no tile yet the base shows
   const z = info.detail.zoom;
-  showTiles("swot", url, { paint: raster }, credit);
+  showTiles("swot", url, { paint: raster, ...base }, { ...credit, ...base });
   showTiles("detail", url.replace("/api/tile/", "/api/detail/"), { minzoom: z - 1, paint: { ...raster,
     "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z - 0.4, 1] } }, { minzoom: z - 1 });
 }
@@ -267,15 +277,40 @@ function setColors() {
 const DEBUG = new URLSearchParams(location.search).get("debug") === "1", debugLog = [];
 const dbg = (e) => DEBUG && debugLog.push({ t: Math.round(performance.now()), ...e });
 function setupDebug() {
-  const ours = (id) => id && /^(swot|detail)-/.test(id);
-  map.on("dataloading", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "ask", s: e.sourceId, k: e.tile.tileID.key,
-                                                                   z: e.tile.tileID.canonical.z }));
-  map.on("sourcedata", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "tile", s: e.sourceId, k: e.tile.tileID.key, st: e.tile.state }));
+  const ours = (id) => id && /^(swot|detail|under)-/.test(id);
+  const tile = (e) => ({ s: e.sourceId, k: e.tile.tileID.key, ...e.tile.tileID.canonical });  // z, x, y
+  map.on("dataloading", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "ask", ...tile(e), moving: map.isMoving() }));
+  map.on("sourcedata", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "tile", ...tile(e), st: e.tile.state }));
+  map.on("dataabort", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "abort", ...tile(e) }));
   map.on("error", (e) => dbg({ ev: "error", s: e.sourceId, msg: String(e.error?.message ?? e.error) }));
   map.on("moveend", () => dbg({ ev: "moveend", z: +map.getZoom().toFixed(2), c: map.getCenter().toArray().map((v) => +v.toFixed(3)) }));
+  map.on("idle", () => dbg({ ev: "idle" }));  // every tile in view drawn: a move's end to here is its whole wait
+  // where each request's time goes, from the browser itself: its queue, the answer, the download, the HTTP cache
+  // (transferSize 0), the protocol, and the server's own time (Server-Timing)
+  performance.setResourceTimingBufferSize?.(10000);
+  new PerformanceObserver((list) => {
+    for (const r of list.getEntries()) {
+      if (!r.name.includes("/api/") || r.name.includes("/api/debug")) continue;
+      dbg({ ev: "net", path: new URL(r.name).pathname.split("/").slice(0, 3).join("/"), z: +(r.name.match(/\/(\d+)\/\d+\/\d+\.png/)?.[1] ?? -1),
+            stall: Math.round(r.requestStart - r.startTime), ttfb: Math.round(r.responseStart - r.requestStart),
+            down: Math.round(r.responseEnd - r.responseStart), bytes: r.transferSize, proto: r.nextHopProtocol,
+            server: r.serverTiming?.[0]?.duration ?? null });
+    }
+  }).observe({ type: "resource", buffered: true });
+  // the page itself: tasks that held it more than 50 ms, and frames slower than that while the map moves
+  try { new PerformanceObserver((list) => { for (const t of list.getEntries()) dbg({ ev: "longtask", ms: Math.round(t.duration) }); }).observe({ type: "longtask" }); } catch {}
+  let last = performance.now(), slow = 0, frames = 0;
+  const frame = (t) => { if (map.isMoving()) { frames++; if (t - last > 50) slow++; } last = t; requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+  dbg({ ev: "client", dpr: devicePixelRatio, w: innerWidth, h: innerHeight, net: navigator.connection?.effectiveType,
+        downlink: navigator.connection?.downlink, ua: navigator.userAgent.match(/(Chrome|Firefox|Safari)\/[\d.]+/)?.[0] });
   setInterval(() => {
-    dbg({ ev: "layers", ids: map.getStyle().layers.map((l) => l.id).filter(ours), z: +map.getZoom().toFixed(2) });
-    if (debugLog.length) fetch("/api/debug", { method: "POST", body: JSON.stringify(debugLog.splice(0)) }).catch(() => {});
+    const flying = [...VALUES.values()].filter((v) => !v.done).length;
+    dbg({ ev: "layers", ids: map.getStyle().layers.map((l) => l.id).filter(ours), z: +map.getZoom().toFixed(2),
+          values: VALUES.size, flying, heap: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1e6) : null,
+          frames, slow });
+    frames = slow = 0;
+    if (debugLog.length) fetch("/api/debug", { method: "POST", body: JSON.stringify({ sent: Date.now(), origin: performance.timeOrigin, events: debugLog.splice(0) }) }).catch(() => {});
   }, 2000);
 }
 
@@ -297,20 +332,28 @@ function tileColors(name) {  // 256 colors interpolated from the colormap's 16 s
 // map moved on): a browser asks a server only a few at once, and old ones would hold the new ones back
 const VALUES = new Map(), VALUES_KEPT = 250;
 async function fetchValues(url, signal) {
+  const t0 = performance.now();
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`${res.status} ${new URL(url).pathname}`);
-  const bmp = await createImageBitmap(await res.blob(), { premultiplyAlpha: "none", colorSpaceConversion: "none" });
+  const blob = await res.blob(), t1 = performance.now();
+  const bmp = await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "none" });
   const ctx = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d", { willReadFrequently: true });
   ctx.drawImage(bmp, 0, 0);
-  return ctx.getImageData(0, 0, bmp.width, bmp.height);
+  const img = ctx.getImageData(0, 0, bmp.width, bmp.height);
+  // ?debug=1: the answer's time (the server's own from its Server-Timing; the rest is the network and the queue of
+  // requests to it) and the decoding's
+  img.timing = { answer: Math.round(t1 - t0), server: Number((res.headers.get("Server-Timing") ?? "").split("dur=")[1]) || null,
+                 decode: Math.round(performance.now() - t1), bytes: blob.size };
+  return img;
 }
 async function colorTile(params, abort) {
   const u = new URL("/" + params.url.slice("swot://".length), location.href), q = u.searchParams;
   const [vmin, vmax, cmap] = [Number(q.get("vmin")), Number(q.get("vmax")), q.get("cmap")];
   for (const k of ["vmin", "vmax", "cmap"]) q.delete(k);
   q.set("values", "1");
-  const key = u.toString();
+  const key = u.toString(), tCall = performance.now();
   let got = VALUES.get(key);
+  const how = !got ? "fetched" : got.done ? "memory" : "shared";  // asked of the server here, kept, or on its way
   if (got) VALUES.delete(key);  // most recent last
   else {
     const ctl = new AbortController();
@@ -330,8 +373,8 @@ async function colorTile(params, abort) {
   abort?.signal.addEventListener("abort", leave, { once: true });
   let values;
   try { values = await got.values; } finally { abort?.signal.removeEventListener("abort", leave); if (!got.done) leave(); else if (!left) { left = true; got.waiting--; } }
+  const tValues = performance.now();
   const img = new ImageData(new Uint8ClampedArray(values.data), values.width, values.height);
-  const canvas = new OffscreenCanvas(img.width, img.height), ctx = canvas.getContext("2d");
   const p = img.data, colors = tileColors(cmap), scale = 255 / (vmax - vmin);
   for (let i = 0; i < p.length; i += 4) {
     if (!p[i + 3]) continue;
@@ -339,8 +382,13 @@ async function colorTile(params, abort) {
     const k = Math.max(0, Math.min(255, Math.round((v - vmin) * scale))) * 3;
     p[i] = colors[k]; p[i + 1] = colors[k + 1]; p[i + 2] = colors[k + 2];
   }
-  ctx.putImageData(img, 0, 0);
-  return { data: await (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer() };
+  const data = await createImageBitmap(img);  // MapLibre takes it as it is: no PNG encoded here and decoded there
+  if (DEBUG) {
+    const [z, x, y] = u.pathname.match(/(\d+)\/(\d+)\/(\d+)\.png$/).slice(1).map(Number);
+    dbg({ ev: "timing", kind: u.pathname.includes("/detail/") ? "detail" : "swot", z, x, y, how,
+          wait: Math.round(tValues - tCall), ...(how === "fetched" ? values.timing : {}), color: Math.round(performance.now() - tValues) });
+  }
+  return { data };
 }
 maplibregl.addProtocol("swot", colorTile);
 // more images at once than MapLibre's 16: the basemap's (another server, sometimes slow) would hold the data's back
@@ -356,7 +404,9 @@ function showTiles(kind, url, layer, source = {}) {
   }
   const id = `${kind}-${(showTiles.n = (showTiles.n ?? 0) + 1)}`, order = map.getStyle().layers.map((l) => l.id);
   dbg({ ev: "layer+", id, replaces: cur?.id, url: url.split("?")[1]?.replace(/west=.*?&variable=/, "") });
-  const before = cur ? order[order.indexOf(cur.id) + 1] : kind === "swot" ? order.find((l) => l.startsWith("detail-")) ?? "box" : "box";
+  const first = (...kinds) => kinds.map((k) => order.find((l) => l.startsWith(`${k}-`))).find(Boolean);
+  const before = cur ? order[order.indexOf(cur.id) + 1]
+    : { under: first("swot", "detail"), swot: first("detail") }[kind] ?? "box";
   map.addSource(id, { type: "raster", tiles: [url], tileSize: 256, ...source });
   map.addLayer({ type: "raster", ...layer, id, source: id }, before);
   now[kind] = { id, url };
@@ -370,18 +420,28 @@ function showTiles(kind, url, layer, source = {}) {
   // loading (the old stays under it): two at most
   const waiting = (showTiles.waiting ??= {})[kind];
   if (waiting) {
+    waiting.next = id;  // before the removal: it fires sourcedata for the removed one
     remove(cur.id);
-    waiting.next = id;
     return;
   }
   const entry = (showTiles.waiting[kind] = { old: cur.id, next: id });
   const loaded = (e) => {
-    if (e.sourceId !== entry.next || !map.isSourceLoaded(entry.next)) return;
+    if (e.sourceId !== entry.next || !map.getSource(entry.next) || !map.isSourceLoaded(entry.next)) return;
     map.off("sourcedata", loaded);
     delete showTiles.waiting[kind];
     remove(entry.old);
   };
   map.on("sourcedata", loaded);
+}
+
+function dropTiles(kind) {  // a kind of tiles no longer shown (and its layer still waiting to go, if any)
+  const now = showTiles.now ?? {}, waiting = showTiles.waiting?.[kind];
+  for (const id of [now[kind]?.id, waiting?.old]) {
+    if (id && map.getLayer(id)) map.removeLayer(id);
+    if (id && map.getSource(id)) map.removeSource(id);
+  }
+  delete now[kind];
+  if (showTiles.waiting) delete showTiles.waiting[kind];
 }
 
 // --- the dates: from the timeline, or a click on a time series
@@ -909,14 +969,22 @@ function drawSeries(card, curves, radius) {
 
 // --- mouse position (and value) in the lower right corner
 function setupCoords() {
-  let pending = null;
+  // the value under the mouse: once it rests 150 ms, one request at a time (a newer one cancels it), none while the
+  // map moves or a button is held (each reads passages: dozens at once held the tiles back); zoomed out, the daily
+  // rasters' value, nothing read
+  let timer = null, asking = null;
   map.on("mousemove", (e) => {
     const where = `${latText(e.lngLat.lat, 3)}  ${lonText(e.lngLat.lng, 3)}`;
     $("#coords").textContent = where;
-    if (!state.data || pending) return;
-    pending = setTimeout(async () => {  // at most a few value requests per second
-      pending = null;
-      const v = await api(`/api/value?${state.view}`, { lon: wrap(e.lngLat.lng), lat: e.lngLat.lat, mode: state.mode }).catch(() => ({}));
+    clearTimeout(timer);
+    if (!state.data || map.isMoving() || e.originalEvent.buttons) return;
+    timer = setTimeout(async () => {
+      asking?.abort();
+      const ctl = (asking = new AbortController()), t0 = performance.now();
+      const q = new URLSearchParams({ lon: wrap(e.lngLat.lng), lat: e.lngLat.lat, mode: state.mode, quick: map.getZoom() < 6 ? 1 : 0 });
+      const v = await fetch(`/api/value?${state.view}&${q}`, { signal: ctl.signal }).then((r) => r.json()).catch(() => ({}));
+      dbg({ ev: "value", ms: Math.round(performance.now() - t0), quick: q.get("quick") === "1", aborted: ctl.signal.aborted });
+      if (asking === ctl) asking = null;
       if (v.value != null && $("#coords").textContent.startsWith(where)) $("#coords").textContent = `${where} · ${v.value.toFixed(3)} ${unit()}`;
     }, 150);
   });
