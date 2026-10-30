@@ -265,9 +265,16 @@ function setColors() {
   const credit = { attribution: info.looks[state.variable].dtu ? "MSS: DTU25 (DTU Space, CC BY 4.0)" : undefined };
   // the whole globe on dates the daily rasters have: their tiles (to zoom 6, drawn larger beyond) always underneath,
   // the passages' only from zoom 7: up close, a place not read yet shows the rasters, never nothing
+  // (alone up to the map's zoom 6; beyond, under the passages', without its pixels at the edges of the swaths, which
+  // would show past theirs)
   const under = fromRasters();
-  if (under) showTiles("under", url, { paint: raster }, { ...credit, maxzoom: 6 });
-  else dropTiles("under");
+  if (under) {
+    showTiles("under", url, { paint: raster, maxzoom: 6 }, { ...credit, maxzoom: 6 });
+    showTiles("inner", url.replace(".png?", ".png?inner=1&"), { paint: raster, minzoom: 6 }, { ...credit, maxzoom: 6 });
+  } else {
+    dropTiles("under");
+    dropTiles("inner");
+  }
   // (the source's tiles from 7; the layer shows from the map's zoom 6, where MapLibre already takes tiles of 7)
   const base = under ? { minzoom: 6 } : {}, tiles = under ? { minzoom: 7 } : {};
   if (!info.detail) return showTiles("swot", url, { paint: raster, ...base }, { ...credit, ...tiles });
@@ -283,7 +290,7 @@ function setColors() {
 const DEBUG = new URLSearchParams(location.search).get("debug") === "1", debugLog = [];
 const dbg = (e) => DEBUG && debugLog.push({ t: Math.round(performance.now()), ...e });
 function setupDebug() {
-  const ours = (id) => id && /^(swot|detail|under)-/.test(id);
+  const ours = (id) => id && /^(swot|detail|under|inner)-/.test(id);
   const tile = (e) => ({ s: e.sourceId, k: e.tile.tileID.key, ...e.tile.tileID.canonical });  // z, x, y
   map.on("dataloading", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "ask", ...tile(e), moving: map.isMoving() }));
   map.on("sourcedata", (e) => ours(e.sourceId) && e.tile && dbg({ ev: "tile", ...tile(e), st: e.tile.state }));
@@ -412,7 +419,7 @@ function showTiles(kind, url, layer, source = {}) {
   dbg({ ev: "layer+", id, replaces: cur?.id, url: url.split("?")[1]?.replace(/west=.*?&variable=/, "") });
   const first = (...kinds) => kinds.map((k) => order.find((l) => l.startsWith(`${k}-`))).find(Boolean);
   const before = cur ? order[order.indexOf(cur.id) + 1]
-    : { under: first("swot", "detail"), swot: first("detail") }[kind] ?? "box";
+    : { under: first("inner", "swot", "detail"), inner: first("swot", "detail"), swot: first("detail") }[kind] ?? "box";
   map.addSource(id, { type: "raster", tiles: [url], tileSize: 256, ...source });
   map.addLayer({ type: "raster", ...layer, id, source: id }, before);
   now[kind] = { id, url };

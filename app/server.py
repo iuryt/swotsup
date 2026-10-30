@@ -810,6 +810,13 @@ OVERVIEWS_KEPT = int(os.environ.get("SWOT_OVERVIEWS", 6))  # besides the opening
 
 
 BEYOND = 2  # zooms past the rasters' still drawn from them (their pixels 2 x 2, 4 x 4)
+
+
+def without_edges(m):
+    """Values with those next to no data (any of the 4 neighbours) left out."""
+    ok = np.pad(np.isfinite(m), 1)
+    keep = ok[1:-1, 1:-1] & ok[:-2, 1:-1] & ok[2:, 1:-1] & ok[1:-1, :-2] & ok[1:-1, 2:]
+    return np.where(keep, m, np.nan)
 FILLING = threading.Lock()  # one window's rasters summed at a time
 
 
@@ -862,7 +869,9 @@ class RasterView(Overview):
     def nbytes(self):
         return sum(a.nbytes for a in self.screen) + sum(a.nbytes for a in (self.levels or {}).values())
 
-    def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset()):
+    def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset(), inner=False):
+        """A tile (or the passages', closer); `inner`: without the pixels at the edges of the data (under the passages'
+        tiles, a ~10 km pixel only partly on a swath would show past its edge)."""
         z = np.log2(WORLD / (x_range[1] - x_range[0]))
         if width != 256 or height != 256 or abs(z - round(z)) > 1e-6 or round(z) > rasters.ZOOM + BEYOND:
             # closer: the passages that cross the view, a chunk at a time
@@ -875,9 +884,13 @@ class RasterView(Overview):
         n, size = 256 // k, WORLD / 2**z
         c0 = int(round((x_range[0] + WORLD / 2) / size)) * n
         r0 = int(round((y_range[0] + WORLD / 2) / size)) * n  # rows from the south, as datashader's
-        rows, cols = slice(r0, r0 + n), slice(c0, c0 + n)
+        e = int(inner)  # a pixel around, to tell the block's edges
+        size = 256 * 2**level
+        rows, cols = slice(max(r0 - e, 0), min(r0 + n + e, size)), slice(max(c0 - e, 0), min(c0 + n + e, size))
         m = (self.levels[level][rows, cols] if self.levels else
              RASTERS.mean(level, rows, cols, self.view["start"], self.view["days"], **self.flags))
+        if inner:
+            m = without_edges(m)[r0 - rows.start:r0 - rows.start + n, c0 - cols.start:c0 - cols.start + n]
         m = np.repeat(np.repeat(m, k, 0), k, 1)
         return m - (self._shift["box"][0] if mode == "box" else 0)
 
@@ -1172,11 +1185,12 @@ def tile_ranges(z, x, y):
 
 @app.get("/api/tile/{z}/{x}/{y}.png")
 def tile(z: int, x: int, y: int, variable: str, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2,
-         cmap: str = None, values: bool = False, data=Depends(view)):
+         cmap: str = None, values: bool = False, inner: bool = False, data=Depends(view)):
     # where the detail product shows (from the zoom before its own, on its passages), the base is drawn inside its
     # swath: always under it, never past its edges, so the page needs no fading between the two
     trim = DETAIL_PASSAGES if z >= DETAIL_ZOOM - 1 and has_detail(variable) else frozenset()
-    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256, trim), vmin, vmax, colormap(cmap, variable), values)
+    extra = dict(inner=True) if inner and isinstance(data, RasterView) else {}
+    return png(data.mean_on(mode, *tile_ranges(z, x, y), 256, 256, trim, **extra), vmin, vmax, colormap(cmap, variable), values)
 
 
 # --- the detail product, tile by tile: each passage's lines near the tile, read a chunk at a time and kept
