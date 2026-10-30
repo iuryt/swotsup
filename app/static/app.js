@@ -1019,8 +1019,8 @@ function setupCompass() {
   const show = () => {
     const bearing = (map.getBearing() % 360 + 360) % 360, pitch = map.getPitch();
     $("#compass svg").style.transform = `rotateX(${pitch}deg) rotateZ(${-bearing}deg)`;
-    $("#heading-text").innerHTML = `Heading ${Math.round(bearing) % 360}° (${POINTS[Math.round(bearing / 45) % 8]})`
-      + (pitch >= 0.5 ? `<br>Tilt ${Math.round(pitch)}°` : "");
+    $("#heading-text").textContent = `${Math.round(bearing) % 360}° ${POINTS[Math.round(bearing / 45) % 8]}`
+      + (pitch >= 0.5 ? ` · tilt ${Math.round(pitch)}°` : "");
   };
   // on a phone the compass is one of the icons bottom left
   const place = () => (narrow() ? $("#tools") : $("#map-buttons")).append($("#compass-wrap"));
