@@ -135,6 +135,8 @@
   <section class="panel" id="time">
     <div class="time-top"><span id="readout"></span>
       <button id="selection" class="ghost" title="Pick a day"></button>
+      <span id="days-wrap"><button id="days" class="ghost" title="How many days"><span id="days-text"></span><i data-lucide="chevron-down"></i></button>
+        <div id="days-menu" class="panel hidden"></div></span>
       <input type="date" id="pick" tabindex="-1" aria-hidden="true">
       <span id="time-buttons">
         <button id="prev" title="Earlier, by the selection's length"><i data-lucide="chevron-left"></i></button>
@@ -144,7 +146,8 @@
       </span></div>
     <canvas id="timeline"></canvas>
     <div class="hint" id="time-hint">Drag the orange band, or drag anywhere for a new one, up to <span class="max-days"></span> days; scroll to zoom.
-      Ticks: days SWOT passed over the region. Click the map for the time series at a point.</div>
+      Ticks: days SWOT passed over the region (zoomed in, the area in view); <span class="fine-key">light blue</span>: 250 m too.
+      Click the map for the time series at a point.</div>
   </section>
 
   <dialog id="code-dialog" class="panel">

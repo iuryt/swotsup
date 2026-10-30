@@ -1156,12 +1156,15 @@ def info():
 
 @app.get("/api/timeline")
 def timeline(west: float, east: float, south: float, north: float):
-    """Days with passages over the box, for the whole mission."""
+    """Days with passages over the box, for the whole mission, and whether the detail store has one too."""
     passes = swot_view.passes_over(geometry, west, east, south, north)
     over = index.isel(time=np.isin(index.pass_id.values, passes))
     per_day = over.cycle.to_series().groupby(over.time.to_index().floor("D")).agg(["size", "first"])
+    # the days the detail store (250 m) has a passage over the box too
+    fine = set() if detail is None else set(pd.DatetimeIndex(
+        detail.index.time.values[np.isin(detail.index.pass_id.values, passes)]).floor("D"))
     return dict(day=(per_day.index.astype("int64") // 10**6).tolist(), n=per_day["size"].tolist(),
-                cycle=per_day["first"].tolist())
+                cycle=per_day["first"].tolist(), fine=[d in fine for d in per_day.index])
 
 
 @app.get("/api/load")
