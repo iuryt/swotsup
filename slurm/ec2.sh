@@ -142,6 +142,11 @@ update)
     echo "production gets main as committed: on $(git branch --show-current), test with STAGE=dev"; exit 1
   fi
   send_code
+  # the disk at DISK GB at least (the rasters need ~15 GB more than the 30 the production started with): grown while
+  # it runs, the file system then at the boot (deploy/boot.sh)
+  vol=$(aws ec2 describe-instances --instance-ids "$(instance)" --query 'Reservations[0].Instances[0].BlockDeviceMappings[0].Ebs.VolumeId' --output text)
+  size=$(aws ec2 describe-volumes --volume-ids "$vol" --query 'Volumes[0].Size' --output text)
+  [ "$size" -ge "$DISK" ] || aws ec2 modify-volume --volume-id "$vol" --size "$DISK" --query 'VolumeModification.ModificationState' --output text
   aws iam put-role-policy --role-name $ROLE --policy-name main --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[$INSTANCE_POLICY]}"
   if [ "$STAGE" = prod ]; then
     (cd deploy && pixi exec --spec python python -m zipfile -c ../logs/wake.zip wake.py)
