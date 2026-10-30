@@ -270,7 +270,9 @@ function setColors() {
   const under = fromRasters();
   if (under) {
     showTiles("under", url, { paint: raster, maxzoom: 6 }, { ...credit, maxzoom: 6 });
-    showTiles("inner", url.replace(".png?", ".png?inner=1&"), { paint: raster, minzoom: 6 }, { ...credit, maxzoom: 6 });
+    // (to the map's zoom 8: closer, a ~10 km pixel is a block on screen, and the passages' tiles of the zoom before,
+    // drawn larger, and the 2 km under the 250 m, cover what loads)
+    showTiles("inner", url.replace(".png?", ".png?inner=1&"), { paint: raster, minzoom: 6, maxzoom: 8 }, { ...credit, maxzoom: 6 });
   } else {
     dropTiles("under");
     dropTiles("inner");
