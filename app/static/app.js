@@ -228,34 +228,39 @@ function setupCmap() {
 async function fitColors() {
   clearTimeout(fitColors.timer);
   fitColors.timer = setTimeout(async () => {
-    if (state.preset !== "mad" || !state.data) return;
+    if (state.preset === "custom" || !state.data) return;
     // only after a real change of what is on screen since the colors were last fitted: a zoom level, or half a screen
     const here = { z: map.getZoom(), c: map.getCenter() }, last = fitColors.at;
     if (last && Math.abs(here.z - last.z) < 1 && map.project(last.c).dist(map.project(here.c)) < map.getCanvas().clientWidth / 2) return;
     const b = map.getBounds(), view = state.view;
     const r = await api(`/api/limits?${view}`, { lon0: wrap(b.getWest()), lon1: wrap(b.getEast()),
       lat0: Math.max(b.getSouth(), -90), lat1: Math.min(b.getNorth(), 90) }).catch(() => null);
-    if (!r?.[state.mode] || state.view !== view || state.preset !== "mad") return;
-    const [lo, hi] = r[state.mode], span = Math.max(state.vmax - state.vmin, 1e-9);
+    if (!r?.robust?.[state.mode] || state.view !== view || state.preset === "custom") return;
+    const before = [state.vmin, state.vmax], span = Math.max(state.vmax - state.vmin, 1e-9);
     state.screen = r;
+    const [lo, hi] = presetLimits();
     // new colors redraw every tile on screen: only for a change worth it (a 25 % move of the limits)
-    if (Math.abs(lo - state.vmin) > 0.25 * span || Math.abs(hi - state.vmax) > 0.25 * span) { fitColors.at = here; setColors(); }
+    if (Math.abs(lo - before[0]) > 0.25 * span || Math.abs(hi - before[1]) > 0.25 * span) { fitColors.at = here; setColors(); }
   }, 600);
+}
+
+// the limits of the colors' preset from what is on screen (fitColors), else from the whole view: the robust range
+// (the median ± 2 x 1.4826 x MAD) or percentiles
+function presetLimits() {
+  const q = state.screen?.quantiles?.[state.mode] ?? state.data?.quantiles[state.mode] ?? [];
+  const robust = state.screen?.robust?.[state.mode] ?? state.data?.robust?.[state.mode];
+  const p = Number(state.preset) * 10;
+  let [lo, hi] = state.preset === "mad" && robust ? robust : [q[p], q[1000 - p]];
+  // percentiles about zero once a mean is subtracted; robust colors about the screen's median whatever is
+  // subtracted (#92: a place far from the mean, e.g. the west Pacific, shows red and blue too, not one color)
+  if (state.symmetric && state.preset !== "mad") [lo, hi] = [-Math.max(-lo, hi), Math.max(-lo, hi)];
+  return [+lo.toFixed(3), +hi.toFixed(3)];
 }
 
 // --- colors: from percentiles of the loaded values, or typed
 function setColors() {
-  const q = state.data?.quantiles[state.mode] ?? [];
-  // robust: the median ± 2 x 1.4826 x MAD of what is on screen (fitColors), else of the whole view; else percentiles
-  const robust = state.screen?.[state.mode] ?? state.data?.robust?.[state.mode];
-  if (state.preset !== "custom" && q.length) {
-    const p = Number(state.preset) * 10;
-    let [lo, hi] = state.preset === "mad" && robust ? robust : [q[p], q[1000 - p]];
-    // percentiles about zero once a mean is subtracted; robust colors about the screen's median whatever is
-    // subtracted (#92: a place far from the mean, e.g. the west Pacific, shows red and blue too, not one color)
-    if (state.symmetric && state.preset !== "mad") [lo, hi] = [-Math.max(-lo, hi), Math.max(-lo, hi)];
-    [state.vmin, state.vmax] = [+lo.toFixed(3), +hi.toFixed(3)];
-  }
+  const q = state.screen?.quantiles?.[state.mode] ?? state.data?.quantiles[state.mode] ?? [];
+  if (state.preset !== "custom" && q.length) [state.vmin, state.vmax] = presetLimits();
   $("#colorbar").style.background = `linear-gradient(90deg, ${stops().join(", ")})`;
   $("#vmin").value = state.vmin;
   $("#vmax").value = state.vmax;
@@ -1504,6 +1509,8 @@ function setupMenus() {
       state[key] = e.target.dataset.value;
       if (key === "mode") state.symmetric = state.mode !== "none";
       setColors();
+      fitColors.at = null;  // and the screen's limits for it, without waiting for a move
+      fitColors();
     };
   }
   $("#symmetric").onchange = () => { state.symmetric = $("#symmetric").checked; setColors(); };
