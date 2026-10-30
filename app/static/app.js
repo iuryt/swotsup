@@ -152,6 +152,25 @@ function showProgress(kind, text, fraction, count) {
 }
 
 // the 250 m tiles in view: how many were asked and how many came (or were dropped); a bar while some are coming
+// the rasters under the passages' tiles (from the map's zoom 6) only cover what is loading: once every tile of the
+// passages in view has come they go, and come back when the map asks for new ones
+function watchUnder() {
+  const update = () => {
+    const inner = showTiles.now?.inner, swot = showTiles.now?.swot;
+    if (!inner || !map.getLayer(inner.id)) return;
+    const done = map.getZoom() >= 6 && swot && map.getSource(swot.id) && map.isSourceLoaded(swot.id);
+    if ((map.getLayoutProperty(inner.id, "visibility") ?? "visible") !== (done ? "none" : "visible")) {
+      map.setLayoutProperty(inner.id, "visibility", done ? "none" : "visible");
+      dbg({ ev: "under", shown: !done });
+    }
+  };
+  const swotEvent = (e) => e.sourceId && e.sourceId === showTiles.now?.swot?.id;
+  map.on("dataloading", (e) => swotEvent(e) && update());
+  map.on("sourcedata", (e) => swotEvent(e) && update());
+  map.on("zoomend", update);
+  watchUnder.update = update;
+}
+
 function watchDetail() {
   let asked = new Set(), came = new Set();
   const update = () => {
@@ -1681,6 +1700,7 @@ async function main() {
     setupDrawing();
     setupCoords();
     watchDetail();
+    watchUnder();
     setupCmap();
     if (DEBUG) setupDebug();
     state.afterLoad = () => { track("open", { from_link: !!link.view }); if (link.point || link.line) restoreLink(link); };
