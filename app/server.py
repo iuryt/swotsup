@@ -810,6 +810,7 @@ OVERVIEWS_KEPT = int(os.environ.get("SWOT_OVERVIEWS", 6))  # besides the opening
 
 
 BEYOND = 2  # zooms past the rasters' still drawn from them (their pixels 2 x 2, 4 x 4)
+FILLING = threading.Lock()  # one window's rasters summed at a time
 
 
 class RasterView(Overview):
@@ -843,13 +844,18 @@ class RasterView(Overview):
         self.screen = (lon.astype("float32"), lat.astype("float32"), v, np.zeros(len(v), "int32"))
         self.pixels, self.seconds = int(n.sum()), time.perf_counter() - t0
         self.ready.set()
-        # the window's means at every zoom, summed in the background: then a tile is a slice (till then, read alone)
+        # the window's means at every zoom, summed in the background once kept (`raster_view`): then a tile is a slice
+        # (till then, read alone)
         self.levels = None
-        threading.Thread(target=self.fill, daemon=True).start()
 
     def fill(self):
-        t0 = time.perf_counter()
-        self.levels = RASTERS.pyramid(self.view["start"], self.view["days"], **self.flags)
+        """One window summed at a time (several at once, a few dates tried in a row, held the CPU for a minute), and
+        not one already left (pushed out of OVERVIEWS): till then its tiles are read from the rasters, a tile each."""
+        with FILLING:
+            if self not in OVERVIEWS.values():
+                return
+            t0 = time.perf_counter()
+            self.levels = RASTERS.pyramid(self.view["start"], self.view["days"], **self.flags)
         print(f"rasters: {self.view['start']} + {self.view['days']} days summed in {time.perf_counter() - t0:.1f} s", flush=True)
 
     @property
@@ -905,6 +911,7 @@ def raster_view(key):
             others = [k for k in OVERVIEWS if k not in OPENING]
             for old in others[:max(len(others) - OVERVIEWS_KEPT, 0)]:
                 del OVERVIEWS[old]
+        threading.Thread(target=made.fill, daemon=True).start()
         return made
 
 

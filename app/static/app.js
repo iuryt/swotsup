@@ -96,6 +96,8 @@ function showVariable() {
 }
 
 async function loadData() {
+  // only the latest choice counts: a view asked before and answered later (a slow read) must not replace it
+  const mine = (loadData.n = (loadData.n ?? 0) + 1), latest = () => mine === loadData.n;
   $("#busy").classList.remove("hidden");
   state.area = areaWanted();
   // every later request (tiles, values, download) names this view, so the server can read it again
@@ -104,11 +106,12 @@ async function loadData() {
   const where = isGlobe(state.area) ? "the whole globe" : isGlobe(state.box) ? "the area in view" : "the region";
   const poll = setInterval(async () => {
     const p = await api("/api/progress", view).catch(() => ({}));
-    if (p.total) showProgress("view", `Reading ${state.days} day${state.days > 1 ? "s" : ""} of ${where} from the cloud`,
+    if (p.total && latest()) showProgress("view", `Reading ${state.days} day${state.days > 1 ? "s" : ""} of ${where} from the cloud`,
                               p.done / p.total, `${p.done} of ${p.total} passages · ${Math.round(p.seconds)} s`);
   }, 1000);
   try {
     const d = await api("/api/load", view);
+    if (!latest()) return;
     state.data = d;
     state.view = view.toString();
     state.screen = null;  // the whole view's colors first, then the screen's
@@ -123,11 +126,13 @@ async function loadData() {
     after?.();
     linkSoon();
   } catch (e) {
-    toast(e.message);
+    if (latest()) toast(e.message);
   } finally {
     clearInterval(poll);
-    showProgress("view", null);
-    $("#busy").classList.add("hidden");
+    if (latest()) {
+      showProgress("view", null);
+      $("#busy").classList.add("hidden");
+    }
   }
 }
 
