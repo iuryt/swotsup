@@ -263,12 +263,13 @@ function setColors() {
   const under = fromRasters();
   if (under) showTiles("under", url, { paint: raster }, { ...credit, maxzoom: 6 });
   else dropTiles("under");
-  const base = under ? { minzoom: 7 } : {};
-  if (!info.detail) return showTiles("swot", url, { paint: raster, ...base }, { ...credit, ...base });
+  // (the source's tiles from 7; the layer shows from the map's zoom 6, where MapLibre already takes tiles of 7)
+  const base = under ? { minzoom: 6 } : {}, tiles = under ? { minzoom: 7 } : {};
+  if (!info.detail) return showTiles("swot", url, { paint: raster, ...base }, { ...credit, ...tiles });
   // the finer product over it, from a zoom on: it fades in over half a zoom level, over the base, which stays: under
   // it the server draws the base inside its swath (no 2 km at its edges), so where it has no tile yet the base shows
   const z = info.detail.zoom;
-  showTiles("swot", url, { paint: raster, ...base }, { ...credit, ...base });
+  showTiles("swot", url, { paint: raster, ...base }, { ...credit, ...tiles });
   showTiles("detail", url.replace("/api/tile/", "/api/detail/"), { minzoom: z - 1, paint: { ...raster,
     "raster-opacity": ["interpolate", ["linear"], ["zoom"], z - 1, 0, z - 0.4, 1] } }, { minzoom: z - 1 });
 }
