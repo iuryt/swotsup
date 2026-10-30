@@ -330,7 +330,7 @@ with sync_playwright() as p:
             if page.is_visible("#globe"):
                 page.click("#globe")
                 page.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
-            page.evaluate("map.jumpTo({center: [-65, 38], zoom: 5, bearing: 0, pitch: 0})")
+            page.evaluate("map.jumpTo({center: [-65, 38], zoom: 7, bearing: 0, pitch: 0})")
             page.wait_for_timeout(6000)
             page.mouse.move(800, 885)
             page.evaluate("timeline.hover(timeline.x(timeline.ticks.day.at(-1) + 4e7))")

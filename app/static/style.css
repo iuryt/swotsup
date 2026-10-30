@@ -95,7 +95,7 @@ h1 { font-size: 16px; margin: 0; color: var(--title); font-weight: 600; }
 #days { color: var(--orange); font-weight: 600; padding: 0 2px 0 4px; border: 0; background: none; gap: 2px; }
 #days svg { width: 14px; height: 14px; }
 #days-menu { position: absolute; right: 0; bottom: calc(100% + 6px); padding: 4px; display: flex; flex-direction: column;
-  min-width: 80px; z-index: 7; }
+  min-width: 80px; z-index: 7; background: rgb(15, 23, 42); }  /* opaque: the credits ran through it */
 #days-menu.hidden { display: none; }
 #days-menu button { justify-content: flex-end; padding: 4px 10px; font-variant-numeric: tabular-nums; }
 #days-menu button.active { color: var(--orange); }
