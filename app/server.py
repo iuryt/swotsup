@@ -34,7 +34,6 @@ from scipy.spatial import cKDTree
 
 import rasters
 import swot_view
-from rasters import calibration  # noqa: F401 (the server's too)
 
 matplotlib.use("agg")
 # zarr fetches 10 chunks at once by default; S3 answers each in tens of ms, so more at once is faster
@@ -183,6 +182,14 @@ def color_limits(v):
     spread = 2 * 1.4826 * np.median(np.abs(v - median))
     return (np.quantile(v, np.linspace(0, 1, 1001)).round(4).tolist(),
             [round(float(median - spread), 4), round(float(median + spread), 4)])
+
+
+def calibration(bias, slope, cross):
+    """The calibration to subtract: bias + slope x cross / 60 of the pixel's side (west: cross < 0, east), `cross`
+    its distance to nadir (km). `bias`, `slope`: (..., 2), each line's two sides; `cross`: broadcastable to (..., n)."""
+    cross = np.asarray(cross, float)
+    side = np.broadcast_to((cross > 0).astype(int), bias.shape[:-1] + cross.shape[-1:])
+    return np.take_along_axis(bias, side, -1) + np.take_along_axis(slope, side, -1) * cross / 60
 
 
 def masked(values, flag):
@@ -833,7 +840,7 @@ class RasterView(Overview):
         self.lines = slice(0, ds.sizes["along"])
         self.var, self.names, self.variable, self.view = VARIABLES[variable], VARIABLES[variable].names, variable, view
         self.sub = index.isel(time=self.times)
-        self.flags = dict(dtu=self.var.dtu, cal=self.var.calibrated, water=not self.var.surface)
+        self.flags = dict(water=not self.var.surface)
         self.ready, self.error, self.file, self.started, self.done = threading.Event(), None, None, None, len(self.times)
         # the colors: the window's means at zoom 2 (~40 km: 16 chunks a day), each pixel at its position (what the
         # screen's colors sample)
@@ -873,7 +880,7 @@ class RasterView(Overview):
     def screen_limits(self, west, east, south, north):
         """The robust color limits of each mode from the window's means at ZOOM in a box (a zoomed-in screen holds
         few of the ~40 km pixels of the sample, and then fell back to the whole globe's); None with too few there."""
-        m = self.levels[rasters.ZOOM][0]
+        m = self.levels[RASTERS.zoom][0]
         size = m.shape[0]
         lat = np.rad2deg(2 * np.arctan(np.exp((np.arange(size) + 0.5) / size * 2 * np.pi - np.pi)) - np.pi / 2)
         lon = (np.arange(size) + 0.5) / size * 360 - 180
@@ -887,13 +894,13 @@ class RasterView(Overview):
 
     def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset()):
         z = np.log2(WORLD / (x_range[1] - x_range[0]))
-        if width != 256 or height != 256 or abs(z - round(z)) > 1e-6 or round(z) > rasters.ZOOM + BEYOND:
+        if width != 256 or height != 256 or abs(z - round(z)) > 1e-6 or round(z) > RASTERS.zoom + BEYOND:
             # closer: the passages that cross the view, a chunk at a time
             return super().mean_on(mode, x_range, y_range, width, height, trim)
         # a map tile: its raster's block, or up to BEYOND zooms beyond them, theirs drawn larger (instead of reading
         # passages: the globe asks for tiles a zoom or two finer than the map's near its centre)
         z = int(round(z))
-        level = min(z, rasters.ZOOM)
+        level = min(z, RASTERS.zoom)
         k = 2 ** (z - level)
         n, size = 256 // k, WORLD / 2**z
         c0 = int(round((x_range[0] + WORLD / 2) / size)) * n
@@ -905,9 +912,15 @@ class RasterView(Overview):
         return m - (self._shift["box"][0] if mode == "box" else 0)
 
 
-# the daily rasters (SWOT_RASTERS, app/rasters.py): the whole globe on the days they have, for SSHA (#98)
+# the daily maps (SWOT_RASTERS: swot_cloud's repository, app/rasters.py): the whole globe on the days they have, for
+# the final SSHA only (with the crossover correction, DTU25 and the calibration; the open ocean, or with rivers and lakes)
 RASTERS = rasters.Rasters(os.environ["SWOT_RASTERS"]) if os.environ.get("SWOT_RASTERS") else None
-RASTER_VARIABLES = {k for k, v in VARIABLES.items() if v.names[0] == "ssha_karin_2_xover"} if RASTERS else set()
+def raster_variables(variables):
+    """The variables the maps hold: SSHA with the crossover correction, DTU25 and the calibration."""
+    return {k for k, v in variables.items() if v.names[0] == "ssha_karin_2_xover" and v.dtu and v.calibrated}
+
+
+RASTER_VARIABLES = raster_variables(VARIABLES) if RASTERS else set()
 
 
 def from_rasters(west, east, south, north, start, days, variable):
@@ -1137,7 +1150,8 @@ def info():
                 variables={k: v.label for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
                 # each variable's kind, units and default colormap; the colormaps on offer as 16 stops each
                 calibration=ds[CAL[0]].attrs.get("version") if CAL[0] in ds else None,  # its version
-                rasters=dict(first=str(RASTERS.first), last=str(RASTERS.last)) if RASTERS and RASTERS.first else None,
+                rasters=dict(first=str(RASTERS.first), last=str(RASTERS.last), commit=RASTERS.commit.id[:8])
+                if RASTERS and RASTERS.first else None,
                 left=int(str(LEFT).split("(")[1].rstrip(")")),  # requests left before being worked on, so far
                 looks={k: dict(kind=v.kind, units=v.units, cmap=v.cmap, fine=has_detail(k), twin=v.twin, water=not v.surface,
                                    mss=v.mss, dtu=v.dtu, cal=v.cal, calibrated=v.calibrated, rasters=k in RASTER_VARIABLES)
@@ -1241,7 +1255,7 @@ async def served(request, limiter, work):
 @app.get("/api/tile/{z}/{x}/{y}.png")
 async def tile(request: Request, z: int, x: int, y: int, variable: str, mode: str = "box", vmin: float = -0.2,
                vmax: float = 0.2, cmap: str = None, values: bool = False, data=Depends(view)):
-    quick = isinstance(data, RasterView) and z <= rasters.ZOOM + BEYOND
+    quick = isinstance(data, RasterView) and z <= RASTERS.zoom + BEYOND
     return await served(request, QUICK if quick else READING,
                         lambda: draw_tile(z, x, y, variable, mode, vmin, vmax, cmap, values, data))
 
@@ -1441,7 +1455,7 @@ def value_at(lon, lat, mode, quick, data):
     the time of their line nearest the point. `quick` (the mouse over a map zoomed out): from the daily rasters' window
     means when the view has them (its ~10 km pixel, no passages), nothing read."""
     if quick and isinstance(data, RasterView) and data.levels:
-        m = data.levels[rasters.ZOOM][0]
+        m = data.levels[RASTERS.zoom][0]
         size = m.shape[0]
         x, y = mercator(lon, lat)
         v = m[int(np.clip((y + WORLD / 2) / WORLD * size, 0, size - 1)), int(np.clip((x + WORLD / 2) / WORLD * size, 0, size - 1))]

@@ -29,10 +29,10 @@ store=(-e SWOT_STORE=s3://iuryt-shared-east/icechunk/ocean/swot_l3_lr_ssh_basic_
 echo "store: $([ -n "$token" ] && echo "L2 on Arraylake" || echo "the L3 copy on S3")"
 install -d -o 1000 -g 1000 /opt/cache /opt/telemetry /opt/telemetry/debug  # the server runs as user 1000 (Dockerfile)
 chown -R 1000:1000 /opt/cache /opt/telemetry
-# the daily rasters (app/rasters.py: the whole globe on any dates at once), the bucket's copy on this disk
-aws s3 sync --only-show-errors --delete s3://iuryt-shared-east/deploy/swot_explorer/rasters/ /opt/rasters/
+# the daily maps (app/rasters.py: the whole globe on any dates at once), swot_cloud's repository next to Expert's
 rasters=()
-[ -d /opt/rasters/z0 ] && rasters=(-v /opt/rasters:/rasters:ro -e SWOT_RASTERS=/rasters)
+[ -n "$token" ] && rasters=(-e SWOT_RASTERS=arraylake:computational-oceanography-udel/swot-l2-lr-ssh-expert-daily-maps)
+rm -rf /opt/rasters  # the copy of the earlier rasters
 # dev: pages opened with ?debug=1 report the map's events (copied to S3 every minute with the usage)
 debug=()
 [ "$stage" = dev ] && debug=(-e SWOT_DEBUG_DIR=/telemetry/debug -e SWOT_TILE_SAMPLE=1)  # and every tile's time
