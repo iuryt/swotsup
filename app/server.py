@@ -18,6 +18,7 @@ from functools import lru_cache
 from types import SimpleNamespace
 from pathlib import Path
 
+import anyio
 import datashader as dsh
 import cmocean  # noqa: F401 (registers its colormaps as cmo.*)
 import matplotlib
@@ -1095,6 +1096,7 @@ def info():
                 # each variable's kind, units and default colormap; the colormaps on offer as 16 stops each
                 calibration=ds[CAL[0]].attrs.get("version") if CAL[0] in ds else None,  # its version
                 rasters=dict(first=str(RASTERS.first), last=str(RASTERS.last)) if RASTERS and RASTERS.first else None,
+                left=int(str(LEFT).split("(")[1].rstrip(")")),  # requests left before being worked on, so far
                 looks={k: dict(kind=v.kind, units=v.units, cmap=v.cmap, fine=has_detail(k), twin=v.twin, water=not v.surface,
                                    mss=v.mss, dtu=v.dtu, cal=v.cal, calibrated=v.calibrated, rasters=k in RASTER_VARIABLES)
                        for k, v in VARIABLES.items()},
@@ -1170,9 +1172,36 @@ def tile_ranges(z, x, y):
     return (x0, x0 + size), (y1 - size, y1)
 
 
+# the requests the map makes by the hundred (tiles, the value under the mouse): each waits its turn in one of two
+# queues, the quick ones (the daily rasters, nothing read) and those that read the stores (Arraylake), so a quick one
+# never waits behind a slow one; and none is worked on once its page no longer waits for it (the map moved on: a
+# zoom asks for a screenful and leaves most of it), checked on arrival and when its turn comes
+QUICK = anyio.CapacityLimiter(int(os.environ.get("SWOT_QUICK_THREADS", 16)))
+READING = anyio.CapacityLimiter(int(os.environ.get("SWOT_READING_THREADS", 12)))
+LEFT = itertools.count()  # requests left before being worked on (Server-Timing tells the page nothing of them)
+
+
+async def served(request, limiter, work):
+    """`work()` in a thread of the limiter's queue, unless the request was left meanwhile (an empty answer)."""
+    if await request.is_disconnected():
+        next(LEFT)
+        return Response(status_code=204)
+    async with limiter:
+        if await request.is_disconnected():
+            next(LEFT)
+            return Response(status_code=204)
+        return await anyio.to_thread.run_sync(work)
+
+
 @app.get("/api/tile/{z}/{x}/{y}.png")
-def tile(z: int, x: int, y: int, variable: str, mode: str = "box", vmin: float = -0.2, vmax: float = 0.2,
-         cmap: str = None, values: bool = False, data=Depends(view)):
+async def tile(request: Request, z: int, x: int, y: int, variable: str, mode: str = "box", vmin: float = -0.2,
+               vmax: float = 0.2, cmap: str = None, values: bool = False, data=Depends(view)):
+    quick = isinstance(data, RasterView) and z <= rasters.ZOOM + BEYOND
+    return await served(request, QUICK if quick else READING,
+                        lambda: draw_tile(z, x, y, variable, mode, vmin, vmax, cmap, values, data))
+
+
+def draw_tile(z, x, y, variable, mode, vmin, vmax, cmap, values, data):
     # where the detail product shows (from the zoom before its own, on its passages), the base is drawn inside its
     # swath: always under it, never past its edges, so the page needs no fading between the two
     trim = DETAIL_PASSAGES if z >= DETAIL_ZOOM - 1 and has_detail(variable) else frozenset()
@@ -1262,12 +1291,16 @@ def base_block(i, c, variable):
     return block(base, PRODUCT, i, c, variable)
 
 
+# the blocks read from the stores for tiles, values and series, however many requests at once: one pool of threads (a
+# pool per request made hundreds of threads reading Arraylake at once)
+READS = ThreadPoolExecutor(int(os.environ.get("SWOT_READ_THREADS", 64)))
+
+
 def lines_of(read, src, times, chunks, variable, rows):
     """Passages (time indices) of a store on some of their lines (`rows`, in `chunks`), read a block at a time with
     `read`, all at once: values, latitudes, longitudes (passages x lines x pixels) and when each line was."""
     n = src.ds.line_time.encoding["chunks"][1]
-    with ThreadPoolExecutor(32) as pool:
-        reads = [[pool.submit(read, int(i), c, variable) for c in chunks] for i in times]
+    reads = [[READS.submit(read, int(i), c, variable) for c in chunks] for i in times]
     blocks = [[r.result() for r in rs] for rs in reads]
     first = rows[0] - chunks[0] * n
     return [np.stack([np.concatenate([b[k] for b in bs])[first:first + len(rows)] for bs in blocks]) for k in range(4)]
@@ -1314,9 +1347,14 @@ def offsets(data, mode):
 
 
 @app.get("/api/detail/{z}/{x}/{y}.png")
-def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mode: str = "box",
-                vmin: float = -0.2, vmax: float = 0.2, cmap: str = None, encode: bool = Query(False, alias="values"),
-                data=Depends(view)):
+async def detail_tile(request: Request, z: int, x: int, y: int, start: str, days: int, variable: str, mode: str = "box",
+                      vmin: float = -0.2, vmax: float = 0.2, cmap: str = None, encode: bool = Query(False, alias="values"),
+                      data=Depends(view)):
+    return await served(request, READING,
+                        lambda: draw_detail(z, x, y, start, days, variable, mode, vmin, vmax, cmap, encode, data))
+
+
+def draw_detail(z, x, y, start, days, variable, mode, vmin, vmax, cmap, encode, data):
     """A tile of the detail product (from DETAIL_ZOOM - 1 on), over the base's: its passages in the view's dates
     that cross the tile, minus what the base subtracts. Transparent where it has no data, so the base shows."""
     if z < DETAIL_ZOOM - 1 or not has_detail(variable):
@@ -1348,7 +1386,12 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
 
 
 @app.get("/api/value")
-def value(lon: float, lat: float, mode: str = "box", quick: bool = False, data=Depends(view)):
+async def value(request: Request, lon: float, lat: float, mode: str = "box", quick: bool = False, data=Depends(view)):
+    fast = quick and isinstance(data, RasterView) and data.levels
+    return await served(request, QUICK if fast else READING, lambda: value_at(lon, lat, mode, quick, data))
+
+
+def value_at(lon, lat, mode, quick, data):
     """The value under the mouse (the mean of the passages on a ~1 km cell there) and those passages, with
     the time of their line nearest the point. `quick` (the mouse over a map zoomed out): from the daily rasters' window
     means when the view has them (its ~10 km pixel, no passages), nothing read."""
