@@ -55,8 +55,17 @@ function toast(text) {
 const AREA_ZOOM = 4;
 const FINE_TICK = "#7dd3fc";  // the timeline's days with the 250 m too
 // the whole globe on dates the daily rasters have: one view at every zoom (no area in view, #98)
-const fromRasters = () => !!(info.rasters && info.looks[state.variable].rasters && isGlobe(state.box)
-  && state.start >= Date.parse(info.rasters.first) && state.start + (state.days - 1) * DAY <= Date.parse(info.rasters.last));
+const rasterDates = () => !!(info.rasters && state.start >= Date.parse(info.rasters.first)
+  && state.start + (state.days - 1) * DAY <= Date.parse(info.rasters.last));
+const fromRasters = () => rasterDates() && info.looks[state.variable].rasters && isGlobe(state.box);
+// the variable read for an area: on the whole globe (zoomed out), an SSHA choice the rasters do not hold (the L2's
+// MSS, not calibrated) shows theirs, with the same rivers-and-lakes choice: reading the passages of the whole globe
+// takes a minute; zoomed in, the area in view is read with the choice itself
+function variableFor(area) {
+  const look = info.looks[state.variable];
+  if (look.rasters || !look.cal || !isGlobe(area) || !rasterDates()) return state.variable;
+  return Object.keys(info.looks).find((k) => info.looks[k].rasters && info.looks[k].water === look.water) ?? state.variable;
+}
 function areaWanted() {
   if (!map || !isGlobe(state.box) || map.getZoom() < AREA_ZOOM || fromRasters()) return state.box;
   const b = map.getBounds(), [w, e, s, n] = [b.getWest(), b.getEast(), b.getSouth(), b.getNorth()];
@@ -117,8 +126,9 @@ async function loadData() {
   const mine = (loadData.n = (loadData.n ?? 0) + 1), latest = () => mine === loadData.n;
   $("#busy").classList.remove("hidden");
   state.area = areaWanted();
+  state.read = variableFor(state.area);
   // every later request (tiles, values, download) names this view, so the server can read it again
-  const view = new URLSearchParams({ ...state.area, start: isoDay(state.start), days: state.days, variable: state.variable });
+  const view = new URLSearchParams({ ...state.area, start: isoDay(state.start), days: state.days, variable: state.read });
   // a view too big to keep is read in batches: how far, while it lasts
   const where = isGlobe(state.area) ? "the whole globe" : isGlobe(state.box) ? "the area in view" : "the region";
   const poll = setInterval(async () => {
@@ -301,7 +311,10 @@ function setColors() {
     ? `custom limits (at percentiles ${pct(state.vmin)} and ${pct(state.vmax)}) · <a href="#" id="to-robust">use Robust</a>`
     : `limits at percentiles ${pct(state.vmin)} and ${pct(state.vmax)}${state.screen ? " · of the screen" : ""}`;
   $("#to-robust")?.addEventListener("click", (e) => { e.preventDefault(); state.preset = "mad"; setColors(); fitColors(); });
-  $("#legend-variable").textContent = info.variables[state.variable] + (state.mode === "none" ? "" :
+  const shown = state.read ?? state.variable;
+  $("#legend-note").textContent = shown === state.variable ? "" :
+    `The whole globe as the daily maps have it; zoom in for ${info.variables[state.variable]}`;
+  $("#legend-variable").textContent = info.variables[shown] + (state.mode === "none" ? "" :
     state.mode === "box" ? (isGlobe(state.box) && state.area && !isGlobe(state.area) ? ", minus the mean of the area in view" : ", minus box mean")
     : ", minus passage means");
   document.querySelectorAll("#preset button").forEach((b) => b.classList.toggle("active", b.dataset.value === state.preset));
@@ -313,11 +326,11 @@ function setColors() {
   // swot://: the page colors the tiles (`colorTile`): new colors read no tile again
   const url = `swot://api/tile/{z}/{x}/{y}.png?${state.view}&v=${info.version}&mode=${state.mode}&vmin=${state.vmin}&vmax=${state.vmax}&cmap=${cmapOf()}`;
   const raster = { "raster-fade-duration": 0, "raster-resampling": "nearest" };
-  const credit = { attribution: info.looks[state.variable].dtu ? "MSS: DTU25 (DTU Space, CC BY 4.0)" : undefined };
+  const credit = { attribution: info.looks[state.read].dtu ? "MSS: DTU25 (DTU Space, CC BY 4.0)" : undefined };
   // the whole globe on dates the daily rasters have: their tiles (to zoom 6, drawn larger beyond) always underneath,
   // the passages' only from zoom 7: up close, a place not read yet shows the rasters, never nothing
   // (one layer at every zoom: from 6, under the passages', it goes once all is loaded, `watchUnder`)
-  const under = fromRasters();
+  const under = rasterDates() && isGlobe(state.area) && info.looks[state.read].rasters;
   if (under) {
     if (showTiles.now?.under?.url !== url) watchUnder.on = true;  // a new layer starts shown
     showTiles("under", url, { paint: raster }, { ...credit, maxzoom: 6 });
