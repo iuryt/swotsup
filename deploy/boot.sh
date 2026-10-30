@@ -3,6 +3,8 @@
 # image, serve it behind Caddy (HTTPS at <ip>.sslip.io), and stop the machine when nobody used it for IDLE minutes.
 # A stopped instance costs only its disk and address; deploy/wake.py starts it again on the next visit.
 IDLE=30
+# the disk may have grown (slurm/ec2.sh update): its partition and file system to its size (nothing to do otherwise)
+growpart /dev/nvme0n1 1 >/dev/null 2>&1; xfs_growfs / >/dev/null 2>&1
 cd /opt/app
 stage=$(cat stage 2>/dev/null || echo prod)  # dev: the instance for testing branches (slurm/ec2.sh)
 telemetry=s3://iuryt-shared-east/telemetry/swot-explorer$([ "$stage" = dev ] && echo -dev)/
