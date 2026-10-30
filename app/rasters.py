@@ -140,8 +140,9 @@ class Rasters:
 
 
     def pyramid(self, start, days, dtu=True, cal=True, water=False):
-        """The window's means at every zoom ({z: (size, size) float32, rows from the south}), from ZOOM's days summed
-        one at a time (each day's arrays read whole: a tile's would read each chunk on its own)."""
+        """The window's means and counts at every zoom ({z: ((size, size), (size, size)) float32, rows from the south}),
+        from ZOOM's days summed one at a time (each day's arrays read whole: a tile's would read each chunk on its
+        own)."""
         k = int((np.datetime64(start) - DAY0) / np.timedelta64(1, "D"))
         signs = np.array([1.0, 1.0 if dtu else 0.0, -1.0 if cal else 0.0], "float32")
         total = n = None
@@ -154,7 +155,7 @@ class Rasters:
         out = {}
         for z in range(ZOOM, -1, -1):
             with np.errstate(invalid="ignore", divide="ignore"):
-                out[z] = np.where(n > 0, total / n, np.nan).astype("float32")
+                out[z] = (np.where(n > 0, total / n, np.nan).astype("float32"), n.astype("float32"))
             if z:
                 total, n = coarser(total[None])[0], coarser(n[None])[0]
         return out
