@@ -92,6 +92,15 @@ be resumed here (`claude --resume`).
   on disk (`SWOT_CACHE_DIR`, by commit and view: a restart reads them back); tiles up to zoom 4 come from them, closer
   tiles, clicks and lines from the passages read a chunk at a time where needed (`from_blocks`, `base_block`, LRU
   `SWOT_BASE_BLOCKS`). For L3, the whole globe on 2 Nov 2024 (1 day), loaded at start.
+  With the daily maps (`SWOT_RASTERS`, #98: swot_cloud's `swot_cloud.maps`, the repository
+  `arraylake:computational-oceanography-udel/swot-l2-lr-ssh-expert-daily-maps`; `app/rasters.py` reads it, pinned at
+  its latest commit), the whole globe on any dates they cover is a `RasterView` instead: its days summed (a window's
+  mean is count-weighted), tiles up to zoom 6 from them at once (~1 s for a new window), closer the passages. They
+  hold only the final SSHA (crossover correction, DTU25, calibration, without the edit flag's cells; open ocean and
+  continental water apart), so only that variable comes from them; for the other SSHA choices (L2 MSS, not
+  calibrated) the page shows the maps' product on the globe zoomed out, with a note, and the choice from zoom 4 on
+  the area in view (`variableFor`). Tests build small maps with swot_cloud's `build_days` and check them against
+  the passages.
 - `app/static/`: the page, no build step (MapLibre GL 5, uPlot, lucide, Prism from CDNs, pinned): map full
   screen without axes, globe by default with a button for the flat map (remembered per browser), floating
   panels, a canvas timeline (orange band of up to 21 days; the dragged edge stops at the limit, moving keeps
