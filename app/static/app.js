@@ -152,23 +152,20 @@ function showProgress(kind, text, fraction, count) {
 }
 
 // the 250 m tiles in view: how many were asked and how many came (or were dropped); a bar while some are coming
-// the rasters under the passages' tiles (from the map's zoom 6) only cover what is loading: once every tile of the
-// passages in view has come they go, and come back when the map asks for new ones
+// the rasters under the passages' tiles (from the map's zoom 6) only cover what is loading: they go once the map is
+// idle (every tile in view loaded and drawn, nothing moving: "loaded" alone came between a zoom's old tiles and its
+// new ones, and they went before those came), and come back as soon as it moves or asks for new ones
 function watchUnder() {
-  const update = () => {
-    const inner = showTiles.now?.inner, swot = showTiles.now?.swot;
+  const show = (on) => {
+    const inner = showTiles.now?.inner;
     if (!inner || !map.getLayer(inner.id)) return;
-    const done = map.getZoom() >= 6 && swot && map.getSource(swot.id) && map.isSourceLoaded(swot.id);
-    if ((map.getLayoutProperty(inner.id, "visibility") ?? "visible") !== (done ? "none" : "visible")) {
-      map.setLayoutProperty(inner.id, "visibility", done ? "none" : "visible");
-      dbg({ ev: "under", shown: !done });
-    }
+    if ((map.getLayoutProperty(inner.id, "visibility") ?? "visible") === (on ? "visible" : "none")) return;
+    map.setLayoutProperty(inner.id, "visibility", on ? "visible" : "none");
+    dbg({ ev: "under", shown: on });
   };
-  const swotEvent = (e) => e.sourceId && e.sourceId === showTiles.now?.swot?.id;
-  map.on("dataloading", (e) => swotEvent(e) && update());
-  map.on("sourcedata", (e) => swotEvent(e) && update());
-  map.on("zoomend", update);
-  watchUnder.update = update;
+  map.on("idle", () => { const swot = showTiles.now?.swot; if (map.getZoom() >= 6 && swot && map.isSourceLoaded(swot.id)) show(false); });
+  map.on("movestart", () => show(true));
+  map.on("dataloading", (e) => e.sourceId && e.sourceId === showTiles.now?.swot?.id && show(true));
 }
 
 function watchDetail() {
