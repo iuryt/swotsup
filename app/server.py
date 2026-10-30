@@ -812,10 +812,14 @@ OVERVIEWS_KEPT = int(os.environ.get("SWOT_OVERVIEWS", 6))  # besides the opening
 BEYOND = 2  # zooms past the rasters' still drawn from them (their pixels 2 x 2, 4 x 4)
 
 
-def without_edges(m):
-    """Values with those next to no data (any of the 4 neighbours) left out."""
-    ok = np.pad(np.isfinite(m), 1)
-    keep = ok[1:-1, 1:-1] & ok[:-2, 1:-1] & ok[2:, 1:-1] & ok[1:-1, :-2] & ok[1:-1, 2:]
+def without_edges(m, n):
+    """Values (`m`, with their counts of 2 km cells `n`) without those of pixels only partly on the data: next to no
+    data (any of the 4 neighbours), or with fewer cells than 3/4 of their fullest neighbour's (a swath's edge, or
+    its nadir gap, ~11 km: one pixel)."""
+    ok, c = np.pad(np.isfinite(m), 1), np.pad(n, 1)
+    near = [(slice(None, -2), slice(1, -1)), (slice(2, None), slice(1, -1)), (slice(1, -1), slice(None, -2)), (slice(1, -1), slice(2, None))]
+    keep = ok[1:-1, 1:-1] & np.logical_and.reduce([ok[s] for s in near])
+    keep &= n >= 0.75 * np.maximum.reduce([c[s] for s in near])
     return np.where(keep, m, np.nan)
 FILLING = threading.Lock()  # one window's rasters summed at a time
 
@@ -867,7 +871,7 @@ class RasterView(Overview):
 
     @property
     def nbytes(self):
-        return sum(a.nbytes for a in self.screen) + sum(a.nbytes for a in (self.levels or {}).values())
+        return sum(a.nbytes for a in self.screen) + sum(a.nbytes + n.nbytes for a, n in (self.levels or {}).values())
 
     def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset(), inner=False):
         """A tile (or the passages', closer); `inner`: without the pixels at the edges of the data (under the passages'
@@ -887,10 +891,12 @@ class RasterView(Overview):
         e = int(inner)  # a pixel around, to tell the block's edges
         size = 256 * 2**level
         rows, cols = slice(max(r0 - e, 0), min(r0 + n + e, size)), slice(max(c0 - e, 0), min(c0 + n + e, size))
-        m = (self.levels[level][rows, cols] if self.levels else
-             RASTERS.mean(level, rows, cols, self.view["start"], self.view["days"], **self.flags))
+        if self.levels:
+            m, cells = self.levels[level][0][rows, cols], self.levels[level][1][rows, cols]
+        else:
+            m, cells = RASTERS.mean(level, rows, cols, self.view["start"], self.view["days"], counts=True, **self.flags)
         if inner:
-            m = without_edges(m)[r0 - rows.start:r0 - rows.start + n, c0 - cols.start:c0 - cols.start + n]
+            m = without_edges(m, cells)[r0 - rows.start:r0 - rows.start + n, c0 - cols.start:c0 - cols.start + n]
         m = np.repeat(np.repeat(m, k, 0), k, 1)
         return m - (self._shift["box"][0] if mode == "box" else 0)
 
@@ -1367,7 +1373,7 @@ def value(lon: float, lat: float, mode: str = "box", quick: bool = False, data=D
     the time of their line nearest the point. `quick` (the mouse over a map zoomed out): from the daily rasters' window
     means when the view has them (its ~10 km pixel, no passages), nothing read."""
     if quick and isinstance(data, RasterView) and data.levels:
-        m = data.levels[rasters.ZOOM]
+        m = data.levels[rasters.ZOOM][0]
         size = m.shape[0]
         x, y = mercator(lon, lat)
         v = m[int(np.clip((y + WORLD / 2) / WORLD * size, 0, size - 1)), int(np.clip((x + WORLD / 2) / WORLD * size, 0, size - 1))]
