@@ -774,9 +774,7 @@ def load(west, east, south, north, start, days, variable):
     if key in OVERVIEWS:  # a view too big to keep: its overview (ready or being built)
         return OVERVIEWS[key], 0.0
     if from_rasters(*key):
-        with cache_lock:
-            OVERVIEWS.setdefault(key, RasterView(dict(zip(("west", "east", "south", "north", "start", "days"), key[:6])), variable))
-        return OVERVIEWS[key], 0.0
+        return raster_view(key), 0.0
     with cache_lock:
         if key in loaded:
             loaded.move_to_end(key)
@@ -889,6 +887,27 @@ def from_rasters(west, east, south, north, start, days, variable):
             and RASTERS.covers(start, days))
 
 
+def raster_view(key):
+    """The RasterView of a view, made once (requests asking for it meanwhile wait); the oldest go beyond
+    OVERVIEWS_KEPT (~90 MB each), the opening view's stay."""
+    with cache_lock:
+        if key in OVERVIEWS:
+            return OVERVIEWS[key]
+        lock = loading.setdefault(key, threading.Lock())
+    with lock:
+        with cache_lock:
+            if key in OVERVIEWS:
+                return OVERVIEWS[key]
+        made = RasterView(dict(zip(("west", "east", "south", "north", "start", "days"), key[:6])), key[6])
+        with cache_lock:
+            OVERVIEWS[key] = made
+            loading.pop(key, None)
+            others = [k for k in OVERVIEWS if k not in OPENING]
+            for old in others[:max(len(others) - OVERVIEWS_KEPT, 0)]:
+                del OVERVIEWS[old]
+        return made
+
+
 def overview_of(key):
     """The overview of a view too big to keep (`key`), built in the background the first time (or read back from
     disk); the oldest go beyond OVERVIEWS_KEPT, the opening view's stay."""
@@ -935,7 +954,8 @@ FIELDS = ("session", "event", "screen", "from_link", "west", "east", "south", "n
           "lon", "lat", "zoom", "projection", "mode", "cmap", "point_lon", "point_lat", "line", "line_km", "line_kind",
           "step", "what")
 telemetry_lock, salts = threading.Lock(), {}
-TILE_SAMPLE = 10  # of the tile requests (thousands a visit), one in TILE_SAMPLE is kept, with "sample": TILE_SAMPLE
+# of the tile requests (thousands a visit), one in TILE_SAMPLE is kept, with "sample": TILE_SAMPLE (1 on the dev server)
+TILE_SAMPLE = int(os.environ.get("SWOT_TILE_SAMPLE", 10))
 tiles_seen = itertools.count()
 
 
@@ -989,7 +1009,8 @@ async def debug_log(request: Request):
     """A batch of the map's events from a page opened with ?debug=1 (tiles asked, loaded, failed; layers; colors),
     appended to a file of the day, when SWOT_DEBUG_DIR is set (a test server)."""
     if DEBUG_DIR:
-        line = json.dumps(dict(at=time.time(), events=json.loads(await request.body())))
+        body = json.loads(await request.body())  # the page's clock (sent, origin) and its events
+        line = json.dumps(dict(at=time.time(), **(body if isinstance(body, dict) else dict(events=body))))
         with open(os.path.join(DEBUG_DIR, f"debug-{time.strftime('%Y-%m-%d')}.jsonl"), "a") as f:
             f.write(line + "\n")
     return Response(status_code=204)
@@ -1018,12 +1039,15 @@ async def timing(request: Request, call_next):
     """The time of every request to the API: its endpoint (the route, not the values asked), seconds and status."""
     t0 = time.perf_counter()
     response = await call_next(request)
+    # how long the server took, for the page (?debug=1 tells it apart from the network's and the drawing's)
+    response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - t0) * 1000:.1f}"
     if TELEMETRY and request.url.path.startswith("/api/") and request.url.path != "/api/event":
         route = getattr(request.scope.get("route"), "path", request.url.path)
         tile = route.endswith("{y}.png")
         if not tile or next(tiles_seen) % TILE_SAMPLE == 0:
             record("requests", dict(time=pd.Timestamp.now("UTC").isoformat(), endpoint=route, sample=TILE_SAMPLE if tile else 1,
-                                    seconds=round(time.perf_counter() - t0, 3), status=response.status_code))
+                                    seconds=round(time.perf_counter() - t0, 3), status=response.status_code)
+                   | (dict(z=int(request.path_params["z"])) if tile else {}))
     return response
 
 
@@ -1200,11 +1224,32 @@ def to_nadir(cross, shift):
     return cross - 0.25 * np.nan_to_num(shift)
 
 
+def single_flight(cached):
+    """A cached reader that several requests may call at once for the same block (neighbouring tiles): one reads it,
+    the others wait for it and take it from the cache (lru_cache alone lets each of them read it)."""
+    locks, guard = {}, threading.Lock()
+
+    def call(*args):
+        with guard:
+            lock = locks.setdefault(args, threading.Lock())
+        with lock:
+            out = cached(*args)
+        with guard:
+            if locks.get(args) is lock and not lock.locked():
+                del locks[args]
+        return out
+
+    call.__wrapped__, call.cache_info, call.cache_clear = cached.__wrapped__, cached.cache_info, cached.cache_clear
+    return call
+
+
+@single_flight
 @lru_cache(maxsize=int(os.environ.get("SWOT_DETAIL_BLOCKS", 1024)))  # ~3.4 MB each at 512 x 551 (float32)
 def detail_block(i, c, variable):
     return block(detail, DETAIL_PRODUCT, i, c, variable)
 
 
+@single_flight
 @lru_cache(maxsize=int(os.environ.get("SWOT_BASE_BLOCKS", 4096)))  # ~0.4 MB each at 493 x 69 (L2 Expert)
 def base_block(i, c, variable):
     return block(base, PRODUCT, i, c, variable)
@@ -1296,9 +1341,17 @@ def detail_tile(z: int, x: int, y: int, start: str, days: int, variable: str, mo
 
 
 @app.get("/api/value")
-def value(lon: float, lat: float, mode: str = "box", data=Depends(view)):
+def value(lon: float, lat: float, mode: str = "box", quick: bool = False, data=Depends(view)):
     """The value under the mouse (the mean of the passages on a ~1 km cell there) and those passages, with
-    the time of their line nearest the point."""
+    the time of their line nearest the point. `quick` (the mouse over a map zoomed out): from the daily rasters' window
+    means when the view has them (its ~10 km pixel, no passages), nothing read."""
+    if quick and isinstance(data, RasterView) and data.levels:
+        m = data.levels[rasters.ZOOM]
+        size = m.shape[0]
+        x, y = mercator(lon, lat)
+        v = m[int(np.clip((y + WORLD / 2) / WORLD * size, 0, size - 1)), int(np.clip((x + WORLD / 2) / WORLD * size, 0, size - 1))]
+        v = v - (data._shift["box"][0] if mode == "box" else 0)
+        return dict(value=None if np.isnan(v) else round(float(v), 4), passages=[])
     data = data.near(lon - 0.05, lon + 0.05, lat - 0.05, lat + 0.05)
     found = [] if data is None else data.passages_at(mode, *mercator(lon, lat))
     passages = sorted((str(pd.Timestamp(data.line_time[i, line]).round("s")), int(data.sub.pass_id[i]),
