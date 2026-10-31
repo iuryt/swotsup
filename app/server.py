@@ -491,34 +491,42 @@ class Loaded:
             yield i, lines.start, xs, ys, canvas.quadmesh(mesh, x="x", y="y").values
 
     def mean_on(self, mode, x_range, y_range, width, height, trim=frozenset()):
-        """Mean of the passages on a width x height grid, NaN where none. Where the cells are smaller than a pixel
+        """The passages on a width x height grid, the latest on top (`sub` is in time order: an average blended a
+        passage with rain or noise into the others), NaN where none. Where the cells are smaller than a pixel
         (on the ground, at the view's middle latitude), all of them in view are drawn as points in one go: from the
         coarsest level whose blocks still are, or the cells themselves (their lines in view, from the meshes).
         Zoomed in further, each passage's cells are drawn as meshes (those in `trim` inside their swath: `rasters`)."""
         pixel = (x_range[1] - x_range[0]) / width * np.cos(2 * np.arctan(np.exp(np.mean(y_range) / R)) - np.pi / 2)
         if self.spacing <= pixel:
             level = max([k for k in self.points if k * self.spacing <= pixel], default=1)
-            xs, ys, vs = [], [], []
+            xs, ys, vs, ts = [], [], [], []
             if level > 1:
                 x, y, v, i = self.points[level]
                 band = slice(*np.searchsorted(y, y_range))
-                x, y, v = x[band], y[band], v[band] - self.shift[mode][i[band]]
+                x, y, v, i = x[band], y[band], v[band] - self.shift[mode][i[band]], i[band]
                 for shift in (-WORLD, 0, WORLD):  # the map repeats the world east and west
                     keep = (x + shift >= x_range[0]) & (x + shift <= x_range[1])
-                    xs.append(x[keep] + shift), ys.append(y[keep]), vs.append(v[keep])
+                    xs.append(x[keep] + shift), ys.append(y[keep]), vs.append(v[keep]), ts.append(i[keep])
             else:
                 for i, lines, x, y in self.blocks(x_range, y_range):
-                    xs.append(x.ravel()), ys.append(y.ravel()), vs.append(self.value(mode, i, lines).ravel())
+                    v = self.value(mode, i, lines).ravel()
+                    xs.append(x.ravel()), ys.append(y.ravel()), vs.append(v), ts.append(np.full(len(v), i))
             canvas = dsh.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
             if not xs:
                 return np.full((height, width), np.nan)
-            frame = pd.DataFrame({"x": np.concatenate(xs), "y": np.concatenate(ys), "v": np.concatenate(vs)})
-            return canvas.points(frame, "x", "y", agg=dsh.mean("v")).values
-        total, count = np.zeros((height, width)), np.zeros((height, width))
-        for *_, m in self.rasters(mode, x_range, y_range, width, height, trim):
-            total, count = total + np.where(np.isfinite(m), m, 0), count + np.isfinite(m)
-        with np.errstate(invalid="ignore"):
-            return total / count
+            frame = pd.DataFrame({"x": np.concatenate(xs), "y": np.concatenate(ys), "v": np.concatenate(vs),
+                                  "t": np.concatenate(ts).astype("float64")})
+            frame = frame[np.isfinite(frame.v)]
+            # in each pixel the latest passage's cells, averaged (several of its cells can share a pixel)
+            latest = canvas.points(frame, "x", "y", agg=dsh.max("t")).values
+            col = np.clip(((frame.x.values - x_range[0]) / (x_range[1] - x_range[0]) * width).astype(int), 0, width - 1)
+            row = np.clip(((frame.y.values - y_range[0]) / (y_range[1] - y_range[0]) * height).astype(int), 0, height - 1)
+            mine = frame.t.values == latest[row, col]
+            return canvas.points(frame[mine], "x", "y", agg=dsh.mean("v")).values
+        out = np.full((height, width), np.nan)
+        for *_, m in sorted(self.rasters(mode, x_range, y_range, width, height, trim), key=lambda r: r[0]):
+            out = np.where(np.isfinite(m), m, out)  # a later passage covers the earlier ones
+        return out
 
     def along(self, mode, lon, lat, radius=1.5):
         """Each passage's values at the points: those of its nearest pixel within `radius` km (a 2 km cell has
@@ -607,7 +615,7 @@ class Overview:
         box = "_".join(f"{view[k]:g}" for k in ("west", "east", "south", "north"))
         # with what the variable is made of: a change of it (arrays, flag, surfaces, dB) is another overview
         spec = hashlib.sha1(repr((self.var.arrays, self.var.surface, self.var.db)).encode()).hexdigest()[:6]
-        self.file = (os.path.join(CACHE_DIR, f"overview-{COMMIT.id}-{box}-{view['start']}-{view['days']}-{variable}-{spec}.npz")
+        self.file = (os.path.join(CACHE_DIR, f"overview-latest-{COMMIT.id}-{box}-{view['start']}-{view['days']}-{variable}-{spec}.npz")
                      if CACHE_DIR else None)
 
     @property
@@ -622,7 +630,8 @@ class Overview:
         return sum(a.nbytes for a in self.sum.values()) + self.count.nbytes
 
     def add(self, at, values, lon, lat):
-        """A batch of passages (`at`: their positions in `times`): summed into the rasters (each cell as a point)."""
+        """A batch of passages (`at`: their positions in `times`, in time order across batches) into the rasters (each
+        cell as a point): the latest passage at each pixel."""
         rng = np.random.default_rng(len(self.samples))
         with warnings.catch_warnings(action="ignore"):
             per = np.array([np.nanmedian(v.ravel()[::7]) for v in values], "float32")
@@ -639,11 +648,15 @@ class Overview:
         col = np.floor((x + WORLD / 2) / WORLD * size).astype(int)
         row = np.floor((y + WORLD / 2) / WORLD * size).astype(int)
         inside = (col >= 0) & (col < size) & (row >= 0) & (row < size)
-        flat = row[inside] * size + col[inside]
-        add = lambda w=None: np.bincount(flat, w, size * size).reshape(size, size).astype("float32")  # noqa: E731
-        self.count += add()
-        self.sum["none"] += add(v[inside])
-        self.sum["passage"] += add((v - per[which])[inside])
+        flat, which, v = row[inside] * size + col[inside], which[inside], v[inside]
+        # each passage in time order covers what came before it where it has cells (the latest on top, as the
+        # passages' meshes are drawn): its pixels' own sums and counts replace theirs
+        for j in np.argsort(at, kind="stable"):
+            mine = which == j
+            cells, inv = np.unique(flat[mine], return_inverse=True)
+            self.count.flat[cells] = np.bincount(inv)
+            self.sum["none"].flat[cells] = np.bincount(inv, v[mine])
+            self.sum["passage"].flat[cells] = np.bincount(inv, v[mine] - per[j])
 
     def finish(self):
         """What the box mode subtracts (the median), and the colors' quantiles, from the samples."""
