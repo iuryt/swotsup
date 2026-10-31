@@ -706,11 +706,6 @@ class Timeline {
     ctx.fillStyle = "#f97316";
     ctx.fillRect(a - 1, 0, 3, bar[1] + 2);
     ctx.fillRect(Math.max(b, a + 2) - 2, 0, 3, bar[1] + 2);
-    if (!this.touch) for (const x of [a, Math.max(b, a + 2)]) {  // grips on the edges, to drag them
-      ctx.beginPath();
-      ctx.roundRect(x - 4, (bar[0] + bar[1]) / 2 - 9, 8, 18, 3);
-      ctx.fill();
-    }
     const n = Math.round((this.end - this.start) / DAY);
     $("#selection").textContent = n > 1 ? rangeText(this.start, this.end - DAY) : dayText(this.start);
     $("#days-text").textContent = `· ${n} day${n > 1 ? "s" : ""}`;
@@ -726,8 +721,16 @@ class Timeline {
       return this.draw();
     }
     const x = e.offsetX, [a, b] = [this.x(this.start), this.x(this.end)];
-    // a finger on the band (or 20 px around it, a day is a pixel) moves it whole; elsewhere it draws a new one
-    if (this.touch) this.drag = x > a - 20 && x < b + 20 ? "move" : "new"; else this.drag = Math.abs(x - a) < 6 ? "start" : Math.abs(x - b) < 6 ? "end" : x > a && x < b ? "move" : "new";
+    // the band only moves, keeping its length (the buttons and the days menu change it): pressed elsewhere, it jumps
+    // there first, centred on that day (a finger: 20 px around the band count as on it)
+    const near = this.touch ? 20 : 0;
+    if (x < a - near || x > b + near) {
+      const len = this.end - this.start, [lo, hi] = this.full;
+      this.start = Math.min(Math.max(this.day(x) - Math.floor(len / DAY / 2) * DAY, lo), hi - len);
+      this.end = this.start + len;
+      this.draw();
+    }
+    this.drag = "move";
     this.anchor = { x, start: this.start, end: this.end, day: this.day(x) };
   }
   move(e) {
@@ -740,21 +743,15 @@ class Timeline {
     this.hover(e.offsetX);
     if (!this.drag) {
       const [a, b] = [this.x(this.start), this.x(this.end)];
-      this.canvas.style.cursor = Math.abs(e.offsetX - a) < 6 || Math.abs(e.offsetX - b) < 6 ? "ew-resize" :
-        e.offsetX > a && e.offsetX < b ? "grab" : "crosshair";
+      this.canvas.style.cursor = e.offsetX > a && e.offsetX < b ? "grab" : "pointer";
       return;
     }
-    const max = info.max_days * DAY, t = this.day(e.offsetX), [lo, hi] = this.full;
+    const t = this.day(e.offsetX), [lo, hi] = this.full;
     const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
-    if (this.drag === "start") this.start = clamp(t, this.end - max, this.end - DAY);  // the dragged edge stops at the limit
-    else if (this.drag === "end") this.end = clamp(t, this.start + DAY, this.start + max);
-    else if (this.drag === "move") {
+    if (this.drag === "move") {
       const len = this.anchor.end - this.anchor.start;
       this.start = clamp(this.anchor.start + t - this.anchor.day, lo, hi - len);
       this.end = this.start + len;
-    } else {  // a new band from where the drag began, extended toward the mouse
-      const a = this.anchor.day;
-      [this.start, this.end] = t >= a ? [a, clamp(t + DAY, a + DAY, a + max)] : [clamp(t, a + DAY - max, a), a + DAY];
     }
     this.draw();
   }
