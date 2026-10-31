@@ -90,6 +90,17 @@ h1 { font-size: 16px; margin: 0; color: var(--title); font-weight: 600; }
 #time-buttons button { width: 22px; height: 18px; padding: 0; justify-content: center; }
 #time-buttons svg { width: 13px; height: 13px; }
 .time-top #selection { margin-left: auto; }
+/* the number of days: a menu of lengths above it (#89) */
+#days-wrap { position: relative; }
+#days { color: var(--orange); font-weight: 600; padding: 0 2px 0 4px; border: 0; background: none; gap: 2px; }
+#days svg { width: 14px; height: 14px; }
+#days-menu { position: absolute; right: 0; bottom: calc(100% + 6px); padding: 4px; display: flex; flex-direction: column;
+  min-width: 80px; z-index: 7; background: rgb(15, 23, 42); }  /* opaque: the credits ran through it */
+#days-menu.hidden { display: none; }
+#days-menu button { justify-content: flex-end; padding: 4px 10px; font-variant-numeric: tabular-nums; }
+#days-menu button.active { color: var(--orange); }
+#time:has(#days-menu:not(.hidden)) { z-index: 8; }  /* the menu over the cards (the panel is its stacking context) */
+.fine-key { color: #7dd3fc; }
 #timeline { width: 100%; height: 46px; display: block; cursor: crosshair; touch-action: none; }
 #time .hint { margin: 2px 0 0; font-size: 11px; }
 

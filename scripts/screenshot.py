@@ -323,6 +323,26 @@ with sync_playwright() as p:
             phone.wait_for_timeout(500)
             phone.screenshot(path=f"{prefix}-compass-phone.png")
             print(f"{prefix}-compass-phone.png", flush=True)
+        elif scenario == "timeline":  # zoomed into the Gulf Stream: the ticks are its passages (light blue: 250 m too);
+            # then the menu of lengths
+            for close in page.query_selector_all(".card .close"):  # what earlier scenarios left open
+                close.click()
+            if page.is_visible("#globe"):
+                page.click("#globe")
+                page.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
+            page.evaluate("map.jumpTo({center: [-65, 38], zoom: 7, bearing: 0, pitch: 0})")
+            page.wait_for_timeout(6000)
+            page.mouse.move(800, 885)
+            page.evaluate("timeline.hover(timeline.x(timeline.ticks.day.at(-1) + 4e7))")
+            print("ticks:", page.evaluate("[timeline.where, timeline.ticks.day.length, timeline.ticks.fine.filter(Boolean).length]"),
+                  "|", page.inner_text("#readout"), flush=True)
+            shot("timeline")
+            page.click("#days")
+            page.wait_for_timeout(500)
+            shot("timeline-days")
+            page.click("#days-menu [data-days='7']")
+            page.wait_for_timeout(2000)
+            print("after 7:", page.inner_text("#selection"), page.inner_text("#days-text"), flush=True)
         elif scenario == "flat":
             page.click("#projection")
             page.wait_for_timeout(5000)
