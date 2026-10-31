@@ -64,13 +64,13 @@ with sync_playwright() as p:
             if page.query_selector(".pin .close"):
                 page.click(".pin .close")
         elif scenario == "line":
-            page.evaluate("map.jumpTo({center: [-58, -40.5], zoom: 6})")
+            page.evaluate("map.jumpTo({center: [-58, -40.5], zoom: 7})")  # a line of ~400 km: 250 m takes it
             page.wait_for_timeout(6000)
             page.click("#line")
-            for xy in ((520, 470), (800, 520)):
+            for xy in ((560, 470), (760, 520)):
                 page.mouse.click(*xy)
                 page.wait_for_timeout(300)
-            page.mouse.dblclick(1050, 470)
+            page.mouse.dblclick(950, 470)
             page.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=60_000)
             box = page.query_selector(".card.transect .u-over").bounding_box()
             page.mouse.move(box["x"] + box["width"] * 0.45, box["y"] + box["height"] / 2)
@@ -311,8 +311,10 @@ with sync_playwright() as p:
             print("drawing:", page.inner_text("#drawing-text"), flush=True)
             page.evaluate("map.jumpTo({center: [0, 0], zoom: 1.2})")  # far enough for 15,000 km
             page.wait_for_timeout(1500)
-            page.mouse.move(1500, 300, steps=4)
-            page.mouse.click(1500, 300)
+            for xy in ((1350, 300), (300, 800)):  # the second would pass 15,000 km
+                page.mouse.move(*xy, steps=4)
+                page.mouse.click(*xy)
+                page.wait_for_timeout(300)
             page.wait_for_timeout(300)
             print("past the limit:", page.inner_text("#drawing-text"), "| points:", page.evaluate("state.vertices.length"),
                   "| color:", page.evaluate("map.getPaintProperty('line', 'line-color')"), flush=True)
