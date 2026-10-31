@@ -301,16 +301,18 @@ with sync_playwright() as p:
                 print("phone band moved:", phone.inner_text("#selection"), flush=True)
                 phone.screenshot(path=f"{prefix}-phone-time.png")
                 print(f"{prefix}-phone-series/menu/drawing/line/time.png", flush=True)
-        elif scenario == "line-limits":  # the drawing bar counts points and km; a click past 3000 km is refused, in red
+        elif scenario == "line-limits":  # the drawing bar counts points and km; a click past the limit is refused, in red
             page.evaluate("map.jumpTo({center: [-40, 20], zoom: 2.2, bearing: 0, pitch: 0})")
             page.wait_for_timeout(3000)
             page.click("#line")
-            for xy in ((560, 470), (700, 470)):
+            for xy in ((450, 470), (750, 470)):
                 page.mouse.click(*xy)
                 page.wait_for_timeout(300)
             print("drawing:", page.inner_text("#drawing-text"), flush=True)
-            page.mouse.move(1300, 470, steps=4)
-            page.mouse.click(1300, 470)
+            page.evaluate("map.jumpTo({center: [0, 0], zoom: 1.2})")  # far enough for 15,000 km
+            page.wait_for_timeout(1500)
+            page.mouse.move(1500, 300, steps=4)
+            page.mouse.click(1500, 300)
             page.wait_for_timeout(300)
             print("past the limit:", page.inner_text("#drawing-text"), "| points:", page.evaluate("state.vertices.length"),
                   "| color:", page.evaluate("map.getPaintProperty('line', 'line-color')"), flush=True)

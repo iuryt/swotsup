@@ -1055,7 +1055,7 @@ def address_of(request):
 
 # limits, so one visitor (or a script) cannot hold the server for everyone: lines (how long, how many vertices), the
 # region's NetCDF file, and requests per minute from one address (kept in memory for a minute, never written)
-MAX_LINE, MAX_FINE_LINE, MAX_VERTICES = 3000.0, 500.0, 20  # km at 2 km, km at 250 m, clicks
+MAX_LINE, MAX_FINE_LINE, MAX_VERTICES = 15000.0, 500.0, 20  # km at 2 km, km at 250 m, clicks
 MAX_NETCDF_MB = float(os.environ.get("SWOT_MAX_NETCDF_MB", 200))
 
 
