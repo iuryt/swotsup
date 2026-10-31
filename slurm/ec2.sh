@@ -213,9 +213,10 @@ domain)
    "FailoverCriteria": {"StatusCodes": {"Quantity": 2, "Items": [502, 503]}},
    "Members": {"Quantity": 2, "Items": [{"OriginId": "ec2"}, {"OriginId": "wake"}]}}]},
  "DefaultCacheBehavior": $(behavior "" ec2-or-wake $nocache "$get"),
- "CacheBehaviors": {"Quantity": 4, "Items": [
+ "CacheBehaviors": {"Quantity": 5, "Items": [
    $(behavior /api/event ec2 $nocache "$all"),
    $(behavior "/api/tile/*" ec2-or-wake $bycontrol "$get"),
+   $(behavior "/api/basemap/*" ec2-or-wake $bycontrol "$get"),
    $(behavior "/api/detail/*" ec2-or-wake $bycontrol "$get"),
    $(behavior /api/world.png ec2-or-wake $bycontrol "$get")]},
  "CustomErrorResponses": {"Quantity": 3, "Items": [{"ErrorCode": 502, "ErrorCachingMinTTL": 0},
