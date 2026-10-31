@@ -1037,7 +1037,7 @@ def test_limits_keep_one_visitor_from_holding_the_server(client, monkeypatch):
     many = ";".join(f"{30 + k * 0.01},{k * 0.01}" for k in range(server.MAX_VERTICES + 1))
     r = client.get("/api/transect", params=view | dict(points=many))
     assert r.status_code == 413 and "points" in r.json()["detail"]
-    long = "0,0;40,0"  # ~4450 km
+    long = "0,0;150,0"  # ~16700 km
     assert client.get("/api/hovmoller", params=dict(points=long, variable="ssha_unfiltered")).status_code == 413
     assert client.get("/api/transect", params=view | dict(points="30,0;35,0")).status_code == 200  # ~556 km at 2 km
     assert client.get("/api/transect", params=view | dict(points="30,0;35,0", step=0.25)).status_code == 413
