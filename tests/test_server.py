@@ -1007,3 +1007,22 @@ def test_editing_flag_removes_its_pixels_at_2_km_and_from_its_nearest_at_250_m(m
                         lambda **kw: __import__("icechunk").local_filesystem_storage(maps_paths[0]))
     exec(code, scope)
     np.testing.assert_array_equal(np.isnan(scope["ssha"].values), np.isnan(scope["sub"].ssha_karin_2_xover.values) | band[None])
+
+
+def test_basemap_tiles_from_the_mbtiles_file(store_path, tmp_path, monkeypatch):
+    """The basemap's tiles come from the MBTiles file: an XYZ tile (y from the north) is the file's TMS row (from the
+    south); one it lacks is a 404."""
+    import sqlite3
+
+    db = sqlite3.connect(tmp_path / "b.mbtiles")
+    db.execute("CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB)")
+    db.executemany("INSERT INTO tiles VALUES (?, ?, ?, ?)", [(2, 1, 0, b"south"), (2, 1, 3, b"north")])
+    db.commit()
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    monkeypatch.setenv("SWOT_BASEMAP", str(tmp_path / "b.mbtiles"))
+    sys.modules.pop("server", None)
+    import server
+
+    c = TestClient(server.app)
+    assert c.get("/api/basemap/2/1/0.webp").content == b"north" and c.get("/api/basemap/2/1/3.webp").content == b"south"
+    assert c.get("/api/basemap/2/2/2.webp").status_code == 404 and c.get("/api/info").json()["basemap"]
