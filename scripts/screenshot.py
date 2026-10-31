@@ -326,6 +326,13 @@ with sync_playwright() as p:
             page.wait_for_timeout(500)
             shot("about")
             page.click("#about-dialog .close")
+        elif scenario == "refit":  # other days, the map not moved: the screen's colors are asked again (#110)
+            asked = []
+            page.on("request", lambda r: "/api/limits" in r.url and asked.append(r.url))
+            page.click("#prev")
+            page.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
+            page.wait_for_timeout(4000)
+            print("refit after other days:", len(asked), "limits request(s)", flush=True)
         elif scenario == "band":  # the timeline's band: a drag moves it (same length); a press elsewhere puts it there
             box = page.query_selector("#timeline").bounding_box()
             before = page.inner_text("#selection") + " " + page.inner_text("#days-text")
