@@ -700,8 +700,8 @@ def test_dates_the_detail_covers(store_path, tmp_path, make_file, monkeypatch):
 
 
 def test_colors_of_what_is_on_screen(fine_store_path, monkeypatch):
-    """The robust limits of the pixels on screen: zoomed into the swath's south end (data = cycle*1000 + line, line
-    growing northward) they are about those lines' values, not the whole view's."""
+    """The limits of the pixels on screen, robust and percentiles: zoomed into the swath's south end (data =
+    cycle*1000 + line, line growing northward) they are about those lines' values, not the whole view's."""
     monkeypatch.setenv("SWOT_STORE", fine_store_path)
     sys.modules.pop("server", None)
     import server
@@ -709,9 +709,12 @@ def test_colors_of_what_is_on_screen(fine_store_path, monkeypatch):
     view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="ssha_unfiltered")
     c = TestClient(server.app)
     whole = c.get("/api/load", params=view).json()["robust"]["none"]
-    south = c.get("/api/limits", params=view | dict(lon0=29, lon1=31, lat0=-10, lat1=-8)).json()["none"]
-    assert 2950 <= south[0] < south[1] <= 3150 and whole[1] - whole[0] > 600  # lines 0-100 there (3000-3100), of 1001
-    assert c.get("/api/limits", params=view | dict(lon0=100, lon1=101, lat0=0, lat1=1)).json()["none"] == whole  # none there
+    south = c.get("/api/limits", params=view | dict(lon0=29, lon1=31, lat0=-10, lat1=-8)).json()
+    lo, hi = south["robust"]["none"]
+    assert 2950 <= lo < hi <= 3150 and whole[1] - whole[0] > 600  # lines 0-100 there (3000-3100), of 1001
+    q = south["quantiles"]["none"]
+    assert 3000 <= q[20] < q[980] <= 3100  # the 2 and 98 % of the screen too
+    assert c.get("/api/limits", params=view | dict(lon0=100, lon1=101, lat0=0, lat1=1)).json()["robust"]["none"] == whole  # none there
 
 
 def test_base_inside_the_detail_swath(store_path, monkeypatch):
@@ -866,6 +869,27 @@ def test_read_arrays_in_any_order(dtu_store_path, shifted_fine_store_path, monke
     sub = server.ds.isel(time=[0, 1], along=slice(400, 450))
     data, _ = server.read(sub, sorted(server.VARIABLES["cal"].arrays))
     assert data.latitude.dims == ("time", "along", "cross") and data.cal_bias.dims == ("time", "along", "side")
+
+
+def test_value_tiles_carry_the_means(store_path, monkeypatch):
+    """A tile asked with values=1 (the page colors it) holds each pixel's mean in 24 bits (VALUE_SCALE units), with
+    data where the colored tile has it, and colored with the same colormap and limits it is that tile: for the map's
+    tiles and the detail's."""
+    server, c = detail_server(store_path[0], monkeypatch)
+    view = PASS_7 | dict(mode="box", vmin=-100, vmax=100, cmap="RdBu_r")  # the fake values minus the box's median
+    c.get("/api/load", params=PASS_7)
+    z, lon, lat = 6, 30.0, 5.0
+    fx, fy = (lon + 180) / 360 * 2**z, (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 2**z
+    for kind in ("tile", "detail"):
+        get = lambda **p: np.asarray(Image.open(io.BytesIO(c.get(  # noqa: E731
+            f"/api/{kind}/{z}/{int(fx)}/{int(fy)}.png", params=view | p).content)).convert("RGBA")).astype(int)
+        colored, coded = get(), get(values=1)
+        on = coded[..., 3] == 255
+        assert on.sum() > 100 and (on == (colored[..., 3] == 255)).all()
+        v = (((coded[..., 0] << 16) | (coded[..., 1] << 8) | coded[..., 2]) - 2**23) / server.VALUE_SCALE
+        assert np.abs(v[on]).max() < 150  # not clipped
+        want = (server.COLORMAPS["RdBu_r"](np.clip((v[on] + 100) / 200, 0, 1)) * 255).astype(int)[:, :3]
+        assert np.abs(want - colored[on][:, :3]).max() <= 1
 
 
 
