@@ -359,7 +359,8 @@ def test_level_follows_the_pixel_on_the_ground(fine_store_path, monkeypatch):
     monkeypatch.setattr(server.dsh.Canvas, "points", lambda self, frame, *a, **k: drawn.append(len(frame)) or server.xr.DataArray(np.full((self.plot_height, self.plot_width), np.nan)))
     data.mean_on("none", *server.tile_ranges(0, 0, 0), 256, 256)  # the world: ~156 km pixels at its middle (0 N)
     data.mean_on("none", *server.tile_ranges(7, 74, 62), 256, 256)  # lon 30, lat 5
-    assert len(drawn) == 1 and 0 < drawn[0] <= len(data.points[16][0])  # the world tile only, from the 16 x 16 blocks
+    # the world tile only (two passes: the latest passage per pixel, then its cells' mean), from the 16 x 16 blocks
+    assert len(drawn) == 2 and 0 < drawn[0] <= len(data.points[16][0])
 
 
 
@@ -974,11 +975,12 @@ def test_maps_draw_what_the_passages_draw(maps_paths, monkeypatch):
             shown[variable] = np.isfinite(a).sum()
         assert shown["final_water"] > shown["final"], lat
     assert min(compared.values()) > 60
-    # coarser, the window summed in the server (2 x 2 blocks) is what swot_cloud's coarser zooms give
+    # coarser, the window composed in the server from the finest zoom's days is what swot_cloud's coarser zooms give
     levels = server.RASTERS.pyramid("2024-01-03", 4)
     for z in (0, 1):
         m = server.RASTERS.mean(z, slice(None), slice(None), "2024-01-03", 4)
-        np.testing.assert_allclose(levels[z][0], m, atol=1e-3)  # each zoom rounded to mm in the maps
+        both = np.isfinite(levels[z][0]) & np.isfinite(m)
+        assert both.sum() > 10 and np.allclose(levels[z][0][both], m[both], atol=2e-3)  # each zoom rounded to mm
 
 
 def test_editing_flag_removes_its_pixels_at_2_km_and_from_its_nearest_at_250_m(maps_paths, monkeypatch):
@@ -1061,3 +1063,27 @@ def test_telemetry_keeps_small_events_only(client, monkeypatch):
     client.post("/api/event", json=dict(event="open", session="s"))
     client.post("/api/event", json=dict(event="open", session="s" * 5000))
     assert len(kept) == 1
+
+
+def test_overlapping_passages_drawn_latest_on_top(store_path, maps_paths, monkeypatch):
+    """Where passages overlap, the map shows the latest (an average blended a passage with rain or noise into the
+    others): pass 7 in cycles 3 (3 Jan, data 3000 + line) and 5 (6 Jan, 5000 + line), drawn together, give cycle 5's
+    values, as meshes and as points; the daily maps take each pixel's latest day."""
+    monkeypatch.setenv("SWOT_STORE", store_path[0])
+    sys.modules.pop("server", None)
+    import server
+
+    view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=4, variable="ssha_unfiltered")
+    data = server.load(**view)[0]
+    last = server.load(**view | dict(start="2024-01-06", days=1))[0]  # cycle 5 alone
+    for z, x, y in ((7, 74, 63), (4, 9, 8)):  # meshes, then points (zoom 4: ~10 km pixels over 2 km cells)
+        ranges = server.tile_ranges(z, x, y)
+        m, five = data.mean_on("none", *ranges, 256, 256), last.mean_on("none", *ranges, 256, 256)
+        here = np.isfinite(five)
+        assert here.sum() > 30 and np.allclose(m[here], five[here]), z  # where cycle 5 is, its values only
+    server = maps_server(maps_paths, monkeypatch)
+    view = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="final")
+    one = server.RASTERS.mean(2, slice(None), slice(None), "2024-01-06", 1)  # cycle 5's day alone
+    all4 = server.RASTERS.mean(2, slice(None), slice(None), "2024-01-03", 4)
+    both = np.isfinite(one)
+    assert both.sum() > 30 and np.allclose(all4[both], one[both], atol=1e-3)

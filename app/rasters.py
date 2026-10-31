@@ -43,16 +43,18 @@ class Rasters:
         return all(d in self.days for d in range(k, k + days))
 
     def sums(self, z, sel, water):
-        """Sum over the selection's days of count x ssha (m) and of count, float64 (the open ocean, and continental
-        water if chosen)."""
+        """The latest day with data at each pixel of the selection's days (a day's own passages averaged: its
+        crossovers): its count x ssha (m) and its count, float64 (the open ocean, and continental water if chosen)."""
         total = n = 0
         for s in SURFACES if water else SURFACES[:1]:
             count = self.root[f"z{z}/count{s}"].get_orthogonal_selection(sel).astype("float64")
             a = self.root[f"z{z}/ssha{s}"]
             raw = a.get_orthogonal_selection(sel)
             value = np.where(raw == a.fill_value, 0.0, raw * a.attrs.get("scale_factor", 1.0))  # count is 0 there
-            total, n = total + (value * count).sum(0), n + count.sum(0)
-        return total, n
+            total, n = total + value * count, n + count  # (days, ...)
+        # each pixel's latest day with any count (none: day 0, count 0)
+        last = n.shape[0] - 1 - np.argmax(n[::-1] > 0, axis=0)
+        return np.take_along_axis(total, last[None], 0)[0], np.take_along_axis(n, last[None], 0)[0]
 
     def mean(self, z, rows, cols, start, days, water=False, counts=False):
         """The window's mean on a block of zoom z's raster (rows from the south), NaN where nothing (`counts`: and how
@@ -65,17 +67,20 @@ class Rasters:
 
     def pyramid(self, start, days, water=False):
         """The window's means and counts at every zoom ({z: ((size, size), (size, size)) float32, rows from the south}),
-        from the finest zoom's days, a few read at once (each day whole: one object, its shard)."""
+        from the finest zoom's days, a few read at once (each day whole: one object, its shard): at each pixel its
+        latest day with data, at each zoom (a coarser pixel: the latest day with data in its block, as `mean`)."""
         k = int((np.datetime64(start) - DAY0) / np.timedelta64(1, "D"))
-        total = n = 0
+        total, n = {}, {}
         with ThreadPoolExecutor(4) as pool:  # ~64 MB a day and surface in memory at once
             for t, c in pool.map(lambda d: self.sums(self.zoom, (slice(d, d + 1), slice(None), slice(None)), water),
                                  range(k, k + days)):
-                total, n = total + t, n + c
-        out = {}
-        for z in range(self.zoom, -1, -1):
-            with np.errstate(invalid="ignore", divide="ignore"):
-                out[z] = (np.where(n > 0, total / n, np.nan).astype("float32"), n.astype("float32"))
-            if z:
-                total, n = coarser(total), coarser(n)
-        return out
+                for z in range(self.zoom, -1, -1):  # each zoom: this day's blocks cover the earlier days' (as `mean`)
+                    if z in total:
+                        total[z], n[z] = np.where(c > 0, t, total[z]), np.where(c > 0, c, n[z])
+                    else:
+                        total[z], n[z] = t, c
+                    if z:
+                        t, c = coarser(t), coarser(c)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return {z: (np.where(n[z] > 0, total[z] / n[z], np.nan).astype("float32"), n[z].astype("float32"))
+                    for z in total}
