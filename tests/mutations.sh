@@ -119,3 +119,6 @@ mutate app/rasters.py 's/            total, n = total + (value \* count).sum(0),
 mutate app/rasters.py 's/        built = np.flatnonzero(self.root\["source_snapshot"\]\[:\] != "")/        built = np.arange(len(self.root["source_snapshot"]))/' "every day of the maps taken as built"
 mutate app/rasters.py 's/                total, n = coarser(total), coarser(n)/                total, n = coarser(total) \/ 4, coarser(n)/' "the maps' coarser zooms summed wrong"
 mutate app/server.py 's/    return {k for k, v in variables.items() if v.names\[0\] == "ssha_karin_2_xover" and v.dtu and v.calibrated}/    return {k for k, v in variables.items() if v.names[0] == "ssha_karin_2_xover" and v.dtu}/' "uncalibrated SSHA from the maps"
+mutate app/server.py 's/                v = np.where(get(EDIT).reshape(v.shape) > 0, np.nan, v)/                v = v/' "the editing flag not applied"
+mutate app/server.py 's/    if name == EDIT:  # bits: the nearest pixel.s, not a mean of them/    if False:/' "the editing flag interpolated at 250 m"
+mutate app/swot_view.py 's/ssha = ssha.where(sub.ssha_edit_flag == 0)/ssha = ssha/' "the copied code without the editing flag"

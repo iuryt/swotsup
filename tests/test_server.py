@@ -943,7 +943,7 @@ def maps_server(maps_paths, monkeypatch):
 
     for key, surface, cal in (("final", (0,), True), ("final_water", None, True), ("uncalibrated", (0,), False)):
         monkeypatch.setitem(server.VARIABLES, key, server.Variable(key, ["ssha_karin_2_xover", server.DTU],
-                                                                   surface=surface, calibrated=cal))
+                                                                   surface=surface, calibrated=cal, edit=True))
     monkeypatch.setattr(server, "RASTER_VARIABLES", server.raster_variables(server.VARIABLES))
     return server
 
@@ -979,3 +979,31 @@ def test_maps_draw_what_the_passages_draw(maps_paths, monkeypatch):
     for z in (0, 1):
         m = server.RASTERS.mean(z, slice(None), slice(None), "2024-01-03", 4)
         np.testing.assert_allclose(levels[z][0], m, atol=1e-3)  # each zoom rounded to mm in the maps
+
+
+def test_editing_flag_removes_its_pixels_at_2_km_and_from_its_nearest_at_250_m(maps_paths, monkeypatch):
+    """With the editing flag (the fake one: along 300-400 km, east of nadir), the passages' values are NaN there and
+    only there; a finer store without a flag takes Expert's nearest pixel's (bits, never a mean of them); and the code
+    people copy gives the same values."""
+    server = maps_server(maps_paths, monkeypatch)
+    view = dict(west=29, east=31, south=-10, north=10, start="2024-01-03", days=1, variable="final")
+    data = server.load(**view)[0]
+    v, cross = data.raw, data.sub.cross.values
+    along = data.sub.along.values
+    band = ((along >= 300) & (along < 400))[:, None] & (cross > 0)[None, :]
+    ocean = (along >= 200)[:, None] & (cross != 0)[None, :]  # the fixture's first 200 km: continental water
+    assert np.isnan(v[:, band]).all() and np.isfinite(v[:, ~band & ocean]).mean() > 0.9
+    a, c = xr.DataArray(np.linspace(250, 450, 81), dims="pixel"), xr.DataArray(np.linspace(-20, 20, 81), dims="pixel")
+    got = server.from_base(server.EDIT, 7, a, c, 3)
+    want = ((a >= 300) & (a < 400) & (c > 0)).values * 2.0
+    near = np.abs(c.values) > 1.5  # off nadir, where the nearest pixel is on the same side
+    assert set(np.unique(got[np.isfinite(got)])) <= {0.0, 2.0} and (got[near] == want[near]).mean() > 0.95
+    import swot_view
+
+    scope = {}
+    code = swot_view.snippet(29, 31, -10, 10, "2024-01-03", "2024-01-03T23:59", "ssha_karin_2_xover",
+                             target="s3://bucket/prefix", edit=True)
+    monkeypatch.setattr(__import__("icechunk"), "s3_storage",
+                        lambda **kw: __import__("icechunk").local_filesystem_storage(maps_paths[0]))
+    exec(code, scope)
+    np.testing.assert_array_equal(np.isnan(scope["ssha"].values), np.isnan(scope["sub"].ssha_karin_2_xover.values) | band[None])

@@ -66,6 +66,8 @@
       <label class="check" title="swot_cloud's calibration: least squares on KaRIn crossovers and nadir altimeters, a bias and a cross-track slope per line and side"><input type="checkbox" id="cal"> Calibration <span class="tag" id="cal-version">experimental</span></label>
       <p class="hint">A bias and a tilt per side of the swath, from crossovers and nadir altimeters. Experimental: it may change.</p>
     </div>
+    <p class="hint">Rain cells, sea ice and ships are removed (swot_cloud's editing flag, at 2 km). At 250 m the 2 km flag
+      removes rain and sea ice; ships stay for now.</p>
     <div class="label">Subtract the spatial mean</div>
     <div class="segmented" id="mode">
       <button data-value="box">Box mean</button><button data-value="passage">Each passage</button><button data-value="none">Nothing</button>

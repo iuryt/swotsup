@@ -177,11 +177,11 @@ ds = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, chunk
 '''
 
 
-def snippet(west, east, south, north, start, end, var="ssha_filtered", target=STORE, dtu=False, cal=False):
+def snippet(west, east, south, north, start, end, var="ssha_filtered", target=STORE, dtu=False, cal=False, edit=False):
     """The code a user runs to get the same subset, with icechunk + xarray only. The longitude filter and
     the latitude cut are left out when they keep everything (west == east, e.g. -180 to 180, is all longitudes).
     `dtu`: plus the store's correction to the DTU25 mean sea surface, each passage's pass's; `cal`: minus its
-    calibration."""
+    calibration; `edit`: without the pixels the editing flag removes."""
     # the generated code is text at column 0
     lats = "" if south <= -90 and north >= 90 else f", lat=slice({south:g}, {north:g})"
     lons = "" if (east - west) % 360 == 0 else f'''west, east = {west:g}, {east:g}
@@ -189,15 +189,17 @@ first = (sub.lon_min - west) % 360  # how far east of `west` each line starts
 hit = ((first <= (east - west) % 360) | (first + sub.lon_max - sub.lon_min >= 360)).any("along")
 sub = sub.isel(time=sub.pass_id.isin(sub.pass_number[hit]).values)
 '''
-    corrected = (f"ssha = sub.{var}\n" if dtu or cal else "") + ("""# the DTU25 mean sea surface instead of the L2's (CNES_CLS22): the correction, kept once per pass
+    corrected = (f"ssha = sub.{var}\n" if dtu or cal or edit else "") + ("""# the DTU25 mean sea surface instead of the L2's (CNES_CLS22): the correction, kept once per pass
 ssha = ssha + ds.mss_cor_dtu25.sel(pass_number=np.unique(sub.pass_id), along=sub.along.values).load().sel(pass_number=sub.pass_id)
 """ if dtu else "") + ("""# the experimental calibration (swot_cloud v0.1, may change): each line's bias and cross-track slope, on each
 # pixel's side of nadir
 east = sub.cal_bias.isel(side=1) + sub.cal_slope.isel(side=1) * sub.cross / 60
 west = sub.cal_bias.isel(side=0) + sub.cal_slope.isel(side=0) * sub.cross / 60
 ssha = ssha - xr.where(sub.cross > 0, east, west)
-""" if cal else "")
-    arrays = ", ".join(f'"{n}"' for n in [var] + (["cal_bias", "cal_slope"] if cal else []))
+""" if cal else "") + ("""# without the pixels swot_cloud's editing flag removes (rain cells, sea ice, ships)
+ssha = ssha.where(sub.ssha_edit_flag == 0)
+""" if edit else "")
+    arrays = ", ".join(f'"{n}"' for n in [var] + (["cal_bias", "cal_slope"] if cal else []) + (["ssha_edit_flag"] if edit else []))
     return f'''{(DTU25_CREDIT if dtu else "") + opening(target, "import numpy as np\n" if dtu else "")}
 sub = ds.sel(time=slice("{start}", "{end}"){lats})
 {lons}sub = sub[[{arrays}]].load()  # dims (time, along, cross); latitude/longitude come along
