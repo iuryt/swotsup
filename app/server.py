@@ -47,7 +47,7 @@ class Variable:
     its default colormap and kind ("anomaly": a spatial mean subtracted, colors symmetric; "level": as stored)."""
 
     def __init__(self, label, names, flag=None, db=False, cmap="RdBu_r", kind="anomaly", units="m", surface=None,
-                 twin=None, mss=None, calibrated=False, cal=None):
+                 twin=None, mss=None, calibrated=False, cal=None, edit=False):
         self.label, self.names, self.flag, self.db = label, list(names), flag, db
         self.cmap, self.kind, self.units = cmap, kind, units
         # the surface classes kept (SURFACE: 0 open ocean, 2 continental water...), and the variable that is the same
@@ -55,6 +55,7 @@ class Variable:
         # same with the other mean sea surface (the Display menu's "Mean sea surface"); `calibrated`: minus the
         # calibration (`calibration`), and `cal` the same with the other choice (the Display menu's "Calibration")
         self.surface, self.twin, self.mss, self.calibrated, self.cal = surface, twin, mss, calibrated, cal
+        self.edit = edit  # without the pixels swot_cloud's editing flag removes (EDIT: rain, sea ice, ships)
 
     @property
     def dtu(self):
@@ -65,7 +66,7 @@ class Variable:
     def arrays(self):
         """Every array the values need."""
         return (self.names + ([self.flag] if self.flag else []) + ([SURFACE] if self.surface else [])
-                + (list(CAL) if self.calibrated else []))
+                + (list(CAL) if self.calibrated else []) + ([EDIT] if self.edit else []))
 
     def values(self, get):
         """The values, from `get(name)` -> each array: summed, minus the calibration if so (`get("cross")`: the pixels'
@@ -75,6 +76,9 @@ class Variable:
             v = v - calibration(get(CAL[0]), get(CAL[1]), get("cross")).reshape(v.shape)
         if self.surface:
             v = np.where(np.isin(get(SURFACE), self.surface), v, np.nan)
+        if self.edit:  # NaN where the flag has none (no 2 km pixel there, for the 250 m): kept
+            with np.errstate(invalid="ignore"):
+                v = np.where(get(EDIT).reshape(v.shape) > 0, np.nan, v)
         if self.db:
             with np.errstate(divide="ignore", invalid="ignore"):
                 v = np.where(v > 0, 10 * np.log10(v), np.nan)
@@ -94,6 +98,9 @@ DTU = "mss_cor_dtu25"
 # by default also calibrated (swot_cloud, experimental v0.1: Expert's cal_bias and cal_slope, a bias and a cross-track
 # slope per line and side; Unsmoothed takes Expert's, `from_base`)
 CAL = ("cal_bias", "cal_slope")
+# by default without what swot_cloud's editing flag removes (Expert, per pixel: rain cells, sea ice, ships); Unsmoothed
+# has none yet (swot_cloud#17): it takes Expert's, at its nearest pixel (`from_base`), so rain and sea ice go, not ships
+EDIT = "ssha_edit_flag"
 
 
 def ssha_l2():
@@ -106,7 +113,8 @@ def ssha_l2():
                  + (", rivers and lakes too" if water else ""))
         out[key(dtu, cal, water)] = Variable(label, ["ssha_karin_2_xover"] + ([DTU] if dtu else []),
                                              surface=None if water else (0,), twin=key(dtu, cal, not water),
-                                             mss=key(not dtu, cal, water), calibrated=cal, cal=key(dtu, not cal, water))
+                                             mss=key(not dtu, cal, water), calibrated=cal, cal=key(dtu, not cal, water),
+                                             edit=True)
     return out
 
 
@@ -1194,7 +1202,8 @@ def load_view(west: float, east: float, south: float, north: float, start: str, 
     return dict(passages=data.sub.sizes["time"], seconds=round(seconds, 2),
                 pixels=data.pixels, quantiles=data.quantiles, robust=data.robust,
                 code=swot_view.snippet(west, east, south, north, start, str(end.date()), stored(VARIABLES[variable])[0],
-                                       dtu=VARIABLES[variable].dtu, cal=VARIABLES[variable].calibrated))
+                                       dtu=VARIABLES[variable].dtu, cal=VARIABLES[variable].calibrated,
+                                       edit=VARIABLES[variable].edit))
 
 
 def colormap(name, variable):
@@ -1307,6 +1316,8 @@ def from_base(name, p, along, cross, cycle=None):
     else:
         a = a.sel(pass_number=p)
     a = a.sel(along=slice(float(np.min(along)) - 4, float(np.max(along)) + 4))
+    if name == EDIT:  # bits: the nearest pixel's, not a mean of them
+        return a.sel({"along": along} | ({"cross": cross} if "cross" in a.dims else {}), method="nearest").values
     return a.interp({"along": along} | ({"cross": cross} if "cross" in a.dims else {}), kwargs={"fill_value": None}).values
 
 
@@ -1744,8 +1755,13 @@ def series_code(lon: float, lat: float, variable: str, radius: float = 5):
         f = DETAIL_PRODUCT["variables"][variable]
         fine = dict(target=DETAIL_STORE, names=stored(f), radius=FINE_SERIES_RADIUS, mask=f.flag, db=f.db,
                     pixel=DETAIL_PRODUCT["pixel"], label="250 m pixels", dtu=f.dtu, cal=f.calibrated)
-    return dict(code=swot_view.series_snippet(lon, lat, stored(var), radius, f"{var.label}, ", target=STORE, mask=var.flag,
+    return dict(code=swot_view.series_snippet(lon, lat, stored(var), radius, f"{var.label}, ", target=STORE, mask=mask_of(var),
                                               db=var.db, fine=fine, units=var.units, dtu=var.dtu, cal=var.calibrated))
+
+
+def mask_of(var):
+    """The flag the code people copy keeps the values where it is 0: the variable's quality flag, or the editing flag."""
+    return var.flag or (EDIT if var.edit else None)
 
 
 def stored(var):
@@ -1768,7 +1784,7 @@ def line_code(points: str, variable: str, step: float = 2.0, start: str = None, 
                                                 dtu=(STORE if DTU not in detail.ds else "here") if f.dtu else None,
                                                 cal=(STORE if CAL[0] not in detail.ds else "here") if f.calibrated else None))
     return dict(code=swot_view.line_snippet(vertices, stored(var), step, start, end, mean, title, target=STORE,
-                                            mask=var.flag, db=var.db, units=var.units, dtu="here" if var.dtu else None,
+                                            mask=mask_of(var), db=var.db, units=var.units, dtu="here" if var.dtu else None,
                                             cal="here" if var.calibrated else None))
 
 
