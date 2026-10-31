@@ -7,6 +7,7 @@ import io
 import itertools
 import json
 import os
+import sqlite3
 import threading
 import time
 import tomllib
@@ -1158,6 +1159,7 @@ def info():
                 variables={k: v.label for k, v in VARIABLES.items()}, world=world()[1:], version=VERSION, release=RELEASE,
                 # each variable's kind, units and default colormap; the colormaps on offer as 16 stops each
                 calibration=ds[CAL[0]].attrs.get("version") if CAL[0] in ds else None,  # its version
+                basemap=bool(BASEMAP),
                 rasters=dict(first=str(RASTERS.first), last=str(RASTERS.last), commit=RASTERS.commit.id[:8])
                 if RASTERS and RASTERS.first else None,
                 left=int(str(LEFT).split("(")[1].rstrip(")")),  # requests left before being worked on, so far
@@ -1835,6 +1837,25 @@ def world():
     fig.savefig(buf, format="png")
     plt.close(fig)
     return buf.getvalue(), proj.x_limits[1] / radius, proj.y_limits[1] / radius
+
+
+# the page's basemap (scripts/render_basemap.py: GEBCO_2026 shaded relief, one MBTiles file), served from this disk
+# instead of fetched from elsewhere at every view (SWOT_BASEMAP; unset: the page uses NOAA NCEI's tiles)
+BASEMAP = os.environ.get("SWOT_BASEMAP")
+BASEMAP_DB = threading.local()  # one read-only connection per thread
+
+
+@app.get("/api/basemap/{z}/{x}/{y}.webp")
+def basemap(z: int, x: int, y: int):
+    if not BASEMAP:
+        raise HTTPException(404)
+    if not hasattr(BASEMAP_DB, "db"):
+        BASEMAP_DB.db = sqlite3.connect(f"file:{BASEMAP}?mode=ro&immutable=1", uri=True, check_same_thread=False)
+    row = BASEMAP_DB.db.execute("SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?",
+                                (z, x, 2**z - 1 - y)).fetchone()  # MBTiles rows count from the south
+    if row is None:
+        raise HTTPException(404)
+    return Response(row[0], media_type="image/webp", headers={"Cache-Control": "public, max-age=2592000, immutable"})
 
 
 @app.get("/api/world.png")

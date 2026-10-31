@@ -4,7 +4,8 @@ const DAY = 86400000;
 const NCEI = "https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/{}/MapServer/tile/{z}/{y}/{x}";
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/{}/MapServer/tile/{z}/{y}/{x}";
 const BASEMAPS = {
-  "Bathymetry, gray": [NCEI.replace("{}", "GEBCO_grayscale_basemap_NCEI"), 0.55],  // url, brightness (dark page)
+  // url, brightness (dark page); the server's own GEBCO_2026 relief when it has it (info.basemap), else NOAA NCEI's
+  "Bathymetry, gray": [NCEI.replace("{}", "GEBCO_grayscale_basemap_NCEI"), 0.55],
   "Bathymetry, color": [NCEI.replace("{}", "GEBCO_basemap_NCEI"), 0.75],
   "Imagery": [ESRI.replace("{}", "World_Imagery"), 0.8],
 };
@@ -1735,6 +1736,7 @@ async function main() {
   $("#product").textContent = `Sea surface height · ${info.product}` + (info.detail ? ` · ${info.detail.product} from zoom ${info.detail.zoom - 1}` : "") +
     ` · commit ${info.commit.id}, ${dayText(at)} ${at.toISOString().slice(11, 16)} UTC`;
   $("#product").title = `The store as of this commit (the latest when the server started): ${info.commit.message}`;
+  if (info.basemap) BASEMAPS["Bathymetry, gray"] = [`${location.origin}/api/basemap/{z}/{x}/{y}.webp`, 0.5];
   const [url, brightness] = BASEMAPS["Bathymetry, gray"];
   // the projection remembered in this browser (globe by default), set before the first frame, and a zoom where
   // the globe fills the room between the panels (the flat world, at 0.7 less, looks as big)
@@ -1751,7 +1753,7 @@ async function main() {
     container: "map", center: link.map ? link.map.center : box ? [d.west + (((d.east - d.west) % 360 + 360) % 360) / 2, (d.south + d.north) / 2] : [20, 5],
     zoom: link.map ? link.map.zoom : box ? Math.log2(room * 360 / 512 / span) - 0.3 : zoom, minZoom: 0, maxZoom: 11, attributionControl: false,
     style: { version: 8, projection: { type: globe ? "globe" : "mercator" }, sources: { basemap: { type: "raster", tiles: [url], tileSize: 256, maxzoom: 9,
-                                                attribution: `GEBCO, NOAA NCEI · SWOT: ${info.credit}` } },
+                                                attribution: `${info.basemap ? "GEBCO_2026" : "GEBCO, NOAA NCEI"} · SWOT: ${info.credit}` } },
              layers: [{ id: "basemap", type: "raster", source: "basemap",
                         paint: { "raster-brightness-max": brightness, "raster-fade-duration": 0 } }] },
   });
