@@ -53,6 +53,7 @@ function toast(text) {
 // --- up close on the whole globe, the view read is the area in view (with a margin), followed as the map moves:
 // the whole globe's 21 days take a minute, the area on screen seconds; farther out than AREA_ZOOM, the globe
 const AREA_ZOOM = 4;
+const FINE_TICK = "#7dd3fc";  // the timeline's days with the 250 m too
 // the whole globe on dates the daily rasters have: one view at every zoom (no area in view, #98)
 const fromRasters = () => !!(info.rasters && info.looks[state.variable].rasters && isGlobe(state.box)
   && state.start >= Date.parse(info.rasters.first) && state.start + (state.days - 1) * DAY <= Date.parse(info.rasters.last));
@@ -69,6 +70,20 @@ function areaWanted() {
   if (area.east - area.west >= 300) return state.box;  // most of the world: the globe
   const wrap180 = (x) => ((x + 180) % 360 + 360) % 360 - 180;
   return { west: wrap180(area.west), east: wrap180(area.east), south: area.south, north: area.north };
+}
+function tickArea() {  // the timeline's ticks: the region's; zoomed into the whole globe, the area in view's (#89)
+  if (!map || !isGlobe(state.box) || map.getZoom() < AREA_ZOOM) return state.box;
+  const b = map.getBounds(), wrap180 = (x) => ((x + 180) % 360 + 360) % 360 - 180;
+  const area = { west: Math.floor(b.getWest()), east: Math.ceil(b.getEast()), south: Math.max(Math.floor(b.getSouth()), -90),
+                 north: Math.min(Math.ceil(b.getNorth()), 90) };
+  return area.east - area.west >= 300 ? state.box : { ...area, west: wrap180(area.west), east: wrap180(area.east) };
+}
+function updateTicks() {
+  const area = tickArea(), key = JSON.stringify(area);
+  if (key === updateTicks.key) return;
+  updateTicks.key = key;
+  timeline.where = isGlobe(area) ? "the globe" : area === state.box ? "the region" : "the area in view";
+  api("/api/timeline", area).then((d) => { if (updateTicks.key === key) timeline.setTicks(d); });
 }
 function areaHolds(area, inner) {  // whether an area holds another (longitudes continuous from the area's west)
   if (isGlobe(area)) return true;
@@ -525,6 +540,21 @@ function setupDateButtons() {
     try { pick.showPicker(); } catch (e) { pick.focus(); pick.click(); }
   };
   pick.onchange = () => { if (pick.value) nudge(Date.parse(pick.value + "T00:00:00Z"), state.days); };
+  // the number of days: a menu of lengths, the band keeping its start (#89)
+  $("#days-menu").innerHTML = [1, 3, 7, 10, 14, 21].filter((n) => n <= info.max_days)
+    .map((n) => `<button class="ghost" data-days="${n}">${n} day${n > 1 ? "s" : ""}</button>`).join("");
+  $("#days").onclick = (e) => {
+    e.stopPropagation();
+    for (const b of $("#days-menu").children) b.classList.toggle("active", Number(b.dataset.days) === state.days);
+    $("#days-menu").classList.toggle("hidden");
+  };
+  $("#days-menu").onclick = (e) => {
+    e.stopPropagation();
+    if (!e.target.dataset.days) return;
+    $("#days-menu").classList.add("hidden");
+    setDates(state.start, Number(e.target.dataset.days));
+  };
+  document.addEventListener("click", () => $("#days-menu").classList.add("hidden"));
 }
 
 // --- the region
@@ -540,7 +570,7 @@ function setBox(box, reload = true) {
   if (east <= west) east += 360;  // continuous across 180
   const ring = [[west, box.south], [east, box.south], [east, box.north], [west, box.north], [west, box.south]];
   map.getSource("box").setData({ type: "Feature", geometry: { type: globe ? "Point" : "LineString", coordinates: globe ? [0, 0] : ring } });
-  api("/api/timeline", box).then((d) => timeline.setTicks(d));
+  updateTicks();
   if (reload) loadData();
 }
 
@@ -628,12 +658,12 @@ class Timeline {
     const bar = [4, h - 20];  // top, bottom of the ticks
     ctx.fillStyle = "rgba(148,163,184,0.08)";
     ctx.fillRect(this.x(this.full[0]), bar[0], this.x(this.full[1]) - this.x(this.full[0]), bar[1] - bar[0]);
-    ctx.fillStyle = "#64748b";
     const width = Math.max(1, (this.x(DAY) - this.x(0)) * 0.7);
-    for (const d of this.ticks.day) {
+    this.ticks.day.forEach((d, i) => {
       const x = this.x(d);
+      ctx.fillStyle = this.ticks.fine?.[i] ? FINE_TICK : "#64748b";  // 250 m too, or 2 km only
       if (x > -width && x < w) ctx.fillRect(x, bar[0], width, bar[1] - bar[0]);
-    }
+    });
     // months along the bottom, as many as fit
     ctx.fillStyle = "#94a3b8";
     ctx.font = "11px Inter, sans-serif";
@@ -669,7 +699,8 @@ class Timeline {
       ctx.fill();
     }
     const n = Math.round((this.end - this.start) / DAY);
-    $("#selection").textContent = n > 1 ? `${rangeText(this.start, this.end - DAY)} · ${n} days` : `${dayText(this.start)} · 1 day`;
+    $("#selection").textContent = n > 1 ? rangeText(this.start, this.end - DAY) : dayText(this.start);
+    $("#days-text").textContent = `· ${n} day${n > 1 ? "s" : ""}`;
   }
   down(e) {
     this.pointers.set(e.pointerId, e.offsetX);
@@ -730,8 +761,9 @@ class Timeline {
     if (i > 0 && Math.abs(d[i - 1] + DAY / 2 - t) < Math.abs(d[i] + DAY / 2 - t)) i -= 1;
     const day = Math.floor(t / DAY) * DAY;
     $("#readout").textContent = i >= 0 && d[i] === day
-      ? `${dayText(day)} · cycle ${this.ticks.cycle[i]} · ${this.ticks.n[i]} passage${this.ticks.n[i] > 1 ? "s" : ""} over the region`
-      : `${dayText(day)} · no passage over the region`;
+      ? `${dayText(day)} · cycle ${this.ticks.cycle[i]} · ${this.ticks.n[i]} passage${this.ticks.n[i] > 1 ? "s" : ""} over ${this.where}`
+        + (this.ticks.fine?.[i] ? " · 250 m too" : "")
+      : `${dayText(day)} · no passage over ${this.where}`;
   }
   zoom(e) {
     e.preventDefault();
@@ -1749,6 +1781,7 @@ async function main() {
   });
   map.on("move", drawOverview);
   map.on("moveend", linkSoon);
+  map.on("moveend", updateTicks);
   map.on("moveend", followArea);
   map.on("moveend", fitColors);
   map.on("zoomend", () => {  // into the 250 m (once per visit there)
