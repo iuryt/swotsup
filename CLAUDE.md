@@ -59,7 +59,10 @@ be resumed here (`claude --resume`).
     and About, CC BY 4.0; Display: "Mean sea surface" switches to the `mss` twin; the copied code adds it with a
     `dtu25` function) and minus swot_cloud's calibration by default (experimental v0.1: `cal_bias`, `cal_slope` per
     line and side, `calibration`; Unsmoothed takes Expert's passage of the same cycle and pass, at `to_nadir` of
-    its `cross_shift`; Display: "Calibration", the `cal` twin; 8 SSHA variables from `ssha_l2`), on the open
+    its `cross_shift`; Display: "Calibration", the `cal` twin; 8 SSHA variables from `ssha_l2`), without the pixels
+    swot_cloud's editing flag removes (`EDIT`, `ssha_edit_flag`: rain, sea ice, ships; Unsmoothed has none yet and takes
+    Expert's nearest pixel's through `from_base`, so ships stay at 250 m until swot_cloud#17; the copied code applies
+    it), on the open
     ocean by default (`ancillary_surface_classification_flag` 0; in Expert one per pass: `of_passage`, `block` and the
     Hovmöller take each passage's pass) with a twin that keeps rivers and lakes (Display: "Rivers and lakes"); SSHA
     without the correction, sigma0 (in dB), SWH and wind speed, each kept only where its own flag is 0; only SSHA and
@@ -103,8 +106,9 @@ be resumed here (`claude --resume`).
   the passages.
 - `app/static/`: the page, no build step (MapLibre GL 5, uPlot, lucide, Prism from CDNs, pinned): map full
   screen without axes, globe by default with a button for the flat map (remembered per browser), floating
-  panels, a canvas timeline (orange band of up to 21 days; the dragged edge stops at the limit, moving keeps
-  the length), an Equal Earth overview on the flat map, the mouse position, a card tied to a clicked point
+  panels, a canvas timeline (orange band of up to 21 days that only moves: a drag moves it, a press elsewhere puts it
+  there; its length with the − + buttons and the days menu; ticks of the area in view, light blue where 250 m exists),
+  a compass (heading, reset north), an Equal Earth overview on the flat map, the mouse position, a card tied to a clicked point
   (value, passages, time series on request; clicking a passage moves the map to its date), and a card for a
   drawn line: its profile on the selected dates (one curve per passage; the hover is a table, a marker follows it
   along the line) or its Hovmöller (distance x time over the whole mission, each passage a row at its own time,
@@ -135,10 +139,15 @@ be resumed here (`claude --resume`).
   with the default environment, so the image runs the versions we test).
 - `deploy/boot.sh` (runs on the EC2 instance at every boot: build, serve behind Caddy, stop after 30 idle
   minutes) and `deploy/wake.py` (the Lambda link: starts the instance and shows a waiting page).
-- `scripts/screenshot.py` (scenarios: open, click, series, line (and line-250m), hovmoller, flat, dateline, phone, wide, zoom), `scripts/bench_server.py`.
+- `scripts/screenshot.py` (scenarios: open, click, series, line (and line-250m), hovmoller, flat, dateline, phone, wide,
+  zoom, compass, timeline, band), `scripts/bench_server.py`, `scripts/release_check.py` (before production: the main
+  paths timed in a browser against a server, each against a limit, our layers apart from the basemap; exit 1 if one
+  is slower or a request fails).
 
 Decisions worth keeping:
-- Dark only for now; basemap GEBCO grayscale from NOAA NCEI tiles (no key), darkened.
+- Dark only for now; basemap: our own GEBCO_2026 shaded relief (`scripts/render_basemap.py`, one 0.6 GB MBTiles file,
+  zooms 0-9, served by `/api/basemap` with SWOT_BASEMAP; the EC2 fetches it once from S3), else NOAA NCEI's GEBCO
+  grayscale tiles; darkened. Its look is #108.
 - The spatial mean of the box (or of each passage) is subtracted by default, otherwise regional sea level
   rise makes everything one color. Colors default to the 2-98 % percentiles, symmetric for anomalies.
 - Longitudes of each passage are unwrapped (`continuous`) so swaths crossing 180 are not torn into quads
