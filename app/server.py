@@ -13,7 +13,7 @@ import time
 import tomllib
 import traceback
 import warnings
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from types import SimpleNamespace
@@ -1053,6 +1053,49 @@ def address_of(request):
     return forwarded.split(",")[0].strip() or (request.client.host if request.client else "")
 
 
+# limits, so one visitor (or a script) cannot hold the server for everyone: lines (how long, how many vertices), the
+# region's NetCDF file, and requests per minute from one address (kept in memory for a minute, never written)
+MAX_LINE, MAX_FINE_LINE, MAX_VERTICES = 3000.0, 500.0, 20  # km at 2 km, km at 250 m, clicks
+MAX_NETCDF_MB = float(os.environ.get("SWOT_MAX_NETCDF_MB", 200))
+
+
+class PerMinute:
+    """At most `n` requests a minute from one address."""
+
+    def __init__(self, n):
+        self.n, self.seen, self.lock = n, defaultdict(deque), threading.Lock()
+
+    def __call__(self, request: Request):
+        now, key = time.monotonic(), address_of(request)
+        with self.lock:
+            q = self.seen[key]
+            while q and now - q[0] > 60:
+                q.popleft()
+            if len(q) >= self.n:
+                raise HTTPException(429, "Too many requests from here: wait a minute")
+            q.append(now)
+            if len(self.seen) > 10000:  # forget the quiet ones
+                for k in [k for k, v in self.seen.items() if not v or now - v[-1] > 60]:
+                    del self.seen[k]
+
+
+HEAVY = PerMinute(int(os.environ.get("SWOT_HEAVY_PER_MINUTE", 30)))  # series, lines, Hovmöllers, NetCDF files
+EVENTS_PER_MINUTE = PerMinute(120)
+
+
+def line_points(points, step):
+    """A polyline's vertices ("lon,lat;lon,lat;..."), refused if it has too many or is too long for its step."""
+    lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
+    if len(lon) > MAX_VERTICES:
+        raise HTTPException(413, f"Lines take up to {MAX_VERTICES} points: draw a simpler one")
+    v = unit(lon, lat)
+    length = np.arccos(np.clip((v[:-1] * v[1:]).sum(-1), -1, 1)).sum() * swot_view.EARTH_RADIUS
+    most = MAX_FINE_LINE if step < FINE else MAX_LINE
+    if length > most:
+        raise HTTPException(413, f"Lines {'at 250 m ' if step < FINE else ''}take up to {most:g} km: draw a shorter one")
+    return lon, lat
+
+
 DEBUG_DIR = os.environ.get("SWOT_DEBUG_DIR")  # a test server's: what pages opened with ?debug=1 report of the map
 
 
@@ -1073,7 +1116,9 @@ async def event(request: Request):
     """One event from the page, with what it says of the view (only the fields kept), the time, the visitor of the
     day and the country; nothing else of the request is kept."""
     try:
-        body = await request.json()
+        EVENTS_PER_MINUTE(request)
+        raw = await request.body()
+        body = json.loads(raw) if len(raw) <= 4096 else {}  # an event is a few hundred bytes
     except Exception:
         body = {}
     if TELEMETRY and isinstance(body, dict) and body.get("event") in EVENTS:
@@ -1526,13 +1571,13 @@ def detail_profile(lon, lat, mode, start, days, variable, data):
     return out
 
 
-@app.get("/api/transect")
+@app.get("/api/transect", dependencies=[Depends(HEAVY)])
 def transect(points: str, mode: str = "box", step: float = 2.0, start: str = None, days: int = 1, variable: str = None,
              data=Depends(view)):
     """Values along a polyline ("lon,lat;lon,lat;..."), every `step` km (2: the L3 grid) along great circles,
     one curve per passage that has any, with the time of the line each value comes from (ms) and the time of
     the line at its middle point. Below FINE km (250 m), from the detail store."""
-    lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
+    lon, lat = line_points(points, step)
     fine = step < FINE and has_detail(variable)
     lon, lat, dist, step = along_line(lon, lat, max(step, 0.25 if fine else 0.5))
     if fine:
@@ -1556,7 +1601,7 @@ def transect(points: str, mode: str = "box", step: float = 2.0, start: str = Non
                 step=round(float(step), 3), passages=sorted(passages, key=lambda q: q["time"]))
 
 
-@app.get("/api/hovmoller")
+@app.get("/api/hovmoller", dependencies=[Depends(HEAVY)])
 def hovmoller(points: str, variable: str, step: float = 2.0):
     """A polyline's values over the whole mission: for each passage that crosses it, the values of its nearest
     pixels within 1.5 km (as /api/transect), on the points every `step` km, and the time of its line at the middle.
@@ -1566,7 +1611,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
     fine = step < FINE and has_detail(variable)
     product, src = (DETAIL_PRODUCT, detail) if fine else (PRODUCT, base)
     ds, index, var, radius = src.ds, src.index, product["variables"][variable], FINE_RADIUS if fine else 1.5
-    lon, lat = np.array([p.split(",") for p in points.split(";")], float).T
+    lon, lat = line_points(points, step)
     lon, lat, dist, step = along_line(lon, lat, max(step, 0.25 if fine else 0.5))
     if fine and dist[-1] > FINE_LENGTH:
         raise HTTPException(413, f"At 250 m, the Hovmöller takes lines up to {FINE_LENGTH:g} km: draw a shorter one")
@@ -1674,7 +1719,7 @@ def detail_series(lon, lat, variable, radius):
     return dict(time=(t[order].astype("datetime64[ms]").astype("int64")).tolist(), value=means[keep][order].round(4).tolist())
 
 
-@app.get("/api/series")
+@app.get("/api/series", dependencies=[Depends(HEAVY)])
 def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool = False):
     """The mean around a point, per passage: within `radius` km, or (`fine`) of the detail store's 250 m pixels."""
     if fine:
@@ -1720,7 +1765,7 @@ def line_dataset(result, var):
 FINE_SERIES_RADIUS = 1.0  # km: the 250 m series' circle (~50 pixels)
 
 
-@app.get("/api/series.nc")
+@app.get("/api/series.nc", dependencies=[Depends(HEAVY)])
 def series_nc(lon: float, lat: float, variable: str, radius: float = 5):
     """The series at a point, and with a detail store, its 250 m series within FINE_SERIES_RADIUS (time_250m)."""
     s = series(lon, lat, variable, radius)
@@ -1738,14 +1783,14 @@ def series_nc(lon: float, lat: float, variable: str, radius: float = 5):
     return as_netcdf(out, "swot_series")
 
 
-@app.get("/api/transect.nc")
+@app.get("/api/transect.nc", dependencies=[Depends(HEAVY)])
 def transect_nc(points: str, variable: str, mode: str = "box", step: float = 2.0, start: str = None, days: int = 1,
                 data=Depends(view)):
     return as_netcdf(line_dataset(transect(points, mode, step, start, days, variable, data), VARIABLES[variable]),
                      "swot_profile")
 
 
-@app.get("/api/hovmoller.nc")
+@app.get("/api/hovmoller.nc", dependencies=[Depends(HEAVY)])
 def hovmoller_nc(points: str, variable: str, step: float = 2.0):
     return as_netcdf(line_dataset(hovmoller(points, variable, step), VARIABLES[variable]), "swot_hovmoller")
 
@@ -1790,7 +1835,7 @@ def line_code(points: str, variable: str, step: float = 2.0, start: str = None, 
                                             cal="here" if var.calibrated else None))
 
 
-@app.get("/api/netcdf")
+@app.get("/api/netcdf", dependencies=[Depends(HEAVY)])
 def netcdf(variable: str, data=Depends(view)):
     """The view's passages as a file: the values as the map shows them (nothing subtracted), named by the variable,
     with their positions and line times, and attributes saying what they are made of."""
@@ -1798,6 +1843,10 @@ def netcdf(variable: str, data=Depends(view)):
         raise HTTPException(404)
     if isinstance(data, Overview):
         raise HTTPException(413, "The whole cycle is too big for one file: select a region")
+    megabytes = data.raw.size * 16 / 1e6  # the values, latitude, longitude (float32) and line times
+    if megabytes > MAX_NETCDF_MB:
+        raise HTTPException(413, f"This view would be a ~{megabytes:.0f} MB file (at most {MAX_NETCDF_MB:g} MB): "
+                                 "select a smaller region or fewer days")
     var = VARIABLES[variable]
     made = " + ".join(var.names) + (" - calibration (bias + slope x cross / 60 of each pixel's side)" if var.calibrated else "")
     kept = (f"; where {var.flag} is 0" if var.flag else "") + (f"; on surface classes {list(var.surface)} of {SURFACE}"

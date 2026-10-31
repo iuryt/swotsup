@@ -1026,3 +1026,38 @@ def test_basemap_tiles_from_the_mbtiles_file(store_path, tmp_path, monkeypatch):
     c = TestClient(server.app)
     assert c.get("/api/basemap/2/1/0.webp").content == b"north" and c.get("/api/basemap/2/1/3.webp").content == b"south"
     assert c.get("/api/basemap/2/2/2.webp").status_code == 404 and c.get("/api/info").json()["basemap"]
+
+
+def test_limits_keep_one_visitor_from_holding_the_server(client, monkeypatch):
+    """Lines with too many points, or too long for their step, are refused (413) before anything is read; so is a
+    region whose NetCDF file would pass SWOT_MAX_NETCDF_MB; past HEAVY's requests a minute from one address, 429."""
+    import server
+
+    view = PASS_7 | dict(mode="none")
+    many = ";".join(f"{30 + k * 0.01},{k * 0.01}" for k in range(server.MAX_VERTICES + 1))
+    r = client.get("/api/transect", params=view | dict(points=many))
+    assert r.status_code == 413 and "points" in r.json()["detail"]
+    long = "0,0;40,0"  # ~4450 km
+    assert client.get("/api/hovmoller", params=dict(points=long, variable="ssha_unfiltered")).status_code == 413
+    assert client.get("/api/transect", params=view | dict(points="30,0;35,0")).status_code == 200  # ~556 km at 2 km
+    assert client.get("/api/transect", params=view | dict(points="30,0;35,0", step=0.25)).status_code == 413
+    monkeypatch.setattr(server, "MAX_NETCDF_MB", 0.001)
+    monkeypatch.setattr(server, "NETCDF", True)
+    r = client.get("/api/netcdf", params=PASS_7)
+    assert r.status_code == 413 and "MB" in r.json()["detail"]
+    monkeypatch.setattr(server.HEAVY, "n", 2)
+    server.HEAVY.seen.clear()
+    codes = [client.get("/api/series", params=dict(lon=30, lat=0, variable="ssha_unfiltered")).status_code for _ in range(3)]
+    assert codes == [200, 200, 429]
+
+
+def test_telemetry_keeps_small_events_only(client, monkeypatch):
+    """An event is recorded; a body bigger than an event (4 kB) is not."""
+    import server
+
+    kept = []
+    monkeypatch.setattr(server, "TELEMETRY", "x")
+    monkeypatch.setattr(server, "record", lambda kind, row: kept.append(row))
+    client.post("/api/event", json=dict(event="open", session="s"))
+    client.post("/api/event", json=dict(event="open", session="s" * 5000))
+    assert len(kept) == 1
