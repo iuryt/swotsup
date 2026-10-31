@@ -163,29 +163,28 @@
 
   <dialog id="about-dialog" class="panel">
     <header><h2>About SWOT's Up</h2><button class="ghost close"><i data-lucide="x"></i></button></header>
-    <p>SWOT maps sea surface height in two ~60 km swaths on each side of its track. This is the AVISO/DUACS
-      <b>Level-3 Low Rate SSH, v3.0 Basic</b> product, on a 2 km grid: <span id="about-coverage"></span>.</p>
-    <p>AVISO distributes one NetCDF file per pass. Here the whole mission is a single
-      <a href="https://icechunk.io" target="_blank">IceChunk</a> store, cut in chunks of one passage by ~1000 km of
-      track, so a region reads only the chunks that cross it, from anywhere, with icechunk and xarray.</p>
-    <table>
-      <tr><th>Subset, from AWS us-east-1</th><th>This store</th><th>Downloading from AVISO</th></tr>
-      <tr><td>Gulf Stream 2°×2°, 3 weeks</td><td>2.7 s</td><td>17 s</td></tr>
-      <tr><td>Indian Ocean 10°×10°, 3 weeks</td><td>3.3 s</td><td>40 s</td></tr>
-      <tr><td>Across 180°, 20°×10°, 3 weeks</td><td>3.9 s</td><td>103 s</td></tr>
-      <tr><td>Gulf Stream 2°×2°, whole mission</td><td>7.4 s</td><td>654 s</td></tr>
-    </table>
+    <p>SWOT maps sea surface height in two ~60 km swaths on each side of its track. This is the NASA/CNES
+      <b>Level-2 KaRIn Low Rate SSH, version D</b>: the Expert product on a 2 km grid and, zoomed in, the Unsmoothed one at
+      250 m: <span id="about-coverage"></span>.</p>
+    <p>Each product is distributed as one file per passage. Here each is a single
+      <a href="https://icechunk.io" target="_blank">IceChunk</a> dataset on Arraylake, versioned, cut in chunks of one
+      passage by ~1000 km of track, so a region and dates read only the chunks that cross them, with icechunk and xarray
+      (the Code button gives the lines). Two years of the Gulf Stream (80–50°W, 30–45°N) are 2,031 files (~66 GB) to
+      find and download, or 26 s to read 1 GB of SSHA from the dataset (from a university cluster).</p>
+    <p>By default the map shows SSHA with the crossover correction, on the DTU25 mean sea surface, minus swot_cloud's
+      cross-track calibration (a bias and a slope per line and side, fitted to KaRIn crossovers and the nadir
+      altimeters after removing the DUACS L4; experimental), without the pixels swot_cloud's editing flag removes (rain
+      cells, sea ice, ships; at 250 m only rain and sea ice for now). Each can be switched off in Display. Zoomed out,
+      the whole globe comes from daily maps of the same product, summed over the chosen days.</p>
     <h3>Data and credits</h3>
-    <p class="hint">"The SWOT L3_LR_SSH product, derived from the L2 SWOT KaRIn low rate ocean data products (NASA/JPL
-      and CNES), is produced and made freely available by AVISO and DUACS teams as part of the DESMOS Science Team
-      project." AVISO/DUACS, 2024. SWOT Level-3 KaRIn Low Rate SSH Basic (v3.0) [Data set]. CNES.
-      <a href="https://doi.org/10.24400/527896/A01-2023.017" target="_blank">doi:10.24400/527896/A01-2023.017</a>.
-      Licensed by CNES under the <a href="https://www.aviso.altimetry.fr/fileadmin/documents/data/License_Aviso.pdf"
-      target="_blank">AVISO License</a>.</p>
-    <p class="hint">Changes made here: the files are combined into one store, descending passes are turned to run
-      south to north, and along/cross-track distances and per-pass geometry are added. The map shows averages of the
-      passages on screen pixels, by default minus the mean over the region; time series are means within a radius.
-      This tool is not endorsed by CNES, AVISO or DUACS.</p>
+    <p class="hint">SWOT Project, 2023. SWOT Level-2 KaRIn Low Rate SSH Expert (D) [Data set]. CNES.
+      <a href="https://doi.org/10.24400/527896/A01-2023.015" target="_blank">doi:10.24400/527896/A01-2023.015</a>;
+      Unsmoothed (D), <a href="https://doi.org/10.24400/527896/A01-2023.016" target="_blank">doi:10.24400/527896/A01-2023.016</a>.
+      Data from NASA/JPL and CNES, through PO.DAAC.</p>
+    <p class="hint">Changes made here: the files are combined into one dataset, descending passes are turned to run
+      south to north, along/cross-track distances and per-pass geometry are added, and the corrections above are stored
+      as variables (swot_cloud). The map shows averages of the passages on screen pixels; time series are means within
+      a radius. This tool is not endorsed by NASA, JPL or CNES.</p>
     <p class="hint" id="dtu-credit">The mean sea surface, by default: DTU25MSS Mean Sea Surface, DTU Space (Nilsson,
       Andersen et al., ESSD 18, 5027, 2026), <a href="https://doi.org/10.11583/DTU.29412275" target="_blank">doi:10.11583/DTU.29412275</a>,
       licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank">CC BY 4.0</a>; the maps,
@@ -193,8 +192,9 @@
     <p class="hint">To understand how the explorer is used, we record anonymous usage: what is viewed, and the country
       the connection comes from, found from its address, which we do not keep. No cookies and no personal information.
       Countries: <a href="https://db-ip.com" target="_blank">IP Geolocation by DB-IP</a> (CC BY 4.0).</p>
-    <p class="hint">Version <span id="version"></span>. Bathymetry: GEBCO Compilation Group, served by NOAA NCEI. Code:
-      <a href="https://github.com/iuryt/swot_cloud" target="_blank">github.com/iuryt/swot_cloud</a>.</p>
+    <p class="hint">Version <span id="version"></span>. Bathymetry: GEBCO Compilation Group (2026) GEBCO_2026 Grid,
+      <a href="https://doi.org/10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa" target="_blank">doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa</a>.
+      Datasets: <a href="https://github.com/iuryt/swot_cloud" target="_blank">github.com/iuryt/swot_cloud</a>.</p>
   </dialog>
 
   <div id="toast" class="panel hidden"></div>

@@ -301,6 +301,12 @@ with sync_playwright() as p:
                 print("phone band moved:", phone.inner_text("#selection"), flush=True)
                 phone.screenshot(path=f"{prefix}-phone-time.png")
                 print(f"{prefix}-phone-series/menu/drawing/line/time.png", flush=True)
+        elif scenario == "about":  # the About dialog
+            page.click("#about-button")
+            page.wait_for_selector("#about-dialog[open]")
+            page.wait_for_timeout(500)
+            shot("about")
+            page.click("#about-dialog .close")
         elif scenario == "band":  # the timeline's band: a drag moves it (same length); a press elsewhere puts it there
             box = page.query_selector("#timeline").bounding_box()
             before = page.inner_text("#selection") + " " + page.inner_text("#days-text")
