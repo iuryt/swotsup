@@ -120,8 +120,9 @@ def shifted_fine_store_path(fine_store_path, tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def maps_paths(dtu_store_path, tmp_path_factory):
-    """dtu_store_path as L2 Expert for the daily maps: with ssha_karin_2_xover (0.0002 per km of along + 0.05 x cycle)
-    and the surface class per pass (continental water, 2, on the first 200 km of along, 3 m higher there); and the
+    """dtu_store_path as L2 Expert for the daily maps: with ssha_karin_2_xover (0.0002 per km of along + 0.05 x cycle),
+    the surface class per pass (continental water, 2, on the first 200 km of along, 3 m higher there) and the editing
+    flag (2 on along 300-400 km east of nadir, 0 elsewhere); and the
     maps of 3-6 Jan 2024 built from it by swot_cloud (`maps.build_days`). (expert, maps) paths, built once."""
     from swot_cloud import maps
 
@@ -133,8 +134,12 @@ def maps_paths(dtu_store_path, tmp_path_factory):
     surface = (2 * water).astype("int8").transpose("pass_number", "along", "cross").reset_coords(drop=True)
     xover = 0.0002 * ds.along + 0.05 * ds.cycle + 3.0 * (ds.along < 200) + 0 * ds.cross
     xover = xover.astype("float32").transpose("time", "along", "cross").reset_coords(drop=True).drop_vars("time")
-    xr.Dataset({"ssha_karin_2_xover": xover, "ancillary_surface_classification_flag": surface}).to_zarr(
-        session.store, mode="a", consolidated=False)
+    # the editing flag (bit 2, "noisy SSHA") on a band: along 300-400 km, east of nadir; NaN where SSHA is
+    band = (ds.along >= 300) & (ds.along < 400) & (ds.cross > 0) & (ds.time == ds.time)
+    edit = (2.0 * band).where(np.isfinite(xover)).astype("float32").transpose("time", "along", "cross")
+    edit = edit.reset_coords(drop=True).drop_vars("time")
+    xr.Dataset({"ssha_karin_2_xover": xover, "ancillary_surface_classification_flag": surface,
+                "ssha_edit_flag": edit}).to_zarr(session.store, mode="a", consolidated=False)
     session.commit("as Expert")
     path = str(tmp_path_factory.mktemp("maps"))
     session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
