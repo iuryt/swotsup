@@ -154,6 +154,7 @@ async function loadData() {
     state.code = d.code;
     if ($("#download")) $("#download").href = `/api/netcdf?${state.view}`;  // absent where SWOT_NETCDF=0
     setColors();
+    fitColors.at = null;  // new data: the screen's colors again, the map moved or not (#110)
     fitColors();
     const after = state.afterLoad;  // a link's point and line, once its view is in
     state.afterLoad = null;
