@@ -116,3 +116,31 @@ def shifted_fine_store_path(fine_store_path, tmp_path_factory):
     xr.Dataset({"cross_shift": shift.reset_coords(drop=True).drop_vars("time")}).to_zarr(session.store, mode="a", consolidated=False)
     session.commit("cross_shift")
     return str(path)
+
+
+@pytest.fixture(scope="session")
+def maps_paths(dtu_store_path, tmp_path_factory):
+    """dtu_store_path as L2 Expert for the daily maps: with ssha_karin_2_xover (0.0002 per km of along + 0.05 x cycle)
+    and the surface class per pass (continental water, 2, on the first 200 km of along, 3 m higher there); and the
+    maps of 3-6 Jan 2024 built from it by swot_cloud (`maps.build_days`). (expert, maps) paths, built once."""
+    from swot_cloud import maps
+
+    expert = tmp_path_factory.mktemp("expert") / "store"
+    shutil.copytree(dtu_store_path, expert)
+    session = icechunk.Repository.open(icechunk.local_filesystem_storage(str(expert))).writable_session("main")
+    ds = xr.open_zarr(session.store, consolidated=False, chunks=None)
+    water = (ds.along < 200) & (ds.pass_number > 0) & (ds.cross == ds.cross)  # (along, pass_number, cross)
+    surface = (2 * water).astype("int8").transpose("pass_number", "along", "cross").reset_coords(drop=True)
+    xover = 0.0002 * ds.along + 0.05 * ds.cycle + 3.0 * (ds.along < 200) + 0 * ds.cross
+    xover = xover.astype("float32").transpose("time", "along", "cross").reset_coords(drop=True).drop_vars("time")
+    xr.Dataset({"ssha_karin_2_xover": xover, "ancillary_surface_classification_flag": surface}).to_zarr(
+        session.store, mode="a", consolidated=False)
+    session.commit("as Expert")
+    path = str(tmp_path_factory.mktemp("maps"))
+    session = icechunk.Repository.create(icechunk.local_filesystem_storage(path)).writable_session("main")
+    ds = xr.open_zarr(icechunk.Repository.open(icechunk.local_filesystem_storage(str(expert))).readonly_session("main").store,
+                      consolidated=False, chunks=None)
+    first = int((np.datetime64("2024-01-03") - maps.DAY0) / np.timedelta64(1, "D"))
+    maps.build_days(ds, session.store, range(first, first + 4), zoom=2, snapshot="test")  # zooms 0-2: light
+    session.commit("maps")
+    return str(expert), path

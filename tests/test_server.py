@@ -931,3 +931,51 @@ def test_region_netcdf_has_the_values_as_shown(dtu_store_path, shifted_fine_stor
             assert "DTU25" in nc.attrs["mean_sea_surface"] and "calibration" in nc[variable].attrs["comment"]
         assert nc[variable].shape == want.shape and np.isfinite(want).sum() > 1000
         np.testing.assert_allclose(nc[variable].values, want, atol=1e-4)
+
+
+def maps_server(maps_paths, monkeypatch):
+    """The server on the fake Expert with its daily maps (SWOT_RASTERS), and the maps' variable (SSHA with the
+    crossover correction, DTU25 and the calibration) on the open ocean and with continental water."""
+    monkeypatch.setenv("SWOT_STORE", maps_paths[0])
+    monkeypatch.setenv("SWOT_RASTERS", maps_paths[1])
+    sys.modules.pop("server", None)
+    import server
+
+    for key, surface, cal in (("final", (0,), True), ("final_water", None, True), ("uncalibrated", (0,), False)):
+        monkeypatch.setitem(server.VARIABLES, key, server.Variable(key, ["ssha_karin_2_xover", server.DTU],
+                                                                   surface=surface, calibrated=cal))
+    monkeypatch.setattr(server, "RASTER_VARIABLES", server.raster_variables(server.VARIABLES))
+    return server
+
+
+def test_maps_draw_what_the_passages_draw(maps_paths, monkeypatch):
+    """The whole globe on 3-6 Jan from swot_cloud's daily maps draws what the same view read from the passages draws
+    (tiles of the maps' finest zoom, 2 here: a mean of cells against cells as points): the same pixels, the same values,
+    a tile alone or from the window summed at every zoom; on the open ocean, and with the continental water (3 m
+    higher), which adds pixels. Only the maps' own product comes from them (not SSHA without the calibration)."""
+    server = maps_server(maps_paths, monkeypatch)
+    assert server.RASTER_VARIABLES == {"final", "final_water"} and server.RASTERS.covers("2024-01-03", 4)
+    assert not server.RASTERS.covers("2024-01-02", 2)
+    fx, compared = (30.1 + 180) / 360 * 4, {"final": 0, "final_water": 0}
+    for lat in (2.0, -9.0):  # the open ocean; the south end, continental water only
+        fy = (1 - np.log(np.tan(np.pi / 4 + np.deg2rad(lat) / 2)) / np.pi) / 2 * 4
+        ranges, shown = server.tile_ranges(2, int(fx), int(fy)), {}
+        for variable in ("final", "final_water"):
+            view = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable=variable)
+            assert server.from_rasters(*view.values())
+            maps, memory = server.RasterView(view, variable), server.load(**view)[0]
+            for levels in (None, server.RASTERS.pyramid(view["start"], view["days"], water=variable == "final_water")):
+                maps.levels = levels
+                a, b = maps.mean_on("none", *ranges, 256, 256), memory.mean_on("none", *ranges, 256, 256)
+                both = np.isfinite(a) & np.isfinite(b)
+                assert (np.isfinite(a) == np.isfinite(b)).mean() > 0.99, (variable, lat)
+                assert not both.any() or np.median(np.abs(a - b)[both]) <= 0.005, (variable, lat)
+                compared[variable] += both.sum()
+            shown[variable] = np.isfinite(a).sum()
+        assert shown["final_water"] > shown["final"], lat
+    assert min(compared.values()) > 60
+    # coarser, the window summed in the server (2 x 2 blocks) is what swot_cloud's coarser zooms give
+    levels = server.RASTERS.pyramid("2024-01-03", 4)
+    for z in (0, 1):
+        m = server.RASTERS.mean(z, slice(None), slice(None), "2024-01-03", 4)
+        np.testing.assert_allclose(levels[z][0], m, atol=1e-3)  # each zoom rounded to mm in the maps

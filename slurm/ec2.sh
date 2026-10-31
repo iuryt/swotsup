@@ -19,16 +19,15 @@
 # when idle as the other), with the production's role and security group; its usage and the map's events of pages
 # opened with ?debug=1 go to telemetry/swot-explorer-dev/ every minute.
 #   STAGE=dev sbatch -o logs/ec2-%j.out slurm/ec2.sh up|update|status|start|down
-# Both copy the daily rasters (app/rasters.py) from deploy/swot_explorer/rasters/ to their disk at every boot.
+# Both read the daily maps (app/rasters.py) from swot_cloud's Arraylake repository.
 #SBATCH -p batch -c 1 --mem 2G -t 30
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
 
 STAGE=${STAGE:-prod}
-NAME=swot-explorer WAKE=swot-explorer-wake TYPE=${TYPE:-c7i.2xlarge} BUCKET=iuryt-shared-east DISK=50
+NAME=swot-explorer WAKE=swot-explorer-wake TYPE=${TYPE:-c7i.2xlarge} BUCKET=iuryt-shared-east
 STORE=icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2 CODE=deploy/swot_explorer/app.tar.gz
 TELEMETRY=telemetry/swot-explorer  # where the instance writes the anonymous usage (write only)
-RASTERS=deploy/swot_explorer/rasters  # the daily rasters, copied to the instances' disks
 ROLE=$NAME  # the production's role (and security group), the dev instance's too
 if [ "$STAGE" = dev ]; then
   NAME=swot-explorer-dev CODE=deploy/swot_explorer/dev/app.tar.gz TELEMETRY=telemetry/swot-explorer-dev
@@ -51,13 +50,13 @@ send_code() {  # build context (Dockerfile at the root), the boot script, the li
   tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh -C ../logs public_url stage
   aws s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
-# what the instances may read: the S3 store, the app packages (both stages') and rasters, and the secrets under
+# what the instances may read: the S3 store, the app packages (both stages'), and the secrets under
 # /swot-explorer/ in SSM (the Arraylake token, put there by the user in the console); and write: the anonymous usage
 # (both stages'), nothing else
 INSTANCE_POLICY="
     {\"Effect\":\"Allow\",\"Action\":\"s3:GetObject\",\"Resource\":[\"arn:aws:s3:::$BUCKET/$STORE/*\",\"arn:aws:s3:::$BUCKET/deploy/swot_explorer/*\"]},
     {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::$BUCKET\",
-     \"Condition\":{\"StringLike\":{\"s3:prefix\":[\"$STORE/*\",\"$RASTERS/*\",\"$RASTERS\"]}}},
+     \"Condition\":{\"StringLike\":{\"s3:prefix\":[\"$STORE/*\"]}}},
     {\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameter\",\"Resource\":\"arn:aws:ssm:us-east-1:*:parameter/swot-explorer/*\"},
     {\"Effect\":\"Allow\",\"Action\":\"s3:PutObject\",\"Resource\":\"arn:aws:s3:::$BUCKET/telemetry/swot-explorer*\"},
     {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::$BUCKET\",
@@ -103,7 +102,7 @@ EOF
   aws ec2 run-instances --image-id "$ami" --instance-type "$TYPE" --security-group-ids "$sg" \
     --iam-instance-profile Name=$ROLE --user-data file://logs/ec2-user-data.sh \
     --metadata-options HttpTokens=required,HttpPutResponseHopLimit=2 \
-    --block-device-mappings "DeviceName=/dev/xvda,Ebs={VolumeSize=$DISK,VolumeType=gp3}" \
+    --block-device-mappings 'DeviceName=/dev/xvda,Ebs={VolumeSize=30,VolumeType=gp3}' \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$NAME}]" --query 'Instances[0].InstanceId' --output text
   aws ec2 wait instance-running --instance-ids "$(instance)"
   # the fixed address, there long before boot.sh asks for it (installing docker comes first)
@@ -142,11 +141,6 @@ update)
     echo "production gets main as committed: on $(git branch --show-current), test with STAGE=dev"; exit 1
   fi
   send_code
-  # the disk at DISK GB at least (the rasters need ~15 GB more than the 30 the production started with): grown while
-  # it runs, the file system then at the boot (deploy/boot.sh)
-  vol=$(aws ec2 describe-instances --instance-ids "$(instance)" --query 'Reservations[0].Instances[0].BlockDeviceMappings[0].Ebs.VolumeId' --output text)
-  size=$(aws ec2 describe-volumes --volume-ids "$vol" --query 'Volumes[0].Size' --output text)
-  [ "$size" -ge "$DISK" ] || aws ec2 modify-volume --volume-id "$vol" --size "$DISK" --query 'VolumeModification.ModificationState' --output text
   aws iam put-role-policy --role-name $ROLE --policy-name main --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[$INSTANCE_POLICY]}"
   if [ "$STAGE" = prod ]; then
     (cd deploy && pixi exec --spec python python -m zipfile -c ../logs/wake.zip wake.py)
