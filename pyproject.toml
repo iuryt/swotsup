@@ -2,7 +2,7 @@
 authors = [{name = "iury Simoes-Sousa", email = "iuryt@pm.me"}]
 name = "swot-explorer"
 requires-python = ">= 3.11"
-version = "0.22.0"
+version = "0.23.0"
 license = "MIT"
 description = "SWOT Sea Surface Height Explorer: a web map over the SWOT L3 LR SSH IceChunk store."
 
@@ -39,10 +39,11 @@ pcodec = "*"  # the L2 stores' numbers (numcodecs.zarr3.PCodec); on PyPI only
 [tool.pixi.feature.dev.dependencies]
 httpx = "*"  # fastapi's TestClient
 pytest = "*"
+dask-core = "*"  # swot_cloud.maps (the tests build daily maps with it)
 
 [tool.pixi.feature.dev.pypi-dependencies]
 playwright = "*"  # screenshots of the app in a headless browser (scripts/screenshot.py)
-swot_cloud = { path = "../swot_cloud", editable = true }  # tests build small stores with it
+swot_cloud = { path = "../swot_cloud", editable = true }  # tests build small stores (and daily maps) with it
 
 [tool.pixi.tasks]
 test = "pytest -q tests"
