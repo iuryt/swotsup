@@ -122,3 +122,4 @@ mutate app/server.py 's/    return {k for k, v in variables.items() if v.names\[
 mutate app/server.py 's/                v = np.where(get(EDIT).reshape(v.shape) > 0, np.nan, v)/                v = v/' "the editing flag not applied"
 mutate app/server.py 's/    if name == EDIT:  # bits: the nearest pixel.s, not a mean of them/    if False:/' "the editing flag interpolated at 250 m"
 mutate app/swot_view.py 's/ssha = ssha.where(sub.ssha_edit_flag == 0)/ssha = ssha/' "the copied code without the editing flag"
+mutate app/server.py 's/                                (z, x, 2\*\*z - 1 - y)).fetchone()  # MBTiles rows count from the south/                                (z, x, y)).fetchone()/' "basemap tiles upside down"
