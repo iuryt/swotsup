@@ -123,3 +123,8 @@ mutate app/server.py 's/                v = np.where(get(EDIT).reshape(v.shape) 
 mutate app/server.py 's/    if name == EDIT:  # bits: the nearest pixel.s, not a mean of them/    if False:/' "the editing flag interpolated at 250 m"
 mutate app/swot_view.py 's/ssha = ssha.where(sub.ssha_edit_flag == 0)/ssha = ssha/' "the copied code without the editing flag"
 mutate app/server.py 's/                                (z, x, 2\*\*z - 1 - y)).fetchone()  # MBTiles rows count from the south/                                (z, x, y)).fetchone()/' "basemap tiles upside down"
+mutate app/server.py 's/    if len(lon) > MAX_VERTICES:/    if False:/' "lines with any number of points"
+mutate app/server.py 's/    most = MAX_FINE_LINE if step < FINE else MAX_LINE/    most = MAX_LINE/' "250 m lines as long as 2 km ones"
+mutate app/server.py 's/    if megabytes > MAX_NETCDF_MB:/    if False:/' "NetCDF files of any size"
+mutate app/server.py 's/            if len(q) >= self.n:/            if False:/' "no requests-per-minute limit"
+mutate app/server.py 's/        body = json.loads(raw) if len(raw) <= 4096 else {}  # an event is a few hundred bytes/        body = json.loads(raw)/' "telemetry events of any size"
