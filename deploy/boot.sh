@@ -43,12 +43,17 @@ for month in $(date +%Y-%m) $(date -d "-1 month" +%Y-%m); do
   curl -sfL "https://download.db-ip.com/free/dbip-country-lite-$month.mmdb.gz" | gunzip > $geo.new && mv $geo.new $geo && break
 done
 chown 1000:1000 $geo 2>/dev/null
+# the page's basemap (GEBCO_2026 relief, one 0.6 GB file: scripts/render_basemap.py), kept with the cache; fetched once
+basemap=/opt/cache/gebco2026.mbtiles
+[ -s $basemap ] || aws s3 cp --only-show-errors s3://iuryt-shared-east/deploy/swot_explorer/gebco2026.mbtiles $basemap.new \
+  && mv $basemap.new $basemap
+chown 1000:1000 $basemap 2>/dev/null
 # downloads: of L2 (NASA/JPL, CNES), not of L3 (the AVISO License does not allow redistributing it unchanged)
 netcdf=$([ -n "$token" ] && echo 1 || echo 0)
 docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=$netcdf -e SWOT_CACHE_GB=6 \
   -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
   -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" -v /opt/telemetry:/telemetry -e SWOT_TELEMETRY_DIR=/telemetry \
-  -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb "${rasters[@]}" "${debug[@]}" "${store[@]}" swot
+  -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb -e SWOT_BASEMAP=/cache/gebco2026.mbtiles "${rasters[@]}" "${debug[@]}" "${store[@]}" swot
 set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860

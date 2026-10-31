@@ -282,7 +282,7 @@ with sync_playwright() as p:
                 for button in ("#next", "#next", "#more", "#more"):  # two steps later, then 3 days
                     phone.tap(button)
                     phone.wait_for_timeout(150)
-                box = phone.query_selector("#timeline").bounding_box()  # a new band, dragged away from this one
+                box = phone.query_selector("#timeline").bounding_box()  # pressed past the band: it jumps there, same length
                 start = phone.evaluate("timeline.x(timeline.end)") + 60
                 phone.mouse.move(box["x"] + start, box["y"] + 20)
                 phone.mouse.down()
@@ -301,6 +301,27 @@ with sync_playwright() as p:
                 print("phone band moved:", phone.inner_text("#selection"), flush=True)
                 phone.screenshot(path=f"{prefix}-phone-time.png")
                 print(f"{prefix}-phone-series/menu/drawing/line/time.png", flush=True)
+        elif scenario == "about":  # the About dialog
+            page.click("#about-button")
+            page.wait_for_selector("#about-dialog[open]")
+            page.wait_for_timeout(500)
+            shot("about")
+            page.click("#about-dialog .close")
+        elif scenario == "band":  # the timeline's band: a drag moves it (same length); a press elsewhere puts it there
+            box = page.query_selector("#timeline").bounding_box()
+            before = page.inner_text("#selection") + " " + page.inner_text("#days-text")
+            mid = page.evaluate("(timeline.x(timeline.start) + timeline.x(timeline.end)) / 2")
+            page.mouse.move(box["x"] + mid, box["y"] + 20)
+            page.mouse.down()
+            page.mouse.move(box["x"] + mid - 80, box["y"] + 20, steps=6)
+            page.mouse.up()
+            moved = page.inner_text("#selection") + " " + page.inner_text("#days-text")
+            page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + 20)
+            jumped = page.inner_text("#selection") + " " + page.inner_text("#days-text")
+            print("band:", before, "| dragged:", moved, "| clicked at 30 %:", jumped, flush=True)
+            page.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
+            page.wait_for_timeout(3000)
+            shot("band")
         elif scenario == "compass":  # the map turned and tilted: the needle follows; a click shows the heading, the
             # reset brings north back; then the same on a phone (the compass among the icons bottom left)
             page.evaluate("map.jumpTo({bearing: 35, pitch: 30})")
