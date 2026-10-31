@@ -99,8 +99,19 @@ h1 { font-size: 16px; margin: 0; color: var(--title); font-weight: 600; }
   background: var(--panel); color: var(--fg); font-size: 12px; font-variant-numeric: tabular-nums; }
 #coords:empty { display: none; }
 body.globe #overview { display: none; }
-#projection { position: absolute; left: var(--gap); bottom: 128px; background: var(--panel); color: var(--fg);
+#map-buttons { position: absolute; left: var(--gap); bottom: 128px; display: flex; gap: 8px; align-items: stretch; }
+#projection, #compass { background: var(--panel); color: var(--fg);
   border: 1px solid var(--border); box-shadow: 0 4px 10px rgba(0, 0, 0, .4); }
+/* the compass: the needle turns with the map (and leans with its tilt); the heading and a reset beside it */
+#compass-wrap { position: relative; display: flex; }
+#compass { width: 34px; height: 34px; flex: none; align-self: center; padding: 0; justify-content: center;
+  border-radius: 50%; perspective: 60px; }
+#compass svg { width: 24px; height: 24px; transition: transform .1s; }
+#heading { position: absolute; left: calc(100% + 8px); top: 50%; transform: translateY(-50%); padding: 4px 4px 4px 10px;
+  white-space: nowrap; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg); }
+#reset-north { padding: 4px; }
+#heading.hidden { display: none; }
+#heading-text { font-variant-numeric: tabular-nums; }
 .maplibregl-ctrl-bottom-right { bottom: 160px; }
 
 /* the time series at a point: a card tied to the point by a line */
@@ -219,6 +230,10 @@ button.icon svg { width: 17px; height: 17px; }
     background: var(--panel); box-shadow: 0 4px 10px rgba(0, 0, 0, .4); }
   #tools button.active { background: var(--blue); color: white; border-color: var(--blue); }
   #tools svg { width: 19px; height: 19px; }
+  #tools #compass { border-radius: 50%; }
+  #tools #compass svg { width: 22px; height: 22px; }
+  /* the compass is one of the icons here (moved by app.js) */
+  #tools #heading button { width: 30px; height: 30px; border-radius: 8px; box-shadow: none; background: none; }
   .maplibregl-ctrl-bottom-right { bottom: calc(var(--gap) * 3 + var(--time-h) + var(--legend-h) + 8px); }
 
   /* the point's card and the line's card: sheets across the bottom, above the color bar */

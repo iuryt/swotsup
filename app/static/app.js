@@ -1013,6 +1013,31 @@ function drawSeries(card, curves, radius) {
   seriesLegend(card, curves, radius);
 }
 
+// --- the compass (#91): the needle turns with the map and leans with its tilt; a click shows the heading and a reset
+function setupCompass() {
+  const POINTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  const show = () => {
+    const bearing = (map.getBearing() % 360 + 360) % 360, pitch = map.getPitch();
+    $("#compass svg").style.transform = `rotateX(${pitch}deg) rotateZ(${-bearing}deg)`;
+    $("#heading-text").textContent = `${Math.round(bearing) % 360}° ${POINTS[Math.round(bearing / 45) % 8]}`
+      + (pitch >= 0.5 ? ` · tilt ${Math.round(pitch)}°` : "");
+  };
+  // on a phone the compass is one of the icons bottom left
+  const place = () => (narrow() ? $("#tools") : $("#map-buttons")).append($("#compass-wrap"));
+  $("#compass").onclick = (e) => { e.stopPropagation(); show(); $("#heading").classList.toggle("hidden"); };
+  $("#heading").addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", () => $("#heading").classList.add("hidden"));
+  $("#reset-north").onclick = () => {
+    $("#heading").classList.add("hidden");
+    map.easeTo({ bearing: 0, pitch: 0, duration: 600 });
+  };
+  map.on("rotate", show);
+  map.on("pitch", show);
+  addEventListener("resize", place);
+  place();
+  show();
+}
+
 // --- mouse position (and value) in the lower right corner
 function setupCoords() {
   // the value under the mouse: once it rests 150 ms, one request at a time (a newer one cancels it), none while the
@@ -1713,6 +1738,7 @@ async function main() {
     setupLine();
     setupDrawing();
     setupCoords();
+    setupCompass();
     watchDetail();
     watchUnder();
     setupCmap();
