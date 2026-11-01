@@ -6,7 +6,11 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from swot_cloud.store import append
+try:
+    from swot_cloud.store import append
+except ModuleNotFoundError:
+    pytest.exit("the tests build their small stores with swot_cloud: clone github.com/iuryt/swot_cloud next to this "
+                "repository (../swot_cloud)", returncode=4)
 
 
 def fake_l3(path, cycle, pass_id, lon0=30.0, day=None, tilt=0.0, n_lines=200, n_pixels=9):

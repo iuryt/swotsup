@@ -47,8 +47,8 @@ pixi run -e serve serve   # http://localhost:5006; reading the SWOT stores needs
 ```
 
 The tests build small fake stores with [swot_cloud](https://github.com/iuryt/swot_cloud), the code that restructures
-the SWOT files, expected next to this repository (`../swot_cloud`); it will be public with its paper. Then
-`pixi run test`.
+the SWOT files: clone it next to this repository (`../swot_cloud`), then `pixi run test`. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
 
