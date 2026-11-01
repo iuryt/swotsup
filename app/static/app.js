@@ -155,7 +155,7 @@ async function loadData() {
     state.code = d.code;
     if ($("#download")) $("#download").href = `/api/netcdf?${state.view}`;  // absent where SWOT_NETCDF=0
     setColors();
-    map.once("idle", () => { fitColors.at = null; fitColors(); });
+    map.once("idle", () => { fitColors.at = null; fitColors(true); });
     const after = state.afterLoad;  // a link's point and line, once its view is in
     state.afterLoad = null;
     after?.();
@@ -258,7 +258,7 @@ function setupCmap() {
 // --- robust colors of what is on screen: once the map stops, the median ± 2 x 1.4826 x MAD of the pixels in view;
 // taken if they moved by more than ~15 % of the range (a new range draws the tiles again), so red and blue show at
 // any zoom
-async function fitColors() {
+async function fitColors(always = false) {  // `always`: new dates, whatever the change (#110)
   clearTimeout(fitColors.timer);
   fitColors.timer = setTimeout(async () => {
     if (state.preset === "custom" || !state.data) return;
@@ -273,7 +273,10 @@ async function fitColors() {
     state.screen = r;
     const [lo, hi] = presetLimits();
     // new colors redraw every tile on screen: only for a change worth it (a 25 % move of the limits)
-    if (Math.abs(lo - before[0]) > 0.25 * span || Math.abs(hi - before[1]) > 0.25 * span) { fitColors.at = here; setColors(); }
+    if (always || Math.abs(lo - before[0]) > 0.25 * span || Math.abs(hi - before[1]) > 0.25 * span) {
+      fitColors.at = here;
+      setColors();
+    }
   }, 600);
 }
 
