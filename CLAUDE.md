@@ -157,8 +157,7 @@ Decisions worth keeping:
 
 Work is tracked in the repo's issues. For each issue:
 1. A branch named after it (`12-time-order`), from `main`.
-2. Commits with tests, mutations and screenshots as usual (screenshots into `img/history` from the
-   branch's commits).
+2. Commits with tests and mutations; screenshots into `img/history` (outside git) from the branch's commits.
 3. A PR with "Closes #N": what changed, the test and mutation results, the screenshot paths.
 4. The version goes up in the PR (`pyproject.toml`, semver while in 0.x): a feature bumps the minor
    (0.1.0 -> 0.2.0), a fix the patch (0.2.0 -> 0.2.1); docs-only changes keep it.
@@ -187,7 +186,11 @@ sbatch -o logs/ec2-%j.out slurm/ec2.sh domain   # https://swotsup.org: CloudFron
 
 Screenshots: after every visible change, take them with `slurm/screenshot.sbatch` and give the user their
 paths. `img/history` keeps a dated copy of every version (`<date>_<commit>_app-<scenario>.png`); never
-delete or overwrite anything there.
+delete or overwrite anything there. It is not in git (since 2026-11-01, when it was taken out of the whole history:
+the repository went from 600 MB to 14 MB): `img/history` is a link to `/mnt/maximus/data/iury/swotsup/img-history`;
+names from before then carry the old commit hashes, mapped to the new ones in `../commit-map.txt` beside it (zeros:
+a commit that only added screenshots). Backup of the old history: `/mnt/maximus/data/iury/backups/swotsup-2026-11-01-
+before-history-removal.bundle`.
 
 Gotchas on biomix: files edited on the login node reach the compute nodes over NFS without file events
 (hence polling reload) and with cached sizes for a few seconds (a page loaded right after an edit can come

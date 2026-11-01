@@ -163,7 +163,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# explorer: run logs, screenshots (img/history keeps one per version)
+# explorer: run logs, screenshots (img/history, one per version, is kept outside git: see CLAUDE.md)
 logs/
-img/*
-!img/history/
+img/

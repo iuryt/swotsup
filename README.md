@@ -37,7 +37,6 @@ kept): see [docs/usage-data.md](docs/usage-data.md).
 - `Dockerfile`: the server with the pixi environment `serve` from `pixi.lock`.
 - `deploy/`, `slurm/ec2.sh`: the server on AWS EC2, which sleeps when idle and wakes on a visit.
 - `tests/`: pytest on small fake stores; `tests/mutations.sh` lists injected bugs the tests must catch.
-- `img/history/`: a screenshot of every version.
 
 ## Run
 
