@@ -15,7 +15,7 @@ Products: the server reads **L2** LR SSH: Expert (2 km) as the base and Unsmooth
 product-neutral where it is cheap: product names, variables and the store come from configuration, not from the page.
 
 Hosting: an EC2 test server that sleeps when idle (`slurm/ec2.sh`); compare with a Hugging Face Space and,
-later, Earthmover (Cloudflare R2) storage. Private repo github.com/iuryt/swot_explorer; work is tracked
+later, Earthmover (Cloudflare R2) storage. Repo github.com/iuryt/swotsup (renamed from swot_explorer on 2026-11-01); work is tracked
 in its issues. It started inside a copy of **Where is SWOT?** (github.com/iuryt/whereisswot, the public
 swath-prediction app, untouched); on 2026-10-16 the history was rewritten to keep only the explorer.
 Never push anything to whereisswot.
