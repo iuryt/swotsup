@@ -155,6 +155,13 @@ update)
     echo "$(instance) is not running: it gets the new package at its next start"
   fi
   ;;
+resize)  # another instance type (TYPE=...), e.g. a larger one for a meeting: stop it, change it, start it again
+  id=$(instance)
+  aws ec2 stop-instances --instance-ids "$id" >/dev/null && aws ec2 wait instance-stopped --instance-ids "$id"
+  aws ec2 modify-instance-attribute --instance-id "$id" --instance-type "{\"Value\": \"$TYPE\"}"
+  aws ec2 start-instances --instance-ids "$id" --query 'StartingInstances[0].CurrentState.Name' --output text
+  echo "$id is now $TYPE: back in a few minutes at the same address"
+  ;;
 start)  # wake it (the dev instance has no link that does)
   aws ec2 start-instances --instance-ids "$(instance)" --query 'StartingInstances[0].CurrentState.Name' --output text
   echo "https://$(address PublicIp | tr . -).sslip.io in a few minutes"
