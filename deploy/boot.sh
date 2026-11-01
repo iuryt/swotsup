@@ -48,7 +48,7 @@ basemap=/opt/cache/gebco2026.mbtiles
 [ -s $basemap ] || aws s3 cp --only-show-errors s3://iuryt-shared-east/deploy/swot_explorer/gebco2026.mbtiles $basemap.new \
   && mv $basemap.new $basemap
 chown 1000:1000 $basemap 2>/dev/null
-# downloads: of L2 (NASA/JPL, CNES), not of L3 (the AVISO License does not allow redistributing it unchanged)
+# downloads: of L2 (NASA/JPL, CNES), not of the L3 fallback (its license does not allow redistributing it unchanged)
 netcdf=$([ -n "$token" ] && echo 1 || echo 0)
 docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=$netcdf -e SWOT_CACHE_GB=6 \
   -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \

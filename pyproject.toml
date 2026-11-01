@@ -43,7 +43,6 @@ dask-core = "*"  # swot_cloud.maps (the tests build daily maps with it)
 
 [tool.pixi.feature.dev.pypi-dependencies]
 playwright = "*"  # screenshots of the app in a headless browser (scripts/screenshot.py)
-swot_cloud = { path = "../swot_cloud", editable = true }  # tests build small stores (and daily maps) with it
 
 [tool.pixi.tasks]
 test = "pytest -q tests"
@@ -54,4 +53,6 @@ default = { features = ["dev"], solve-group = "app" }
 serve = { features = [], solve-group = "app" }  # same versions as default, so the server runs what we test
 
 [tool.pytest.ini_options]
-pythonpath = ["app"]
+# the tests build small stores (and daily maps) with swot_cloud, cloned next to this repository; it is not a
+# dependency of the environment, so that pixi installs without it
+pythonpath = ["app", "../swot_cloud"]

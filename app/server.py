@@ -1001,8 +1001,8 @@ def view(west: float, east: float, south: float, north: float, start: str, days:
     return load(west, east, south, north, start, int(np.clip(days, 1, MAX_DAYS)), variable)[0]
 
 
-# SWOT_NETCDF=0 leaves out the download of the subset (the original product, which the AVISO License does not
-# let us redistribute through a public site without CNES's authorization)
+# SWOT_NETCDF=0 leaves out the download of the subset (the original product, for a store whose license does not
+# allow redistributing it unchanged)
 NETCDF = os.environ.get("SWOT_NETCDF", "1") != "0"
 
 app = FastAPI()
