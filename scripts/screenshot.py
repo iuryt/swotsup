@@ -331,7 +331,8 @@ with sync_playwright() as p:
             page.on("request", lambda r: "/api/limits" in r.url and asked.append(r.url))
             page.click("#prev")
             page.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
-            page.wait_for_timeout(4000)
+            page.wait_for_function("map.areTilesLoaded() && !map.isMoving()", timeout=180_000)
+            page.wait_for_timeout(3000)  # the refit: once the map is idle, then 0.6 s
             print("refit after other days:", len(asked), "limits request(s)", flush=True)
         elif scenario == "band":  # the timeline's band: a drag moves it (same length); a press elsewhere puts it there
             box = page.query_selector("#timeline").bounding_box()
