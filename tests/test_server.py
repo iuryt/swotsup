@@ -1118,3 +1118,20 @@ def test_screen_colors_before_the_window_is_summed(maps_paths, monkeypatch):
     data.levels = server.RASTERS.pyramid(view["start"], view["days"])
     late = data.screen_limits(*box)
     assert early and late and np.allclose(early["robust"]["none"], late["robust"]["none"], atol=1e-3)
+
+
+def test_series_from_the_lambda_function_and_here_when_it_fails(fine_store_path, monkeypatch):
+    """With SWOT_LAMBDA the series comes from the function; if that fails, it is worked out here, the same."""
+    server, client = detail_server(fine_store_path, monkeypatch)
+    q = dict(lon=30.1, lat=2.0, variable="ssha_unfiltered", radius=5)
+    here = client.get("/api/series", params=q).json()
+    assert len(here["time"]) > 0
+    monkeypatch.setattr(server, "LAMBDA", "swot-explorer-work")
+    monkeypatch.setattr(server, "remote_series", lambda args: dict(time=[1], value=[0.5]))
+    assert client.get("/api/series", params=q).json() == dict(time=[1], value=[0.5])
+
+    def fails(args):
+        raise TimeoutError("too slow")
+
+    monkeypatch.setattr(server, "remote_series", fails)
+    assert client.get("/api/series", params=q).json() == here

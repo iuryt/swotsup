@@ -30,6 +30,11 @@ cartopy = ">=0.25.0,<0.26"
 pillow = "*"
 fastapi = "*"
 uvicorn = "*"
+boto3 = "*"  # calls the series' Lambda function (SWOT_SERIES_LAMBDA), and the function reads the Arraylake token
+
+# the heavy requests as an AWS Lambda function (app/lambda_work.py), from the server's image (wheels for Linux only)
+[tool.pixi.target.linux-64.pypi-dependencies]
+awslambdaric = "*"
 
 [tool.pixi.pypi-dependencies]
 maxminddb = "*"  # the country of a visitor, from DB-IP Lite (anonymous usage)

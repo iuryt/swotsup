@@ -14,6 +14,16 @@ ip=$(curl -s -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/met
 # container runs (a full disk failed an update, and the instance kept the old image)
 docker builder prune -af >/dev/null 2>&1
 docker build -t swot .
+# the heavy requests' Lambda function (slurm/ec2.sh work) runs this same image: pushed as this stage's, and the
+# function moved to it, so it always has the server's code; the server asks it for series (and works them out
+# itself if it cannot)
+account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+registry=$account.dkr.ecr.us-east-1.amazonaws.com work=swot-explorer-work$([ "$stage" = dev ] && echo -dev)
+if aws ecr get-login-password --region us-east-1 2>/dev/null | docker login -u AWS --password-stdin $registry >/dev/null 2>&1 \
+  && docker tag swot $registry/swot-explorer-work:$stage && docker push -q $registry/swot-explorer-work:$stage; then
+  aws lambda update-function-code --region us-east-1 --function-name $work --image-uri $registry/swot-explorer-work:$stage \
+    --query LastUpdateStatus --output text 2>&1 | tail -1
+fi
 docker rm -f swot caddy
 # the stores: the server's default, L2 Expert with L2 Unsmoothed from a zoom on, on Arraylake (Earthmover), if its
 # token is in SSM (/swot-explorer/arraylake-token); else the L3 copy on S3. No command echo (bash -x) while the token
@@ -54,7 +64,7 @@ docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF
   -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
   -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" -v /opt/telemetry:/telemetry -e SWOT_TELEMETRY_DIR=/telemetry \
   -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb -e SWOT_BASEMAP=/cache/gebco2026.mbtiles "${rasters[@]}" "${debug[@]}" "${store[@]}" \
-  --env-file <(grep -s = server.env) swot  # server.env: settings being tried (slurm/ec2.sh SERVER_ENV)
+  -e SWOT_LAMBDA=$work -e SWOT_THREADS=100 --env-file <(grep -s = server.env) swot  # server.env: settings being tried (slurm/ec2.sh SERVER_ENV)
 set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860

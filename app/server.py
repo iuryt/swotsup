@@ -1825,7 +1825,40 @@ def detail_series(lon, lat, variable, radius):
 
 @app.get("/api/series", dependencies=[Depends(HEAVY)])
 def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool = False):
-    """The mean around a point, per passage: within `radius` km, or (`fine`) of the detail store's 250 m pixels."""
+    """The mean around a point, per passage: within `radius` km, or (`fine`) of the detail store's 250 m pixels.
+    With SWOT_LAMBDA, worked out by that AWS Lambda function (each series on its own machine, however many
+    visitors ask at once), and here if it fails or is too slow."""
+    if variable not in VARIABLES:
+        raise HTTPException(404, "no such variable")
+    if LAMBDA:
+        try:
+            return remote_series(dict(kind="series", lon=lon, lat=lat, variable=variable, radius=radius, fine=fine))
+        except Exception as e:  # noqa: BLE001 (any failure there: here instead)
+            print(f"series lambda failed ({type(e).__name__}: {e}); here instead", flush=True)
+    return series_here(lon, lat, variable, radius, fine)
+
+
+# an AWS Lambda function with this server's code (app/lambda_work.py) for the heavy requests (series): its name
+LAMBDA = os.environ.get("SWOT_LAMBDA")
+
+
+@lru_cache(maxsize=1)
+def lambda_client():
+    import boto3
+    from botocore.config import Config
+    return boto3.client("lambda", config=Config(read_timeout=90, connect_timeout=5, retries={"max_attempts": 0},
+                                                max_pool_connections=100))
+
+
+def remote_series(args):
+    r = lambda_client().invoke(FunctionName=LAMBDA, Payload=json.dumps(args).encode())
+    out = json.loads(r["Payload"].read())
+    if r.get("FunctionError") or "time" not in out:
+        raise RuntimeError(str(out)[:300])
+    return out
+
+
+def series_here(lon, lat, variable, radius=5, fine=False):
     if fine:
         if not has_detail(variable):
             raise HTTPException(404, "no 250 m product for this variable")
@@ -2019,7 +2052,10 @@ def world_png():
 # the opening view, ready before the first visitor: in memory, or for a product too big to keep (`overview`), its
 # overview, built in the background (or read back from SWOT_CACHE_DIR); other variables on it are built when asked
 OVERVIEWS, OPENING = {}, set()  # views too big to keep: their overviews (OrderedDict order: oldest first)
-if PRODUCT.get("overview") and RASTERS and from_rasters(*DEFAULT.values()):
+ROLE = os.environ.get("SWOT_ROLE", "server")  # lambda: only the heavy requests (app/lambda_work.py), no opening view
+if ROLE != "server":
+    pass
+elif PRODUCT.get("overview") and RASTERS and from_rasters(*DEFAULT.values()):
     OPENING.add(key := tuple(DEFAULT.values()))
     load(**DEFAULT)
 elif PRODUCT.get("overview"):
