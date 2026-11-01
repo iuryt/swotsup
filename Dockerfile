@@ -19,4 +19,6 @@ USER 1000
 ENV AWS_REGION=us-east-1
 EXPOSE 7860
 ENTRYPOINT ["/bin/bash", "-c", "source /shell-hook.sh && exec \"$@\"", "--"]
+# one thread per numerical call: requests run many at once, and a library using every core for each fights the others
+ENV OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 CMD ["uvicorn", "server:app", "--app-dir", "app", "--host", "0.0.0.0", "--port", "7860"]

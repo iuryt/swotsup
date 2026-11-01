@@ -1443,35 +1443,33 @@ def from_base(name, p, along, cross, cycle=None):
         return a.sel({"along": along} | ({"cross": cross} if "cross" in a.dims else {}), method="nearest").values
     if isinstance(along, np.ndarray) and np.ndim(along) == 1 and np.ndim(cross) == 1:  # a grid: two small products
         a = a.transpose("along", ...)
-        weights = [linear(a.along.values, along)] + ([linear(a.cross.values, cross)] if "cross" in a.dims else [])
-        return weighted(a.values, *weights)
+        return weighted(a.values, linear(a.along.values, along), *([linear(a.cross.values, cross)] if "cross" in a.dims else []))
     return a.interp({"along": along} | ({"cross": cross} if "cross" in a.dims else {}), kwargs={"fill_value": None}).values
 
 
-def weighted(values, w_along, w_cross=None):
-    """Values (along x anything) at other lines (w_along) and pixels (w_cross: their second axis is cross): NaN where
-    a neighbour with a weight is NaN, as interpolation."""
-    bad = np.isnan(values)
-    flat, bad = np.where(bad, 0, values).reshape(len(values), -1), bad.reshape(len(values), -1).astype(float)
-    out, hit = w_along @ flat, (w_along != 0) @ bad
-    out, hit = out.reshape((len(w_along),) + values.shape[1:]), hit.reshape((len(w_along),) + values.shape[1:])
-    if w_cross is not None:
-        out, hit = out @ w_cross.T, hit @ (w_cross != 0).T
-    return np.where(hit > 0, np.nan, out)
+def weighted(values, along, cross=None):
+    """Values (along x anything) at other lines and pixels (`linear` of each; cross: their second axis): from the two
+    neighbours on each axis, NaN where a neighbour is or beyond the ends. Plain indexing (no matrix product: those
+    take every core each and fight under many requests at once)."""
+    k, w, out_ = along
+    w = w.reshape((-1,) + (1,) * (values.ndim - 1))
+    v = values[k] * (1 - w) + values[np.minimum(k + 1, len(values) - 1)] * w
+    v[out_] = np.nan
+    if cross is not None:
+        k, w, out_ = cross
+        v = v[:, k] * (1 - w) + v[:, np.minimum(k + 1, v.shape[1] - 1)] * w
+        v[:, out_] = np.nan
+    return v
 
 
 def linear(x, at):
-    """The weights (len(at) x len(x)) of linear interpolation from the points `x` (increasing) to `at`; NaN beyond the
-    ends (as xarray's interp, also with fill_value None)."""
+    """Linear interpolation from the points `x` (increasing) to `at`: each one's left neighbour, its weight on the
+    right one, and whether it is beyond the ends (NaN there, as xarray's interp, also with fill_value None)."""
     if len(x) == 1:
-        return np.where((at == x[0])[:, None], 1.0, np.nan)
+        return np.zeros(len(at), int), np.zeros(len(at)), at != x[0]
     k = np.clip(np.searchsorted(x, at) - 1, 0, len(x) - 2)
     w = (at - x[k]) / (x[k + 1] - x[k])
-    out = np.zeros((len(at), len(x)))
-    rows = np.arange(len(at))
-    out[rows, k], out[rows, k + 1] = 1 - w, w
-    out[(at < x[0]) | (at > x[-1])] = np.nan
-    return out
+    return k, w, (at < x[0]) | (at > x[-1])
 
 
 SHIFT = "cross_shift"  # Unsmoothed: whole 250 m columns each line was moved across track, onto its pass's reference

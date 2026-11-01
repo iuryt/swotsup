@@ -135,6 +135,5 @@ mutate app/rasters.py 's/                        total\[z\], n\[z\] = np.where(c
 mutate app/server.py 's/            self.count.flat\[cells\] = np.bincount(inv)/            self.count.flat[cells] += np.bincount(inv)/' "overview: passages summed"
 mutate app/server.py 's/            v = RASTERS.mean(z, rows, cols, self.view\["start"\], self.view\["days"\], \*\*self.flags).ravel()/            return None/' "screen colors only once the window is summed"
 mutate app/server.py 's/    k = np.clip(np.searchsorted(x, at) - 1, 0, len(x) - 2)/    k = np.clip(np.searchsorted(x, at), 0, len(x) - 2)/' "250 m: the base interpolated from the wrong pixels"
-mutate app/server.py 's/    out\[rows, k\], out\[rows, k + 1\] = 1 - w, w/    out[rows, k], out[rows, k + 1] = w, 1 - w/' "250 m: the interpolation weights swapped"
-mutate app/server.py 's/    return np.where(hit > 0, np.nan, out)/    return out/' "250 m: a NaN of the base spread over a whole row and column"
-mutate app/server.py 's/    out\[(at < x\[0\]) | (at > x\[-1\])\] = np.nan/    pass/' "250 m: the base extrapolated beyond its pixels (xarray leaves NaN)"
+mutate app/server.py 's/    v = values\[k\] \* (1 - w) + values\[np.minimum(k + 1, len(values) - 1)\] \* w/    v = values[k] * w + values[np.minimum(k + 1, len(values) - 1)] * (1 - w)/' "250 m: the interpolation weights swapped"
+mutate app/server.py 's/    return k, w, (at < x\[0\]) | (at > x\[-1\])/    return k, w, at != at/' "250 m: the base extrapolated beyond its pixels (xarray leaves NaN)"
