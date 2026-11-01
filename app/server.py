@@ -1227,7 +1227,8 @@ async def health():
                               threads=threading.active_count(),
                               pool=anyio.to_thread.current_default_thread_limiter().borrowed_tokens,
                               quick=QUICK.borrowed_tokens, reading=READING.borrowed_tokens, loading=len(loading),
-                              views=len(loaded), views_gb=round(sum(d.nbytes for d in loaded.values()) / 1e9, 2)))
+                              views=len(loaded), views_gb=round(sum(d.nbytes for d in loaded.values()) / 1e9, 2),
+                              lambda_ok=REMOTE["ok"], lambda_failed=REMOTE["failed"]))
         before = now
 
 
@@ -1832,14 +1833,18 @@ def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool 
         raise HTTPException(404, "no such variable")
     if LAMBDA:
         try:
-            return remote_series(dict(kind="series", lon=lon, lat=lat, variable=variable, radius=radius, fine=fine))
+            out = remote_series(dict(kind="series", lon=lon, lat=lat, variable=variable, radius=radius, fine=fine))
+            REMOTE["ok"] += 1
+            return out
         except Exception as e:  # noqa: BLE001 (any failure there: here instead)
+            REMOTE["failed"] += 1
             print(f"series lambda failed ({type(e).__name__}: {e}); here instead", flush=True)
     return series_here(lon, lat, variable, radius, fine)
 
 
 # an AWS Lambda function with this server's code (app/lambda_work.py) for the heavy requests (series): its name
 LAMBDA = os.environ.get("SWOT_LAMBDA")
+REMOTE = {"ok": 0, "failed": 0}  # its answers and failures, since the start (health rows)
 
 
 @lru_cache(maxsize=1)

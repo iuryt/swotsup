@@ -180,9 +180,9 @@ work)  # the Lambda function for the heavy requests: repository, role, and the f
   fi
   if aws lambda get-function --function-name $fn >/dev/null 2>&1; then
     aws lambda update-function-code --function-name $fn --image-uri $uri --query LastUpdateStatus --output text
-  else  # 4 GB (~2.3 vCPU): a 250 m series of the whole mission; the server's entry point, then the Lambda client
+  else  # 3 GB (the account's most, ~1.8 vCPU): a 250 m series of the whole mission; the server's entry point, then the Lambda client
     aws lambda create-function --function-name $fn --package-type Image --code ImageUri=$uri \
-      --role "$(aws iam get-role --role-name $WORK --query Role.Arn --output text)" --memory-size 4096 --timeout 120 \
+      --role "$(aws iam get-role --role-name $WORK --query Role.Arn --output text)" --memory-size 3008 --timeout 120 \
       --image-config '{"EntryPoint":["/bin/bash","-c","source /shell-hook.sh && exec \"$@\"","--"],"Command":["python","-m","awslambdaric","lambda_work.handler"],"WorkingDirectory":"/srv/app"}' \
       --environment "Variables={SWOT_TOKEN_PARAMETER=/swot-explorer/arraylake-token,OMP_NUM_THREADS=1}" \
       --query State --output text
