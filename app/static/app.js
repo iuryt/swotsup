@@ -148,14 +148,14 @@ async function loadData() {
     if (!latest()) return;
     state.data = d;
     state.view = view.toString();
-    state.screen = null;  // the whole view's colors first, then the screen's
+    // the colors stay as they are (the screen's, if fitted) while the new dates' tiles come; once all of them are in
+    // (the map idle: when the rasters underneath go too), the screen's colors for these dates (#110)
     $("#stats").innerHTML = `<b>${d.passages}</b> passages · <b>${d.pixels >= 1e5 ? `${(d.pixels / 1e6).toFixed(1)} M` : `${Math.round(d.pixels / 1e3)} k`}</b> pixels · ` +
       (d.seconds ? `read from the cloud in <b>${d.seconds.toFixed(1)} s</b>` : "from the server's memory");
     state.code = d.code;
     if ($("#download")) $("#download").href = `/api/netcdf?${state.view}`;  // absent where SWOT_NETCDF=0
     setColors();
-    fitColors.at = null;  // new data: the screen's colors again, the map moved or not (#110)
-    fitColors();
+    map.once("idle", () => { fitColors.at = null; fitColors(); });
     const after = state.afterLoad;  // a link's point and line, once its view is in
     state.afterLoad = null;
     after?.();

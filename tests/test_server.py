@@ -1087,3 +1087,16 @@ def test_overlapping_passages_drawn_latest_on_top(store_path, maps_paths, monkey
     all4 = server.RASTERS.mean(2, slice(None), slice(None), "2024-01-03", 4)
     both = np.isfinite(one)
     assert both.sum() > 30 and np.allclose(all4[both], one[both], atol=1e-3)
+
+
+def test_screen_colors_before_the_window_is_summed(maps_paths, monkeypatch):
+    """New dates: before their window is summed, the screen's colors come from the daily maps' pixels in the box,
+    the same as once it is (#110: they came back as the whole view's, the colors already shown)."""
+    server = maps_server(maps_paths, monkeypatch)
+    view = dict(west=-180, east=180, south=-90, north=90, start="2024-01-03", days=4, variable="final")
+    data = server.RasterView(view, "final")
+    box = (20, 40, -10, 10)  # the fixture's passes (maps of zoom 2: ~40 km pixels)
+    early = data.screen_limits(*box)
+    data.levels = server.RASTERS.pyramid(view["start"], view["days"])
+    late = data.screen_limits(*box)
+    assert early and late and np.allclose(early["robust"]["none"], late["robust"]["none"], atol=1e-3)

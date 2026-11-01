@@ -133,3 +133,4 @@ mutate app/server.py 's/            mine = frame.t.values == latest\[row, col\]/
 mutate app/rasters.py 's/        last = n.shape\[0\] - 1 - np.argmax(n\[::-1\] > 0, axis=0)/        last = np.argmax(n > 0, axis=0)/' "the maps' earliest day on top"
 mutate app/rasters.py 's/                        total\[z\], n\[z\] = np.where(c > 0, t, total\[z\]), np.where(c > 0, c, n\[z\])/                        total[z], n[z] = total[z] + t, n[z] + c/' "the window's days summed"
 mutate app/server.py 's/            self.count.flat\[cells\] = np.bincount(inv)/            self.count.flat[cells] += np.bincount(inv)/' "overview: passages summed"
+mutate app/server.py 's/            v = RASTERS.mean(z, rows, cols, self.view\["start"\], self.view\["days"\], \*\*self.flags).ravel()/            return None/' "screen colors only once the window is summed"
