@@ -53,7 +53,8 @@ netcdf=$([ -n "$token" ] && echo 1 || echo 0)
 docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=$netcdf -e SWOT_CACHE_GB=6 \
   -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
   -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" -v /opt/telemetry:/telemetry -e SWOT_TELEMETRY_DIR=/telemetry \
-  -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb -e SWOT_BASEMAP=/cache/gebco2026.mbtiles "${rasters[@]}" "${debug[@]}" "${store[@]}" swot
+  -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb -e SWOT_BASEMAP=/cache/gebco2026.mbtiles "${rasters[@]}" "${debug[@]}" "${store[@]}" \
+  --env-file <(grep -s = server.env) swot  # server.env: settings being tried (slurm/ec2.sh SERVER_ENV)
 set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860

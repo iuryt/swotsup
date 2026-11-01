@@ -47,7 +47,9 @@ send_code() {  # build context (Dockerfile at the root), the boot script, the li
   elif [ "$(distribution Id)" != None ]; then echo "https://$DOMAIN/" > logs/public_url
   else aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text > logs/public_url 2>/dev/null || : > logs/public_url; fi
   echo "$STAGE" > logs/stage
-  tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh -C ../logs public_url stage
+  # settings of the server to try (dev), e.g. SERVER_ENV="SWOT_LOADS=4 WEB_CONCURRENCY=2": one per line, for docker
+  printf '%s\n' ${SERVER_ENV:-} > logs/server.env
+  tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh -C ../logs public_url stage server.env
   aws s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
 # what the instances may read: the S3 store, the app packages (both stages'), and the secrets under

@@ -2,6 +2,7 @@
 The swaths are drawn here, as map tiles: each passage is a curvilinear mesh rasterized with datashader,
 so only images of the screen's size go to the browser.
 Run: uvicorn server:app --app-dir app --port 5006   (SWOT_STORE, credentials from AWS_* in the environment)"""
+import asyncio
 import hashlib
 import io
 import itertools
@@ -779,6 +780,8 @@ def build(view, overviews):
 loaded = OrderedDict()  # views in memory, least recently used first; the opening view stays
 cache_lock = threading.Lock()  # guards `loaded` and `loading` (requests run in threads)
 loading = {}  # one lock per view being read: a second request for it waits instead of reading it again
+# views read from the stores at once (SWOT_LOADS; 0: no limit): more in parallel share the machine's network and CPU
+LOADS = threading.BoundedSemaphore(int(os.environ.get("SWOT_LOADS", 0))) if int(os.environ.get("SWOT_LOADS", 0)) else None
 
 
 def read(sub, names):
@@ -831,7 +834,11 @@ def load(west, east, south, north, start, days, variable):
             return overview_of(key), 0.0
         if sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > MAX_PIXELS:
             raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
-        values, line_time = read(sub, var.arrays)
+        if LOADS:
+            with LOADS:
+                values, line_time = read(sub, var.arrays)
+        else:
+            values, line_time = read(sub, var.arrays)
         data = Loaded(values, var, west, east, line_time)
         with cache_lock:
             loaded[key] = data
@@ -1163,6 +1170,7 @@ class Timing:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         t0, status = time.perf_counter(), {}
+        IN_FLIGHT[0] += 1
 
         async def timed(message):
             if message["type"] == "http.response.start":
@@ -1171,7 +1179,10 @@ class Timing:
                     (b"server-timing", f"app;dur={(time.perf_counter() - t0) * 1000:.1f}".encode())])
             await send(message)
 
-        await self.app(scope, receive, timed)
+        try:
+            await self.app(scope, receive, timed)
+        finally:
+            IN_FLIGHT[0] -= 1
         path = scope["path"]
         if TELEMETRY and path.startswith("/api/") and path != "/api/event":
             route = getattr(scope.get("route"), "path", path)
@@ -1183,6 +1194,50 @@ class Timing:
 
 
 app.add_middleware(Timing)
+IN_FLIGHT = [0]  # requests being answered (the event loop's thread only)
+
+
+def machine():
+    """This process's and the machine's numbers now: CPU seconds, memory, bytes received (Linux /proc)."""
+    rss = int(next(line for line in open("/proc/self/status") if line.startswith("VmRSS")).split()[1]) * 1e3
+    avail = int(next(line for line in open("/proc/meminfo") if line.startswith("MemAvailable")).split()[1]) * 1e3
+    rx = sum(int(line.split(":")[1].split()[0]) for line in open("/proc/net/dev").readlines()[2:]
+             if not line.strip().startswith("lo:"))
+    t = os.times()
+    return dict(cpu=t.user + t.system, rss=rss, avail=avail, rx=rx, at=time.monotonic())
+
+
+async def health():
+    """Every SWOT_HEALTH_SECONDS (60), a row of the machine's health in health-YYYY-MM-DD.jsonl: this process's CPU
+    (cores busy), memory, the network's MB/s in, requests in flight, busy threads of each queue, views being read and
+    kept. Numbers only: nothing about visitors."""
+    every, start = float(os.environ.get("SWOT_HEALTH_SECONDS", 60)), time.monotonic()
+    before = machine()
+    while True:
+        await anyio.sleep(every)
+        try:
+            now = machine()
+        except OSError:  # not Linux
+            return
+        dt = now["at"] - before["at"]
+        record("health", dict(time=pd.Timestamp.now("UTC").isoformat(), pid=os.getpid(), up=round(now["at"] - start),
+                              cores=round((now["cpu"] - before["cpu"]) / dt, 2), load1=os.getloadavg()[0],
+                              rss_gb=round(now["rss"] / 1e9, 2), avail_gb=round(now["avail"] / 1e9, 2),
+                              rx_mbps=round((now["rx"] - before["rx"]) / dt / 1e6, 1), in_flight=IN_FLIGHT[0],
+                              threads=threading.active_count(),
+                              pool=anyio.to_thread.current_default_thread_limiter().borrowed_tokens,
+                              quick=QUICK.borrowed_tokens, reading=READING.borrowed_tokens, loading=len(loading),
+                              views=len(loaded), views_gb=round(sum(d.nbytes for d in loaded.values()) / 1e9, 2)))
+        before = now
+
+
+@app.on_event("startup")
+async def started():
+    # threads for the requests that work in one (the default 40): SWOT_THREADS
+    if os.environ.get("SWOT_THREADS"):
+        anyio.to_thread.current_default_thread_limiter().total_tokens = int(os.environ["SWOT_THREADS"])
+    if TELEMETRY:
+        started.health = asyncio.get_running_loop().create_task(health())  # kept: a task only weakly referenced may go
 
 
 @app.get("/")
