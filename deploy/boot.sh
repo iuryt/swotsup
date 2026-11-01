@@ -71,7 +71,8 @@ docker run -d --name caddy --restart always --network host -v caddy:/data caddy:
 docker image prune -af >/dev/null 2>&1
 df -h / | tail -1
 # the anonymous usage, copied to S3 every 10 minutes and before the machine stops (it may only write there)
-sync="aws s3 sync --only-show-errors /opt/telemetry $telemetry"
+# with the server's last messages (its errors, restarts): the access lines left out, so no visitor's address is kept
+sync="docker logs --tail 3000 swot 2>&1 | grep -v -E 'HTTP/1\.[01]\" [0-9]{3}' | tail -500 > /opt/telemetry/server-log.txt; aws s3 sync --only-show-errors /opt/telemetry $telemetry"
 systemctl stop swot-telemetry.timer 2>/dev/null
 systemd-run --unit swot-telemetry --on-calendar="$([ "$stage" = dev ] && echo '*:*:00' || echo '*:0/10')" bash -c "$sync"
 # every request shows up in the server's access log; none in the last IDLE minutes (and up for as long): stop

@@ -21,6 +21,10 @@ information."
 - `requests-YYYY-MM-DD.jsonl`: `time`, `endpoint` (the route, not the values asked), `seconds`, `status`, `sample`
   (tile requests: one in 10 is kept).
 
+- `health-YYYY-MM-DD.jsonl`: the machine's numbers every minute (`cores` busy, memory, network, requests in flight,
+  busy threads, views being read, the Lambda function's answers and failures): nothing about visitors.
+- `server-log.txt`: the server's last messages (errors, restarts), without its access lines (no addresses).
+
 **Never kept:** the address, a hash of it that lasts, browser or system details, anything typed, any identifier lasting
 more than a day.
 
