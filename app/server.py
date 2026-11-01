@@ -1228,7 +1228,7 @@ async def health():
                               pool=anyio.to_thread.current_default_thread_limiter().borrowed_tokens,
                               quick=QUICK.borrowed_tokens, reading=READING.borrowed_tokens, loading=len(loading),
                               views=len(loaded), views_gb=round(sum(d.nbytes for d in loaded.values()) / 1e9, 2),
-                              lambda_ok=REMOTE["ok"], lambda_failed=REMOTE["failed"]))
+                              lambda_ok=REMOTE["ok"], lambda_failed=REMOTE["failed"], lambda_error=REMOTE["error"]))
         before = now
 
 
@@ -1838,13 +1838,14 @@ def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool 
             return out
         except Exception as e:  # noqa: BLE001 (any failure there: here instead)
             REMOTE["failed"] += 1
+            REMOTE["error"] = f"{type(e).__name__}: {e}"[:300]
             print(f"series lambda failed ({type(e).__name__}: {e}); here instead", flush=True)
     return series_here(lon, lat, variable, radius, fine)
 
 
 # an AWS Lambda function with this server's code (app/lambda_work.py) for the heavy requests (series): its name
 LAMBDA = os.environ.get("SWOT_LAMBDA")
-REMOTE = {"ok": 0, "failed": 0}  # its answers and failures, since the start (health rows)
+REMOTE = {"ok": 0, "failed": 0, "error": None}  # its answers and failures, since the start (health rows)
 
 
 @lru_cache(maxsize=1)
