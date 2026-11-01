@@ -1441,7 +1441,37 @@ def from_base(name, p, along, cross, cycle=None):
     a = a.sel(along=slice(float(np.min(along)) - 4, float(np.max(along)) + 4))
     if name == EDIT:  # bits: the nearest pixel's, not a mean of them
         return a.sel({"along": along} | ({"cross": cross} if "cross" in a.dims else {}), method="nearest").values
+    if isinstance(along, np.ndarray) and np.ndim(along) == 1 and np.ndim(cross) == 1:  # a grid: two small products
+        a = a.transpose("along", ...)
+        weights = [linear(a.along.values, along)] + ([linear(a.cross.values, cross)] if "cross" in a.dims else [])
+        return weighted(a.values, *weights)
     return a.interp({"along": along} | ({"cross": cross} if "cross" in a.dims else {}), kwargs={"fill_value": None}).values
+
+
+def weighted(values, w_along, w_cross=None):
+    """Values (along x anything) at other lines (w_along) and pixels (w_cross: their second axis is cross): NaN where
+    a neighbour with a weight is NaN, as interpolation."""
+    bad = np.isnan(values)
+    flat, bad = np.where(bad, 0, values).reshape(len(values), -1), bad.reshape(len(values), -1).astype(float)
+    out, hit = w_along @ flat, (w_along != 0) @ bad
+    out, hit = out.reshape((len(w_along),) + values.shape[1:]), hit.reshape((len(w_along),) + values.shape[1:])
+    if w_cross is not None:
+        out, hit = out @ w_cross.T, hit @ (w_cross != 0).T
+    return np.where(hit > 0, np.nan, out)
+
+
+def linear(x, at):
+    """The weights (len(at) x len(x)) of linear interpolation from the points `x` (increasing) to `at`; NaN beyond the
+    ends (as xarray's interp, also with fill_value None)."""
+    if len(x) == 1:
+        return np.where((at == x[0])[:, None], 1.0, np.nan)
+    k = np.clip(np.searchsorted(x, at) - 1, 0, len(x) - 2)
+    w = (at - x[k]) / (x[k + 1] - x[k])
+    out = np.zeros((len(at), len(x)))
+    rows = np.arange(len(at))
+    out[rows, k], out[rows, k + 1] = 1 - w, w
+    out[(at < x[0]) | (at > x[-1])] = np.nan
+    return out
 
 
 SHIFT = "cross_shift"  # Unsmoothed: whole 250 m columns each line was moved across track, onto its pass's reference

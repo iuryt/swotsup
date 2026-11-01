@@ -805,6 +805,24 @@ def test_dtu25_correction_interpolated_between_the_base_pixels(dtu_store_path, s
                                rtol=1e-6)
 
 
+def test_grid_interpolation_as_xarray_s(dtu_store_path, shifted_fine_store_path, monkeypatch):
+    """The base's arrays at a finer grid (from_base: two weight products) as xarray's linear interp (NaN beyond the
+    ends); a NaN of the base only where it is a neighbour (xarray's makes them all NaN)."""
+    server, _ = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
+    rng = np.random.default_rng(1)
+    a = xr.DataArray(rng.normal(size=(12, 9)), dims=("along", "cross"),
+                     coords=dict(along=np.sort(rng.uniform(0, 30, 12)), cross=np.linspace(-60, 60, 9)))
+    along, cross = np.linspace(-3, 33, 40), np.linspace(-66, 66, 50)
+    w = server.linear(a.along.values, along), server.linear(a.cross.values, cross)
+    want = a.interp(along=along, cross=cross, kwargs={"fill_value": None}).values
+    np.testing.assert_allclose(server.weighted(a.values, *w), want, rtol=1e-9, atol=1e-12)
+    a[4, 3] = np.nan
+    got = server.weighted(a.values, *w)
+    near = (np.abs(along - a.along.values[4]) < 4)[:, None] & (np.abs(cross - a.cross.values[3]) < 15)[None]
+    inside = ((along >= a.along.values[0]) & (along <= a.along.values[-1]))[:, None] & (np.abs(cross) <= 60)[None]
+    assert np.isnan(got[near & inside]).any() and not np.isnan(got[~near & inside]).any() and np.isnan(got[~inside]).all()
+
+
 def test_dtu25_line_code_gives_the_app_values(dtu_store_path, shifted_fine_store_path, monkeypatch):
     """The code users copy for a line adds the DTU25 correction and subtracts the calibration as the app does: from the
     store at 2 km, interpolated from it at 250 m (the detail store's pixels fall between its own; its lines are moved)."""
