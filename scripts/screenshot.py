@@ -64,13 +64,13 @@ with sync_playwright() as p:
             if page.query_selector(".pin .close"):
                 page.click(".pin .close")
         elif scenario == "line":
-            page.evaluate("map.jumpTo({center: [-58, -40.5], zoom: 6})")
+            page.evaluate("map.jumpTo({center: [-58, -40.5], zoom: 7})")  # a line of ~400 km: 250 m takes it
             page.wait_for_timeout(6000)
             page.click("#line")
-            for xy in ((520, 470), (800, 520)):
+            for xy in ((560, 470), (760, 520)):
                 page.mouse.click(*xy)
                 page.wait_for_timeout(300)
-            page.mouse.dblclick(1050, 470)
+            page.mouse.dblclick(950, 470)
             page.wait_for_selector(".card.transect .uplot, .card.transect .loading:not(:has(.spinner))", timeout=60_000)
             box = page.query_selector(".card.transect .u-over").bounding_box()
             page.mouse.move(box["x"] + box["width"] * 0.45, box["y"] + box["height"] / 2)
@@ -301,12 +301,39 @@ with sync_playwright() as p:
                 print("phone band moved:", phone.inner_text("#selection"), flush=True)
                 phone.screenshot(path=f"{prefix}-phone-time.png")
                 print(f"{prefix}-phone-series/menu/drawing/line/time.png", flush=True)
+        elif scenario == "line-limits":  # the drawing bar counts points and km; a click past the limit is refused, in red
+            page.evaluate("map.jumpTo({center: [-40, 20], zoom: 2.2, bearing: 0, pitch: 0})")
+            page.wait_for_timeout(3000)
+            page.click("#line")
+            for xy in ((450, 470), (750, 470)):
+                page.mouse.click(*xy)
+                page.wait_for_timeout(300)
+            print("drawing:", page.inner_text("#drawing-text"), flush=True)
+            page.evaluate("map.jumpTo({center: [0, 0], zoom: 1.2})")  # far enough for 15,000 km
+            page.wait_for_timeout(1500)
+            for xy in ((1350, 300), (300, 800)):  # the second would pass 15,000 km
+                page.mouse.move(*xy, steps=4)
+                page.mouse.click(*xy)
+                page.wait_for_timeout(300)
+            page.wait_for_timeout(300)
+            print("past the limit:", page.inner_text("#drawing-text"), "| points:", page.evaluate("state.vertices.length"),
+                  "| color:", page.evaluate("map.getPaintProperty('line', 'line-color')"), flush=True)
+            shot("line-limits")
+            page.click("#cancel")
         elif scenario == "about":  # the About dialog
             page.click("#about-button")
             page.wait_for_selector("#about-dialog[open]")
             page.wait_for_timeout(500)
             shot("about")
             page.click("#about-dialog .close")
+        elif scenario == "refit":  # other days, the map not moved: the screen's colors are asked again (#110)
+            asked = []
+            page.on("request", lambda r: "/api/limits" in r.url and asked.append(r.url))
+            page.click("#prev")
+            page.wait_for_selector("#busy.hidden", state="attached", timeout=180_000)
+            page.wait_for_function("map.areTilesLoaded() && !map.isMoving()", timeout=180_000)
+            page.wait_for_timeout(3000)  # the refit: once the map is idle, then 0.6 s
+            print("refit after other days:", len(asked), "limits request(s)", flush=True)
         elif scenario == "band":  # the timeline's band: a drag moves it (same length); a press elsewhere puts it there
             box = page.query_selector("#timeline").bounding_box()
             before = page.inner_text("#selection") + " " + page.inner_text("#days-text")

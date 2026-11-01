@@ -27,6 +27,12 @@ async function api(path, params = {}) {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
   return r.json();
 }
+// great-circle km between [lon, lat] points, and along a polyline (the server measures lines the same way)
+const km = ([x1, y1], [x2, y2]) => {
+  const r = Math.PI / 180, h = Math.sin((y2 - y1) * r / 2) ** 2 + Math.cos(y1 * r) * Math.cos(y2 * r) * Math.sin((x2 - x1) * r / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
+};
+const lineKm = (points) => points.slice(1).reduce((sum, p, k) => sum + km(points[k], p), 0);
 const wrap = (lon) => ((lon + 180) % 360 + 360) % 360 - 180;
 const near = (lon, ref) => lon + 360 * Math.round((ref - lon) / 360);  // lon as close to ref as it gets (± 360)
 const deg = (v, neg, pos, digits = 2) => `${+Math.abs(v).toFixed(digits)}°${v < 0 ? neg : v > 0 ? pos : ""}`;
@@ -142,13 +148,14 @@ async function loadData() {
     if (!latest()) return;
     state.data = d;
     state.view = view.toString();
-    state.screen = null;  // the whole view's colors first, then the screen's
+    // the colors stay as they are (the screen's, if fitted) while the new dates' tiles come; once all of them are in
+    // (the map idle: when the rasters underneath go too), the screen's colors for these dates (#110)
     $("#stats").innerHTML = `<b>${d.passages}</b> passages · <b>${d.pixels >= 1e5 ? `${(d.pixels / 1e6).toFixed(1)} M` : `${Math.round(d.pixels / 1e3)} k`}</b> pixels · ` +
       (d.seconds ? `read from the cloud in <b>${d.seconds.toFixed(1)} s</b>` : "from the server's memory");
     state.code = d.code;
     if ($("#download")) $("#download").href = `/api/netcdf?${state.view}`;  // absent where SWOT_NETCDF=0
     setColors();
-    fitColors();
+    map.once("idle", () => { fitColors.at = null; fitColors(true); });
     const after = state.afterLoad;  // a link's point and line, once its view is in
     state.afterLoad = null;
     after?.();
@@ -251,7 +258,7 @@ function setupCmap() {
 // --- robust colors of what is on screen: once the map stops, the median ± 2 x 1.4826 x MAD of the pixels in view;
 // taken if they moved by more than ~15 % of the range (a new range draws the tiles again), so red and blue show at
 // any zoom
-async function fitColors() {
+async function fitColors(always = false) {  // `always`: new dates, whatever the change (#110)
   clearTimeout(fitColors.timer);
   fitColors.timer = setTimeout(async () => {
     if (state.preset === "custom" || !state.data) return;
@@ -266,7 +273,10 @@ async function fitColors() {
     state.screen = r;
     const [lo, hi] = presetLimits();
     // new colors redraw every tile on screen: only for a change worth it (a 25 % move of the limits)
-    if (Math.abs(lo - before[0]) > 0.25 * span || Math.abs(hi - before[1]) > 0.25 * span) { fitColors.at = here; setColors(); }
+    if (always || Math.abs(lo - before[0]) > 0.25 * span || Math.abs(hi - before[1]) > 0.25 * span) {
+      fitColors.at = here;
+      setColors();
+    }
   }, 600);
 }
 
@@ -604,8 +614,10 @@ function showDrawing() {  // the bar while drawing, and the buttons that started
   if (!mode) return;
   const n = state.vertices?.length ?? 0;
   $("#drawing-text").textContent = mode === "box" ? "Drag on the map to draw a box"
-    : n < 2 ? `${narrow() ? "Tap" : "Click"} points on the map${n ? " (one more at least)" : ""}`
-    : `${n} points · add more, or Done`;
+    : state.refused ?? (n < 2 ? `${narrow() ? "Tap" : "Click"} points on the map${n ? " (one more at least)" : ""}`
+      : `${n} of ${info.limits.vertices} points · ${Math.round(lineKm(state.vertices)).toLocaleString("en")} of ` +
+        `${info.limits.line_km.toLocaleString("en")} km · add more, or Done`);
+  state.refused = null;
   $("#undo").classList.toggle("hidden", mode !== "line" || !n);
   $("#done").classList.toggle("hidden", mode !== "line" || n < 2);
   document.body.classList.remove("sheet");
@@ -1116,6 +1128,7 @@ function drawLine() {  // the next clicks on the map are its vertices; Done (or 
   map.getCanvas().style.cursor = state.lining ? "crosshair" : "";
   state.lining ? map.doubleClickZoom.disable() : map.doubleClickZoom.enable();
   if (!state.lining) showLine(transect?.path ?? transect?.points ?? []);
+  map.setPaintProperty("line", "line-color", "#f97316");
   showDrawing();
 }
 
@@ -1142,14 +1155,24 @@ function setupLine() {
     const last = state.vertices.at(-1), p = map.project(e.lngLat);
     if (last && Math.hypot(p.x - map.project(last).x, p.y - map.project(last).y) < 4) return;  // the double click's
     // each vertex the short way from the previous one (segments are great circles), so the line drawn so far
-    // does not go around the world when it crosses 180
-    state.vertices.push([last ? near(e.lngLat.lng, last[0]) : e.lngLat.lng, e.lngLat.lat]);
+    // does not go around the world when it crosses 180; none past the limits (the server's): the click is refused
+    const v = [last ? near(e.lngLat.lng, last[0]) : e.lngLat.lng, e.lngLat.lat], L = info.limits;
+    if (state.vertices.length >= L.vertices) state.refused = `${L.vertices} points, the most: Done to end the line`;
+    else if (last && lineKm([...state.vertices, v]) > L.line_km)
+      state.refused = `Lines take up to ${L.line_km.toLocaleString("en")} km: click closer, or Done`;
+    if (state.refused) return showDrawing();
+    state.vertices.push(v);
     showLine(state.vertices);
     showDrawing();
   });
   map.on("mousemove", (e) => {
     const last = state.lining && state.vertices.at(-1);
-    if (last) showLine(state.vertices, [near(e.lngLat.lng, last[0]), e.lngLat.lat]);
+    if (!last) return;
+    const v = [near(e.lngLat.lng, last[0]), e.lngLat.lat];
+    showLine(state.vertices, v);
+    // the segment to the mouse in red where the next click would be refused
+    const over = state.vertices.length >= info.limits.vertices || lineKm([...state.vertices, v]) > info.limits.line_km;
+    map.setPaintProperty("line", "line-color", over ? "#ef4444" : "#f97316");
   });
   map.on("dblclick", (e) => {
     if (!state.lining) return;
@@ -1227,8 +1250,11 @@ function noPassage(text) {
 }
 
 const fillLine = () => {  // a variable without 250 m (SWH, wind): the line at 2 km, and no 250 m to choose
-  const select = transect.card.querySelector(".step"), fine = info.looks[state.variable].fine;
-  select.querySelector('option[value="0.25"]').disabled = !fine;
+  const select = transect.card.querySelector(".step"), long = lineKm(transect.points) > info.limits.fine_line_km;
+  const fine = info.looks[state.variable].fine && !long, option = select.querySelector('option[value="0.25"]');
+  option.disabled = !fine;
+  option.title = long ? `250 m takes lines up to ${info.limits.fine_line_km} km` : "";
+  option.textContent = long ? `250 m (up to ${info.limits.fine_line_km} km)` : "250 m";
   if (!fine && transect.step < 1) { transect.step = 2; select.value = "2"; }
   return (transect.kind === "profile" ? fillTransect : fillHovmoller)();
 };

@@ -10,13 +10,14 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 export AWS_PROFILE=${AWS_PROFILE:-swot-read} AWS_REGION=${AWS_REGION:-us-east-1}
+export SWOT_HEAVY_PER_MINUTE=${SWOT_HEAVY_PER_MINUTE:-100000}  # the scenarios ask for many series and lines at once
 PIXI="/home/iury/.pixi/bin/pixi run"
 PORT=$((5100 + RANDOM % 800))
 $PIXI uvicorn server:app --app-dir app --port $PORT > logs/shot-server-$SLURM_JOB_ID.log 2>&1 &
 for i in $(seq 120); do curl -sf -o /dev/null "http://localhost:$PORT/api/info" && break; sleep 5; done
 [ $# -ge 2 ] && $PIXI python scripts/screenshot.py "$1" "$2"
 rm -f img/app-*.png  # this run's only (img/history keeps every version): a scenario gone must not be copied again
-$PIXI python scripts/screenshot.py "http://localhost:$PORT/" img/app open click series line hovmoller flat dateline compass timeline band about  # phone: run it on its own
+$PIXI python scripts/screenshot.py "http://localhost:$PORT/" img/app open click series line hovmoller flat dateline compass timeline refit band about line-limits  # phone: run it on its own
 kill %1; grep -v "WARN cache" logs/shot-server-$SLURM_JOB_ID.log | tail -40
 # keep every version: a dated copy (with the commit, + if there are uncommitted changes) in img/history
 STAMP=$(date -u +%Y-%m-%dT%H%M)_$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- app || echo +)
