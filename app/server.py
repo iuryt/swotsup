@@ -1852,7 +1852,7 @@ REMOTE = {"ok": 0, "failed": 0, "error": None}  # its answers and failures, sinc
 def lambda_client():
     import boto3
     from botocore.config import Config
-    return boto3.client("lambda", config=Config(read_timeout=90, connect_timeout=5, retries={"max_attempts": 0},
+    return boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"), config=Config(read_timeout=90, connect_timeout=5, retries={"max_attempts": 0},
                                                 max_pool_connections=100))
 
 
