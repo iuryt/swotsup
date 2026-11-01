@@ -11,11 +11,15 @@ if "ARRAYLAKE_TOKEN" not in os.environ and os.environ.get("SWOT_TOKEN_PARAMETER"
     os.environ["ARRAYLAKE_TOKEN"] = boto3.client("ssm").get_parameter(
         Name=os.environ["SWOT_TOKEN_PARAMETER"], WithDecryption=True)["Parameter"]["Value"]
 
-import server  # noqa: E402 (opens the stores: once per machine, at its first request)
+server = None  # imported (the stores opened) at the first request: Lambda allows 10 s to start a machine and
+# starts over in the request if they pass, so a longer start there would be paid twice
 
 
 def handler(event, context):
+    global server
     try:
+        if server is None:
+            import server
         if event.get("kind", "series") == "series":
             return server.series_here(float(event["lon"]), float(event["lat"]), event["variable"],
                                       float(event.get("radius", 5)), bool(event.get("fine", False)))
