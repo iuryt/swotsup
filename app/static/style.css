@@ -180,6 +180,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 dialog header { display: flex; justify-content: space-between; align-items: center; }
 dialog h2 { margin: 0; font-size: 16px; color: var(--title); }
 dialog h3 { font-size: 13px; color: var(--title); margin: 14px 0 4px; }
+dialog ul { margin: 8px 0; padding-left: 20px; } dialog li { margin: 3px 0; }
 dialog pre[class*="language-"] { background: rgba(2, 6, 23, .7); margin: 8px 0; }
 dialog pre { background: rgba(2, 6, 23, .7); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
   overflow: auto; font-size: 12px; max-height: 50vh; }
