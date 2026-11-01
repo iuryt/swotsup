@@ -15,7 +15,7 @@ import tomllib
 import traceback
 import warnings
 from collections import OrderedDict, defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from types import SimpleNamespace
 from pathlib import Path
@@ -1228,7 +1228,8 @@ async def health():
                               pool=anyio.to_thread.current_default_thread_limiter().borrowed_tokens,
                               quick=QUICK.borrowed_tokens, reading=READING.borrowed_tokens, loading=len(loading),
                               views=len(loaded), views_gb=round(sum(d.nbytes for d in loaded.values()) / 1e9, 2),
-                              lambda_ok=REMOTE["ok"], lambda_failed=REMOTE["failed"], lambda_error=REMOTE["error"]))
+                              lambda_ok=REMOTE["ok"], lambda_failed=REMOTE["failed"], lambda_hedged=REMOTE["hedged"],
+                              lambda_error=REMOTE["error"]))
         before = now
 
 
@@ -1832,10 +1833,19 @@ def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool 
     if variable not in VARIABLES:
         raise HTTPException(404, "no such variable")
     if LAMBDA:
-        try:
-            out = remote_series(dict(kind="series", lon=lon, lat=lat, variable=variable, radius=radius, fine=fine))
+        remote = REMOTE_POOL.submit(remote_series, dict(kind="series", lon=lon, lat=lat, variable=variable,
+                                                        radius=radius, fine=fine))
+        try:  # a machine of the function just starting takes ~20 s: past HEDGE seconds, here too (the first wins)
+            out = remote.result(timeout=HEDGE)
             REMOTE["ok"] += 1
             return out
+        except TimeoutError:
+            REMOTE["hedged"] += 1
+            here = REMOTE_POOL.submit(series_here, lon, lat, variable, radius, fine)
+            done = next(as_completed([remote, here]))
+            if done is here or done.exception() is None:
+                return done.result()
+            return here.result()
         except Exception as e:  # noqa: BLE001 (any failure there: here instead)
             REMOTE["failed"] += 1
             REMOTE["error"] = f"{type(e).__name__}: {e}"[:300]
@@ -1845,7 +1855,9 @@ def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool 
 
 # an AWS Lambda function with this server's code (app/lambda_work.py) for the heavy requests (series): its name
 LAMBDA = os.environ.get("SWOT_LAMBDA")
-REMOTE = {"ok": 0, "failed": 0, "error": None}  # its answers and failures, since the start (health rows)
+REMOTE = {"ok": 0, "failed": 0, "hedged": 0, "error": None}
+HEDGE = float(os.environ.get("SWOT_LAMBDA_HEDGE", 12))
+REMOTE_POOL = ThreadPoolExecutor(int(os.environ.get("SWOT_LAMBDA_CALLS", 64)))  # its answers and failures, since the start (health rows)
 
 
 @lru_cache(maxsize=1)

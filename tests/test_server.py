@@ -2,6 +2,7 @@ import io
 import itertools
 import json
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -1131,7 +1132,15 @@ def test_series_from_the_lambda_function_and_here_when_it_fails(fine_store_path,
     assert client.get("/api/series", params=q).json() == dict(time=[1], value=[0.5])
 
     def fails(args):
-        raise TimeoutError("too slow")
+        raise RuntimeError("throttled")
 
     monkeypatch.setattr(server, "remote_series", fails)
+    assert client.get("/api/series", params=q).json() == here
+
+    def slow(args):  # a machine of the function starting: here too, the first answer wins
+        time.sleep(5)
+        return dict(time=[1], value=[0.5])
+
+    monkeypatch.setattr(server, "remote_series", slow)
+    monkeypatch.setattr(server, "HEDGE", 0.5)
     assert client.get("/api/series", params=q).json() == here
