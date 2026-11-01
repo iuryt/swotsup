@@ -10,9 +10,14 @@ URL=https://54-85-79-178.sslip.io/
 export STAGE=dev SERVER_ENV="SWOT_HEALTH_SECONDS=10 ${SERVER_ENV:-}"
 echo "settings: $SERVER_ENV; code $(git rev-parse --short HEAD)$(git diff --quiet HEAD -- app deploy || echo +)"
 bash slurm/ec2.sh update | tail -1
-sleep 90  # the reboot
-for i in $(seq 80); do curl -sf -m 10 -o /dev/null ${URL}api/info && break; sleep 15; done
+# the new server (the old one may answer for a while before the reboot): its code's version
+want=$(cat app/server.py app/swot_view.py | sha1sum | cut -c1-8)
+for i in $(seq 100); do sleep 15
+  [ "$(curl -s -m 10 ${URL}api/info | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null)" = $want ] && break
+done
 sleep 30  # the opening overview read back from disk
+# one series first: the Lambda function (if any) started with the new image, as after a deploy
+curl -s -m 200 -o /dev/null -w "first series: %{time_total} s\n" "${URL}api/series?lon=-30&lat=40&variable=ssha_dtu25_cal"
 t0=$(date -u +%Y-%m-%dT%H:%M:%S)
 /home/iury/.pixi/bin/pixi run python scripts/load_test.py replay $URL $STORIES $LEVELS $MINUTES
 t1=$(date -u +%Y-%m-%dT%H:%M:%S)
