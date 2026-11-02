@@ -455,11 +455,12 @@ def test_fine_hovmoller_only_on_short_lines(store_path, fine_store_path, monkeyp
 
 
 def test_opening_on_the_latest_days():
-    """The opening view: the 21 days up to the day of the latest passage, whatever the cycles."""
+    """The opening view: the days (11 by default) up to the day of the latest passage, whatever the cycles."""
     import server
 
     times = np.array(["2026-09-30T23:00", "2026-10-24T05:10", "2026-10-12T12:00"], "datetime64[ns]")
-    assert server.latest_days(times) == dict(start="2026-10-04", days=21)
+    assert server.latest_days(times, 21) == dict(start="2026-10-04", days=21)
+    assert server.latest_days(times) == dict(start="2026-10-14", days=11)  # the opening view's
 
 
 def test_overview_draws_what_the_view_in_memory_draws(fine_store_path, tmp_path, monkeypatch):

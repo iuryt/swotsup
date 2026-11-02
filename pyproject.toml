@@ -2,7 +2,7 @@
 authors = [{name = "iury Simoes-Sousa", email = "iuryt@pm.me"}]
 name = "swot-explorer"
 requires-python = ">= 3.11"
-version = "0.28.5"
+version = "0.29.0"
 license = "MIT"
 description = "SWOT's Up: a web map over the SWOT L2 KaRIn LR SSH in Icechunk."
 

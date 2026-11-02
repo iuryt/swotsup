@@ -142,3 +142,4 @@ mutate app/server.py 's/    remote = REMOTE_POOL.submit(remote_series, dict(kind
 mutate app/server.py 's/        print(f"lambda failed ({type(e).__name__}: {e}); here instead", flush=True)/        raise/' "a heavy request lost when the Lambda function fails"
 mutate app/server.py 's/        local = REMOTE_POOL.submit(here, \*\*args)/        local = remote/' "a slow Lambda function waited for, not worked out here too"
 mutate app/server.py 's/    return offloaded(hovmoller_here, dict(points=points, variable=variable, step=step))/    return hovmoller_here(points, variable, step)/' "the Hovmöller never asked of the Lambda function"
+mutate app/server.py 's/OPENING_DAYS = int(os.environ.get("SWOT_OPENING_DAYS", 11))/OPENING_DAYS = int(os.environ.get("SWOT_OPENING_DAYS", 21))/' "the site opening on 21 days"

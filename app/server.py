@@ -155,7 +155,7 @@ PRODUCTS = {
                               kind="level"),
         "wind_speed_karin_2": Variable("Wind speed (KaRIn 2)", ["wind_speed_karin_2"], "wind_speed_karin_2_qual",
                                        cmap="cmo.speed", kind="level", units="m/s")},
-        default="latest", overview=True),  # the whole globe on the latest 21 days, as an overview
+        default="latest", overview=True),  # the whole globe on the latest OPENING_DAYS days, as an overview
     # 250 m, 64 times the pixels of L3: small regions only; being uploaded, so the passages with data only
     "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", credit="NASA/JPL, CNES", pixel=0.25, partial=True,
                        variables=SSHA_L2 | {"sig0_karin_2": SIGMA0},
@@ -258,10 +258,13 @@ def open_product(target, partial=False, geometry=None, opened=None):
     return SimpleNamespace(ds=ds, index=index, geometry=geometry, commit=commit)
 
 
-def latest_days(times):
-    """The MAX_DAYS days up to the day of the latest passage (part of two cycles, often): their first day and number."""
-    first = times.max().astype("datetime64[D]") - np.timedelta64(MAX_DAYS - 1, "D")
-    return dict(start=str(first), days=MAX_DAYS)
+OPENING_DAYS = int(os.environ.get("SWOT_OPENING_DAYS", 11))  # the first view's days (fewer: it opens faster)
+
+
+def latest_days(times, days=OPENING_DAYS):
+    """The `days` days up to the day of the latest passage (part of two cycles, often): their first day and number."""
+    first = times.max().astype("datetime64[D]") - np.timedelta64(days - 1, "D")
+    return dict(start=str(first), days=days)
 
 
 STORE = os.environ.get("SWOT_STORE", L2 + "expert-d")
