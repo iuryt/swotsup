@@ -180,7 +180,7 @@ work)  # the Lambda function for the heavy requests: repository, role, and the f
   fi
   # at most this many machines at once (the account allows 1000): a ceiling on what it can cost; beyond it, the server
   # works the requests out itself
-  ceiling=$([ "$STAGE" = dev ] && echo 20 || echo 50)
+  ceiling=$([ "$STAGE" = dev ] && echo 50 || echo 100)
   if aws lambda get-function --function-name $fn >/dev/null 2>&1; then
     aws lambda update-function-code --function-name $fn --image-uri $uri --query LastUpdateStatus --output text
     aws lambda put-function-concurrency --function-name $fn --reserved-concurrent-executions $ceiling --output text
