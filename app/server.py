@@ -126,7 +126,8 @@ def ssha_l2():
     out = {}
     for dtu, cal, water in itertools.product((True, False), (True, False), (False, True)):
         key = lambda d, c, w: "ssha_" + ("dtu25" if d else "karin_2_xover") + ("_cal" if c else "") + ("_water" if w else "")  # noqa: E731
-        label = ("SSHA (KaRIn 2) + crossover correction" + ("" if dtu else ", L2 MSS") + (", calibrated" if cal else "")
+        # the defaults (crossover correction, DTU25, calibrated, open ocean) are just "SSHA"; a label says what differs
+        label = ("SSHA" + ("" if dtu else ", L2 MSS") + ("" if cal else ", uncalibrated")
                  + (", rivers and lakes too" if water else ""))
         out[key(dtu, cal, water)] = Variable(label, ["ssha_karin_2_xover"] + ([DTU] if dtu else []),
                                              surface=None if water else (0,), twin=key(dtu, cal, not water),
@@ -155,7 +156,7 @@ PRODUCTS = {
                               kind="level"),
         "wind_speed_karin_2": Variable("Wind speed (KaRIn 2)", ["wind_speed_karin_2"], "wind_speed_karin_2_qual",
                                        cmap="cmo.speed", kind="level", units="m/s")},
-        default="latest", overview=True),  # the whole globe on the latest 21 days, as an overview
+        default="latest", overview=True),  # the whole globe on the latest OPENING_DAYS days, as an overview
     # 250 m, 64 times the pixels of L3: small regions only; being uploaded, so the passages with data only
     "unsmoothed": dict(label="L2 LR SSH Unsmoothed, 250 m", credit="NASA/JPL, CNES", pixel=0.25, partial=True,
                        variables=SSHA_L2 | {"sig0_karin_2": SIGMA0},
@@ -258,10 +259,13 @@ def open_product(target, partial=False, geometry=None, opened=None):
     return SimpleNamespace(ds=ds, index=index, geometry=geometry, commit=commit)
 
 
-def latest_days(times):
-    """The MAX_DAYS days up to the day of the latest passage (part of two cycles, often): their first day and number."""
-    first = times.max().astype("datetime64[D]") - np.timedelta64(MAX_DAYS - 1, "D")
-    return dict(start=str(first), days=MAX_DAYS)
+OPENING_DAYS = int(os.environ.get("SWOT_OPENING_DAYS", 11))  # the first view's days (fewer: it opens faster)
+
+
+def latest_days(times, days=OPENING_DAYS):
+    """The `days` days up to the day of the latest passage (part of two cycles, often): their first day and number."""
+    first = times.max().astype("datetime64[D]") - np.timedelta64(days - 1, "D")
+    return dict(start=str(first), days=days)
 
 
 STORE = os.environ.get("SWOT_STORE", L2 + "expert-d")
@@ -1354,7 +1358,7 @@ def load_view(west: float, east: float, south: float, north: float, start: str, 
     return dict(passages=data.sub.sizes["time"], seconds=round(seconds, 2),
                 pixels=data.pixels, quantiles=data.quantiles, robust=data.robust,
                 code=swot_view.snippet(west, east, south, north, start, str(end.date()), stored(VARIABLES[variable])[0],
-                                       dtu=VARIABLES[variable].dtu, cal=VARIABLES[variable].calibrated,
+                                       target=STORE, dtu=VARIABLES[variable].dtu, cal=VARIABLES[variable].calibrated,
                                        edit=VARIABLES[variable].edit))
 
 

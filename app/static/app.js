@@ -929,7 +929,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
   };
   if (!sheet) dragByHeader(card, link);
   card.querySelector(".expand").onclick = () => {
-    const [w, h] = [440, 250];
+    const [w, h] = [440, 360];  // tall enough for the series to read at a glance
     place(w, h);
     card.classList.remove("compact");
     if (!sheet) Object.assign(card.style, { width: `${w}px`, height: `${h}px` });
@@ -1013,7 +1013,7 @@ function seriesLegend(card, curves, radius, fineNote = "reading…") {
                 `250 m pixels, within ${FINE_RADIUS} km · ${curves[1] ? passages(curves[1].time.length) : fineNote}`];
   hint.innerHTML = (info.looks[state.variable].fine ? text : text.slice(0, 1)).map((t, k) =>
     `<span class="key${u && u.series[k + 1] && !u.series[k + 1].show ? " off" : ""}" data-k="${k}" title="Show or hide this series">` +
-    `<i style="background:${SERIES[k].color}"></i>${t}</span>`).join("") + `<span class="key-note"> · click a point to see that date on the map</span>`;
+    `<i style="background:${SERIES[k].color}"></i>${t}</span>`).join("");
   hint.querySelectorAll(".key").forEach((el) => el.onclick = (e) => {
     e.stopPropagation();
     const i = Number(el.dataset.k) + 1;
@@ -1488,8 +1488,12 @@ function showCode(code, title, hint) {
   $("#copy").lastChild.textContent = "Copy";
   $("#code-dialog").showModal();
 }
+// the Python packages some code needs (installed as one likes: pixi, conda, pip): with the stores on Earthmover,
+// arraylake, and pcodec (their numbers are compressed with it: without it nothing opens, 2 Nov)
+const installs = (code, more = []) => "Needs " + [...(code.includes("import arraylake") ? ["arraylake"] : []), "icechunk", "xarray",
+  ...(code.includes("import arraylake") ? ["pcodec"] : []), ...more].map((p) => `<code>${p}</code>`).join(", ");
 const showRegionCode = () => track("code", { what: "region" }) || showCode(state.code ?? "", "The same data in your own Python",
-  "Only <code>pip install icechunk xarray</code>. This is the region and dates on the map.");
+  `${installs(state.code ?? "")}. This is the region and dates on the map.`);
 
 // --- a chart's buttons: the figure as PNG, its numbers as NetCDF, the code that reproduces it
 const chartButtons = () => `<button class="ghost icon" data-get="png" title="Download the figure (PNG)"><i data-lucide="image-down"></i></button>` +
@@ -1560,7 +1564,7 @@ async function chartAction(card, what) {
     const code = kind === "series" ? (await api("/api/code/series", params)).code
       : (await api("/api/code/line", kind === "profile" ? { ...params, start: isoDay(state.start), days: state.days }
                                                           : { ...params, mean: transect.hovMode })).code;
-    showCode(code, "This chart in your own Python", `<code>pip install icechunk xarray matplotlib${kind === "series" ? "" : " scipy"}</code>.
+    showCode(code, "This chart in your own Python", `${installs(code, ["matplotlib", ...(kind === "series" ? [] : ["scipy"])])}.
       The same data and figure${kind === "hovmoller" ? " (the whole mission along the line: it reads a lot, give it a moment)" : ""}.`);
   }
 }
