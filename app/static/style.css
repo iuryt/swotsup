@@ -12,6 +12,9 @@
 }
 
 * { box-sizing: border-box; }
+/* no zoom of the page on a double tap (an iPhone zooms on two quick taps of a button); pinching still zooms, and the
+   map handles its own gestures */
+html, body, button, select, .panel { touch-action: manipulation; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   font: 13px/1.4 Inter, system-ui, sans-serif; overflow: hidden; }
 #map { position: absolute; inset: 0; }
@@ -188,6 +191,9 @@ dialog table { border-collapse: collapse; width: 100%; margin: 8px 0; }
 dialog th, dialog td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 dialog td + td, dialog th + th { text-align: right; }
 
+#notice { left: var(--gap); right: var(--gap); top: calc(var(--gap) + 52px); padding: 6px 6px 6px 14px; z-index: 10;
+  display: flex; align-items: center; gap: 8px; font-size: 13px; border-color: var(--orange); }
+#notice span { flex: 1; }
 #toast { left: 50%; transform: translateX(-50%); top: var(--gap); padding: 10px 14px; border-color: var(--orange);
   z-index: 10; max-width: 480px; }
 
