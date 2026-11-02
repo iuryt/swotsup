@@ -60,17 +60,19 @@ basemap=/opt/cache/gebco2026.mbtiles
 chown 1000:1000 $basemap 2>/dev/null
 # downloads: of L2 (NASA/JPL, CNES), not of the L3 fallback (its license does not allow redistributing it unchanged)
 netcdf=$([ -n "$token" ] && echo 1 || echo 0)
-# a server process per 4 cores (each holds Python's lock: one alone uses ~2 cores), each with views of memory/processes
-# - 4.5 GB (the rest: its blocks and the code; c7i.2xlarge: 2 processes, 3 GB; c7i.4xlarge: 4, 3 GB)
+# a server process per 4 cores (each holds Python's lock: one alone uses ~2 cores); the caches shared among them (each
+# has its own): views up to memory/processes - 5 GB, 1024/processes blocks of 250 m (~3.4 MB each), 4096/processes of
+# Expert (~0.4 MB). With 4 processes and the caches of one each, they grew to ~8 GB and some were killed (2 Nov)
 workers=$(( $(nproc) / 4 > 1 ? $(nproc) / 4 : 1 ))
 mem=$(awk '/MemTotal/ {print int($2 / 1e6)}' /proc/meminfo)
-cache=$(( mem / workers - 4 > 2 ? mem / workers - 4 : 2 ))
-echo "server: $workers processes, views up to $cache GB each"
+cache=$(( mem / workers - 5 > 2 ? mem / workers - 5 : 2 ))
+detail_blocks=$(( 1024 / workers )) base_blocks=$(( 4096 / workers ))
+echo "server: $workers processes, views up to $cache GB, $detail_blocks + $base_blocks blocks each"
 docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=$netcdf -e SWOT_CACHE_GB=$cache -e WEB_CONCURRENCY=$workers \
-  -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
+  -e SWOT_DETAIL_BLOCKS=$detail_blocks -e SWOT_BASE_BLOCKS=$base_blocks -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
   -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" -v /opt/telemetry:/telemetry -e SWOT_TELEMETRY_DIR=/telemetry \
   -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb -e SWOT_BASEMAP=/cache/gebco2026.mbtiles "${rasters[@]}" "${debug[@]}" "${store[@]}" \
-  -e SWOT_LAMBDA=$work -e SWOT_THREADS=100 --env-file <(grep -s = server.env) swot  # server.env: settings being tried (slurm/ec2.sh SERVER_ENV)
+  -e SWOT_LAMBDA=$work -e SWOT_LAMBDA_WARM=$([ "$stage" = dev ] && echo 3 || echo 10) -e SWOT_THREADS=100 --env-file <(grep -s = server.env) swot  # server.env: settings being tried (slurm/ec2.sh SERVER_ENV)
 set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860
