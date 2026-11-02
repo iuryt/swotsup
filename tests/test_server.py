@@ -1193,3 +1193,14 @@ def test_hovmoller_from_the_lambda_function_and_here_when_it_fails(fine_store_pa
 
     monkeypatch.setattr(server, "remote_series", fails)
     assert client.get("/api/hovmoller", params=q).json() == here
+
+
+def test_region_code_opens_the_server_s_store(client, monkeypatch):
+    """The region's code opens the store the server reads, not swot_view's own default (they differ in production:
+    the server opens L2 on Arraylake by default)."""
+    import server
+    import swot_view
+
+    monkeypatch.setattr(swot_view, "STORE", "s3://elsewhere/not-this-one")
+    code = client.get("/api/load", params=PASS_7).json()["code"]
+    assert "elsewhere" not in code and swot_view.repository(server.STORE)[2] in code

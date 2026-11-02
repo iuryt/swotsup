@@ -143,3 +143,4 @@ mutate app/server.py 's/        print(f"lambda failed ({type(e).__name__}: {e});
 mutate app/server.py 's/        local = REMOTE_POOL.submit(here, \*\*args)/        local = remote/' "a slow Lambda function waited for, not worked out here too"
 mutate app/server.py 's/    return offloaded(hovmoller_here, dict(points=points, variable=variable, step=step))/    return hovmoller_here(points, variable, step)/' "the Hovmöller never asked of the Lambda function"
 mutate app/server.py 's/OPENING_DAYS = int(os.environ.get("SWOT_OPENING_DAYS", 11))/OPENING_DAYS = int(os.environ.get("SWOT_OPENING_DAYS", 21))/' "the site opening on 21 days"
+mutate app/server.py 's/                                       target=STORE, dtu=VARIABLES\[variable\].dtu, cal=VARIABLES\[variable\].calibrated,/                                       dtu=VARIABLES[variable].dtu, cal=VARIABLES[variable].calibrated,/' "the region code opening swot_view's default store, not the server's"

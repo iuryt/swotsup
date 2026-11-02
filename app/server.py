@@ -1358,7 +1358,7 @@ def load_view(west: float, east: float, south: float, north: float, start: str, 
     return dict(passages=data.sub.sizes["time"], seconds=round(seconds, 2),
                 pixels=data.pixels, quantiles=data.quantiles, robust=data.robust,
                 code=swot_view.snippet(west, east, south, north, start, str(end.date()), stored(VARIABLES[variable])[0],
-                                       dtu=VARIABLES[variable].dtu, cal=VARIABLES[variable].calibrated,
+                                       target=STORE, dtu=VARIABLES[variable].dtu, cal=VARIABLES[variable].calibrated,
                                        edit=VARIABLES[variable].edit))
 
 
