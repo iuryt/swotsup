@@ -21,7 +21,6 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import anyio
-import datashader as dsh
 import cmocean  # noqa: F401 (registers its colormaps as cmo.*)
 import matplotlib
 import numpy as np
@@ -36,6 +35,22 @@ from scipy.spatial import cKDTree
 
 import rasters
 import swot_view
+
+
+def lazy(name):
+    """A module imported when first used (datashader: ~2.5 s to import, only to draw, which the Lambda function never
+    does)."""
+    import importlib.util
+    import sys
+    spec = importlib.util.find_spec(name)
+    spec.loader = importlib.util.LazyLoader(spec.loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+dsh = lazy("datashader")
 
 matplotlib.use("agg")
 # zarr fetches 10 chunks at once by default; S3 answers each in tens of ms, so more at once is faster
@@ -209,16 +224,22 @@ MODES = ("box", "passage", "none")  # spatial mean subtracted: of the box, of ea
 R = 6378137.0  # web mercator
 WORLD = 2 * np.pi * R
 
-def open_product(target, partial=False, geometry=None):
+def opening(target):
+    """A store's latest commit, its session and dataset (the coordinates read: what takes time)."""
+    repo = swot_view.open_repo(target)
+    commit = next(iter(repo.ancestry(branch="main")))
+    session = repo.readonly_session(snapshot_id=commit.id)
+    return commit, session, swot_view.dataset(session.store)
+
+
+def open_product(target, partial=False, geometry=None, opened=None):
     """A store at its latest commit (kept: a store being written changes while people look): the dataset, when each
     passage was (`index`) and the passes' envelopes (`geometry`, which passes cross a box without reading data; kept
     in memory, a view would read them all again). A store being filled (`partial`) shows only the passages with data,
     and envelopes not written yet come from each pass's nadir and the swath's half width. A product over the same
-    passes can take another's `geometry` (the Unsmoothed one, a line every 250 m, is 400 MB)."""
-    repo = swot_view.open_repo(target)
-    commit = next(iter(repo.ancestry(branch="main")))
-    session = repo.readonly_session(snapshot_id=commit.id)
-    ds = swot_view.dataset(session.store)
+    passes can take another's `geometry` (the Unsmoothed one, a line every 250 m, is 400 MB). `opened`: its
+    `opening`, being read meanwhile (a future)."""
+    commit, session, ds = opened.result() if opened else opening(target)
     if partial:
         ds = ds.isel(time=swot_view.written(ds, session.store))
     if partial and geometry is None:
@@ -230,8 +251,8 @@ def open_product(target, partial=False, geometry=None):
             ds = ds.assign_coords(lon_min=(ds.lon_min.dims, np.where(have, ds.lon_min.values, lon_min)),
                                   lon_max=(ds.lon_max.dims, np.where(have, ds.lon_max.values, lon_max)))
     index = ds[["cycle", "pass_id"]].reset_coords().load()
-    if geometry is None:
-        geometry = ds[["lon_min", "lon_max"]].load()
+    if geometry is None:  # the Lambda function (one series) reads only the rows near its point: not kept
+        geometry = ds[["lon_min", "lon_max"]] if os.environ.get("SWOT_ROLE") == "lambda" else ds[["lon_min", "lon_max"]].load()
         ds = ds.assign_coords(lon_min=geometry.lon_min, lon_max=geometry.lon_max)
     ds = ds.assign_coords(cycle=index.cycle, pass_id=index.pass_id)
     return SimpleNamespace(ds=ds, index=index, geometry=geometry, commit=commit)
@@ -244,15 +265,17 @@ def latest_days(times):
 
 
 STORE = os.environ.get("SWOT_STORE", L2 + "expert-d")
+DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE", None if CONFIGURED else L2 + "unsmoothed-d")
+# both stores opened at once (each reads its coordinates: seconds, mostly waiting for the network)
+detail_opening = ThreadPoolExecutor(1).submit(opening, DETAIL_STORE) if DETAIL_STORE else None
 base = open_product(STORE, PRODUCT.get("partial"))
 ds, index, geometry, COMMIT = base.ds, base.index, base.geometry, base.commit
 BASE_ROWS = {(c, p): i for i, (c, p) in enumerate(zip(index.cycle.values.tolist(), index.pass_id.values.tolist()))}
 # a finer product over the same passages, drawn over the map from a zoom on (SWOT_DETAIL_STORE: e.g. L2 Unsmoothed
 # at 250 m over L2 Expert at 2 km); read tile by tile, a chunk at a time, never as a whole view
-DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE", None if CONFIGURED else L2 + "unsmoothed-d")
 DETAIL_PRODUCT = PRODUCTS[os.environ.get("SWOT_DETAIL_PRODUCT", "unsmoothed")]
 DETAIL_ZOOM = int(os.environ.get("SWOT_DETAIL_ZOOM", 8))  # its tiles from this zoom; seen from the map's zoom before
-detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial"), geometry) if DETAIL_STORE else None
+detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial"), geometry, detail_opening) if DETAIL_STORE else None
 # the passages it has, (cycle, pass): under it, from its zoom on, the base is drawn inside its swath (see `inner`)
 DETAIL_PASSAGES = frozenset(zip(detail.index.cycle.values.tolist(), detail.index.pass_id.values.tolist())) if detail else frozenset()
 DEFAULT = PRODUCT["default"]
