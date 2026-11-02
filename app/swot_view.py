@@ -158,7 +158,7 @@ def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None,
 def repository(target):
     """The library, how to get access, and the code that opens a store's repository."""
     if target.startswith("arraylake:"):
-        return ("arraylake", "an Arraylake token: run `arraylake auth login` once",
+        return ("arraylake", "a free Earthmover account (earthmover.io): run `arraylake auth login` once",
                 f'arraylake.Client().get_repo("{target.removeprefix("arraylake:")}")')
     bucket, prefix = target.removeprefix("s3://").split("/", 1)
     return ("icechunk", "AWS credentials from the environment (AWS_PROFILE or AWS_ACCESS_KEY_ID...), region us-east-1",
@@ -189,7 +189,7 @@ first = (sub.lon_min - west) % 360  # how far east of `west` each line starts
 hit = ((first <= (east - west) % 360) | (first + sub.lon_max - sub.lon_min >= 360)).any("along")
 sub = sub.isel(time=sub.pass_id.isin(sub.pass_number[hit]).values)
 '''
-    corrected = (f"ssha = sub.{var}\n" if dtu or cal or edit else "") + ("""# the DTU25 mean sea surface instead of the L2's (CNES_CLS22): the correction, kept once per pass
+    corrected = (f"ssha = sub.{var}\n" if dtu or cal or edit else "") + ("""# the DTU25 mean sea surface (DTU Space, doi:10.11583/DTU.29412275, CC BY 4.0) instead of the L2's (CNES_CLS22): the correction, kept once per pass
 ssha = ssha + ds.mss_cor_dtu25.sel(pass_number=np.unique(sub.pass_id), along=sub.along.values).load().sel(pass_number=sub.pass_id)
 """ if dtu else "") + ("""# the experimental calibration (swot_cloud v0.1, may change): each line's bias and cross-track slope, on each
 # pixel's side of nadir
@@ -200,7 +200,7 @@ ssha = ssha - xr.where(sub.cross > 0, east, west)
 ssha = ssha.where(sub.ssha_edit_flag == 0)
 """ if edit else "")
     arrays = ", ".join(f'"{n}"' for n in [var] + (["cal_bias", "cal_slope"] if cal else []) + (["ssha_edit_flag"] if edit else []))
-    return f'''{(DTU25_CREDIT if dtu else "") + opening(target, "import numpy as np\n" if dtu else "")}
+    return f'''{opening(target, "import numpy as np\n" if dtu else "")}
 sub = ds.sel(time=slice("{start}", "{end}"){lats})
 {lons}sub = sub[[{arrays}]].load()  # dims (time, along, cross); latitude/longitude come along
 {corrected}'''
@@ -209,14 +209,14 @@ sub = ds.sel(time=slice("{start}", "{end}"){lats})
 DTU25_HERE = '''
 
 def dtu25(sub):
-    """The DTU25 mean sea surface instead of the L2's (CNES_CLS22): the correction, kept once per pass."""
+    """The DTU25 mean sea surface (DTU Space, doi:10.11583/DTU.29412275, CC BY 4.0) instead of the L2's (CNES_CLS22): the correction, kept once per pass."""
     return sub.mss_cor_dtu25.sel(pass_number=np.unique(sub.pass_id)).load().sel(pass_number=sub.pass_id)
 '''
 DTU25_FROM_EXPERT = '''
 
 def dtu25_250m(sub):
-    """The Unsmoothed store has no MSS: the Expert's correction (ds) to the DTU25 mean sea surface, interpolated at the
-    pixels' along and cross (both stores count them in km from the same reference track), past its edges too."""
+    """The Unsmoothed store has no MSS: the Expert's correction (ds) to the DTU25 mean sea surface (DTU Space,
+    doi:10.11583/DTU.29412275, CC BY 4.0), interpolated at the pixels' along and cross (both stores count them in km from the same reference track), past its edges too."""
     near = ds.mss_cor_dtu25.sel(along=slice(float(sub.along[0]) - 4, float(sub.along[-1]) + 4)).drop_vars("lat")
     return xr.concat([near.sel(pass_number=p).interp(along=sub.along.values, cross=sub.cross.values,
                                                      kwargs={"fill_value": None}).reset_coords(drop=True)
@@ -251,9 +251,6 @@ def calibration_250m(sub):
     west = cal.cal_bias.isel(side=0) + cal.cal_slope.isel(side=0) * b / 60
     return -xr.where(b > 0, east, west)
 '''
-DTU25_CREDIT = "# DTU25MSS: DTU Space (Nilsson, Andersen et al., ESSD 18, 5027, 2026), doi:10.11583/DTU.29412275, CC BY 4.0\n"
-
-
 def series_snippet(lon, lat, names, radius=5.0, label="", target=STORE, mask=None, pixel=2.0, fine=None, db=False,
                    units="m", dtu=False, cal=False):
     """The code for the time series at a point (as `point_series`), with a figure: the mean within `radius` km of
@@ -281,7 +278,7 @@ fine = point_series(fine, {list(arrays)}, {r:g}, {size:g}, {flag!r}, {decibels!r
 fine.plot(marker=".", label="{fine['label']}, within {fine['radius']:g} km")
 plt.legend()""" if fine else 'series.plot(marker=".")')
     corrections = (DTU25_HERE * dtu + CAL_HERE * cal + DTU25_FROM_EXPERT * fine_dtu + CAL_FROM_EXPERT * fine_cal)
-    return f'''{(DTU25_CREDIT if dtu else "") + opening(target, "import numpy as np\nimport matplotlib.pyplot as plt\n")}
+    return f'''{opening(target, "import numpy as np\nimport matplotlib.pyplot as plt\n")}
 lon, lat = {lon:.4f}, {lat:.4f}
 km = 6371.0 * np.pi / 180
 {corrections}
@@ -327,16 +324,16 @@ expert = xr.open_zarr(expert.readonly_session("main").store, consolidated=False,
 LINE_DTU25_HERE = '''
 
 def dtu25(times, row, col):
-    """The DTU25 mean sea surface instead of the L2's (CNES_CLS22): the pass's correction at its pixels (row, col),
-    the same every cycle."""
+    """The DTU25 mean sea surface (DTU Space, doi:10.11583/DTU.29412275, CC BY 4.0) instead of the L2's (CNES_CLS22): the pass's
+    correction at its pixels (row, col), the same every cycle."""
     p = int(sub.pass_id.values[times[0]])
     return np.tile(sub.mss_cor_dtu25.sel(pass_number=p).values[row, col], (len(times), 1))
 '''
 LINE_DTU25_FROM_EXPERT = '''
 
 def dtu25(times, row, col):
-    """The Unsmoothed store has no MSS: the Expert's correction to the DTU25 mean sea surface, interpolated at the
-    pixels' along and cross (both stores count them in km from the same reference track), past its edges too."""
+    """The Unsmoothed store has no MSS: the Expert's correction to the DTU25 mean sea surface (DTU Space,
+    doi:10.11583/DTU.29412275, CC BY 4.0), interpolated at the pixels' along and cross (both stores count them in km from the same reference track), past its edges too."""
     p = int(sub.pass_id.values[times[0]])
     at = dict(along=xr.DataArray(sub.along.values[row], dims="pixel"), cross=xr.DataArray(sub.cross.values[col], dims="pixel"))
     near = expert.mss_cor_dtu25.sel(pass_number=p, along=slice(float(at["along"].min()) - 4, float(at["along"].max()) + 4))
@@ -413,7 +410,7 @@ plt.scatter(distance[j], times[k], c=values[k, j], s=3, marker="s", linewidths=0
 plt.colorbar(label="{units}")'''
     figure = figure.replace("{units}", units)
     vertices = ", ".join(f"({x:.4f}, {y:.4f})" for x, y in points)
-    return f'''{(DTU25_CREDIT if dtu else "") + opening(target, "import numpy as np\nimport matplotlib.pyplot as plt\nfrom scipy.spatial import cKDTree\n")}
+    return f'''{opening(target, "import numpy as np\nimport matplotlib.pyplot as plt\nfrom scipy.spatial import cKDTree\n")}
 points, step = [{vertices}], {step:g}  # (lon, lat) vertices, km between samples
 R = 6371.0
 unit = lambda lon, lat: np.stack([np.cos(np.deg2rad(lat)) * np.cos(np.deg2rad(lon)),
