@@ -132,15 +132,17 @@ be resumed here (`claude --resume`).
   Touch draws the box, taps place a line's points and Done ends it (no double click on a touch screen), a finger
   moves the charts' cursor. While drawing, a bar shows what to do, with Undo / Done / Cancel (on the desktop too).
 - Many visitors at once (#116, measured with `scripts/load_test.py` + `slurm/load_trial.sh`: recorded browser visits
-  replayed by 5-100 visitors on dev, with the server's own health): `deploy/boot.sh` runs a server process per 4
-  cores (one process holds Python's lock and uses ~2 cores), each with views up to memory/processes - 4 GB; one BLAS
+  replayed by 5-100 visitors on dev, with the server's own health): `deploy/boot.sh` runs 3 server processes per
+  8 cores (one process holds Python's lock and uses ~2 cores; c7i.4xlarge: 6), the caches divided among them (views
+  up to memory/processes - 5 GB, 1024/processes blocks of 250 m, 4096/processes of Expert; MALLOC_ARENA_MAX=2: with
+  the caches of one each, processes grew to ~8.5 GB and were killed), 24 reading threads each; one BLAS
   thread per call; the 250 m base arrays interpolated by indexing (`weighted`/`linear`, not xarray's interp: a third
   of the CPU). Series and Hovmöllers go to an AWS Lambda function with the server's own image (`app/lambda_work.py`,
   `offloaded`: SWOT_LAMBDA, swot-explorer-work and -dev; each instance pushes its image to ECR at boot and moves the
   function to it; `slurm/ec2.sh work` creates repository, role and function): past SWOT_LAMBDA_HEDGE (12 s, a
   machine starting takes ~15 s) worked out here too, the first answer wins; any failure, here. One server process
   keeps SWOT_LAMBDA_WARM machines warm (parallel pings every 4 minutes). The account allows 10 concurrent executions
-  (a raise to 1000 was asked on 2026-11-01). Health rows every minute (`health-*.jsonl`: cores, memory, network,
+  (raised to 1000 on 2026-11-02; ceilings: 100 machines in production, 50 on dev; 10 kept warm in production, 3 on dev). Health rows every minute (`health-*.jsonl`: cores, memory, network,
   requests in flight, the function's answers, failures, hedges) and the server's last messages without access lines
   (`server-log.txt`) go to S3 with the usage. Heavy requests: 300 a minute from one address (a meeting room is one).
 - `Dockerfile`: the server with the pixi environment `serve` (the server's dependencies, solved together
