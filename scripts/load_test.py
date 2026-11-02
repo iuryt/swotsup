@@ -111,7 +111,7 @@ async def replay_level(url, recorded, users, minutes):
             while time.monotonic() < stop:
                 place = random.choice(places)
                 todo = ["region"] + (["detail"] if random.random() < 0.5 else []) + \
-                       (["profile"] if random.random() < 0.3 else []) + (["hovmoller"] if random.random() < 0.15 else [])
+                       (["profile"] if random.random() < 0.6 else []) + (["hovmoller"] if random.random() < 0.3 else [])
                 for s in todo:
                     if time.monotonic() >= stop:
                         break
