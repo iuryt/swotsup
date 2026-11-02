@@ -1144,3 +1144,32 @@ def test_series_from_the_lambda_function_and_here_when_it_fails(fine_store_path,
     monkeypatch.setattr(server, "remote_series", slow)
     monkeypatch.setattr(server, "HEDGE", 0.5)
     assert client.get("/api/series", params=q).json() == here
+
+
+def test_warming_pings_the_function_at_once(fine_store_path, monkeypatch):
+    """Keeping the function warm: WARM pings sent together (one after another would reach the same machine)."""
+    import asyncio
+    import threading
+
+    server, _ = detail_server(fine_store_path, monkeypatch)
+    monkeypatch.setattr(server, "WARM", 3)
+    inside, most, lock = [0], [0], threading.Lock()
+
+    def ping():
+        with lock:
+            inside[0] += 1
+            most[0] = max(most[0], inside[0])
+        time.sleep(0.3)
+        with lock:
+            inside[0] -= 1
+        return True
+
+    monkeypatch.setattr(server, "remote_ping", ping)
+
+    async def once():
+        task = asyncio.create_task(server.warm())
+        await asyncio.sleep(1)
+        task.cancel()
+
+    asyncio.run(once())
+    assert most[0] == 3 and server.REMOTE["warm"] == 3

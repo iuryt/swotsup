@@ -1252,6 +1252,7 @@ async def health():
                               quick=QUICK.borrowed_tokens, reading=READING.borrowed_tokens, loading=len(loading),
                               views=len(loaded), views_gb=round(sum(d.nbytes for d in loaded.values()) / 1e9, 2),
                               lambda_ok=REMOTE["ok"], lambda_failed=REMOTE["failed"], lambda_hedged=REMOTE["hedged"],
+                              lambda_warm=REMOTE["warm"],
                               lambda_error=REMOTE["error"]))
         before = now
 
@@ -1263,6 +1264,8 @@ async def started():
         anyio.to_thread.current_default_thread_limiter().total_tokens = int(os.environ["SWOT_THREADS"])
     if TELEMETRY:
         started.health = asyncio.get_running_loop().create_task(health())  # kept: a task only weakly referenced may go
+    if LAMBDA and WARM:
+        started.warm = asyncio.get_running_loop().create_task(warm())
 
 
 @app.get("/")
@@ -1878,7 +1881,7 @@ def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool 
 
 # an AWS Lambda function with this server's code (app/lambda_work.py) for the heavy requests (series): its name
 LAMBDA = os.environ.get("SWOT_LAMBDA")
-REMOTE = {"ok": 0, "failed": 0, "hedged": 0, "error": None}
+REMOTE = {"ok": 0, "failed": 0, "hedged": 0, "warm": 0, "error": None}
 HEDGE = float(os.environ.get("SWOT_LAMBDA_HEDGE", 12))
 REMOTE_POOL = ThreadPoolExecutor(int(os.environ.get("SWOT_LAMBDA_CALLS", 64)))  # its answers and failures, since the start (health rows)
 
@@ -1889,6 +1892,30 @@ def lambda_client():
     from botocore.config import Config
     return boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"), config=Config(read_timeout=90, connect_timeout=5, retries={"max_attempts": 0},
                                                 max_pool_connections=100))
+
+
+# machines of the function kept warm (their stores open), shared among this server's processes (WEB_CONCURRENCY)
+WARM = -(-int(os.environ.get("SWOT_LAMBDA_WARM", 3)) // int(os.environ.get("WEB_CONCURRENCY", 1)))
+
+
+async def warm():
+    """Every 4 minutes, WARM pings to the function at once (at once: one after another would reach the same machine):
+    a machine starting opens its stores for a ping instead of a visitor's series; one already warm answers at once
+    and stays (Lambda lets a machine go after some idle minutes). Only while this server runs: it sleeps when nobody
+    uses it, and so do they."""
+    while True:
+        try:
+            out = await asyncio.gather(*(anyio.to_thread.run_sync(remote_ping) for _ in range(WARM)),
+                                       return_exceptions=True)
+            REMOTE["warm"] = sum(o is True for o in out)
+        except Exception:  # noqa: BLE001 (warming is best effort)
+            pass
+        await anyio.sleep(240)
+
+
+def remote_ping():
+    r = lambda_client().invoke(FunctionName=LAMBDA, Payload=b'{"kind": "ping"}')
+    return json.loads(r["Payload"].read()).get("warm") is True
 
 
 def remote_series(args):

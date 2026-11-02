@@ -20,6 +20,8 @@ def handler(event, context):
     try:
         if server is None:
             import server
+        if event.get("kind") == "ping":  # kept warm by the server (`warm`): the stores are open, nothing else to do
+            return {"warm": True}
         if event.get("kind", "series") == "series":
             return server.series_here(float(event["lon"]), float(event["lat"]), event["variable"],
                                       float(event.get("radius", 5)), bool(event.get("fine", False)))

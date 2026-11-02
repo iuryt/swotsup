@@ -140,3 +140,4 @@ mutate app/server.py 's/    return k, w, (at < x\[0\]) | (at > x\[-1\])/    retu
 mutate app/server.py 's/            print(f"series lambda failed ({type(e).__name__}: {e}); here instead", flush=True)/            raise/' "the series lost when the Lambda function fails"
 mutate app/server.py 's/            here = REMOTE_POOL.submit(series_here, lon, lat, variable, radius, fine)/            here = remote/' "a slow Lambda function waited for, not worked out here too"
 mutate app/server.py 's/        remote = REMOTE_POOL.submit(remote_series, /        remote = REMOTE_POOL.submit(lambda a: series_here(lon, lat, variable, radius, fine), /' "the series never asked of the Lambda function"
+mutate app/server.py 's/            out = await asyncio.gather(\*(anyio.to_thread.run_sync(remote_ping) for _ in range(WARM)),/            out = await asyncio.gather(anyio.to_thread.run_sync(lambda: all([remote_ping() for _ in range(WARM)])),/' "the warming pings one after another"
