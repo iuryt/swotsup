@@ -1264,7 +1264,7 @@ async def started():
         anyio.to_thread.current_default_thread_limiter().total_tokens = int(os.environ["SWOT_THREADS"])
     if TELEMETRY:
         started.health = asyncio.get_running_loop().create_task(health())  # kept: a task only weakly referenced may go
-    if LAMBDA and WARM:
+    if LAMBDA and WARM and warmer():
         started.warm = asyncio.get_running_loop().create_task(warm())
 
 
@@ -1894,8 +1894,19 @@ def lambda_client():
                                                 max_pool_connections=100))
 
 
-# machines of the function kept warm (their stores open), shared among this server's processes (WEB_CONCURRENCY)
-WARM = -(-int(os.environ.get("SWOT_LAMBDA_WARM", 3)) // int(os.environ.get("WEB_CONCURRENCY", 1)))
+WARM = int(os.environ.get("SWOT_LAMBDA_WARM", 3))  # machines of the function kept warm (their stores open)
+
+
+def warmer():
+    """Whether this process keeps the function warm: one of the server's processes (WEB_CONCURRENCY), the one holding
+    a lock on a file for as long as it runs (pings from several, each at its own time, would all reach one machine)."""
+    import fcntl
+    warmer.file = open(os.path.join(os.environ.get("TMPDIR", "/tmp"), "swot-warm.lock"), "w")
+    try:
+        fcntl.flock(warmer.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
 
 
 async def warm():
