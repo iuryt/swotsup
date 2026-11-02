@@ -1129,7 +1129,8 @@ class PerMinute:
                     del self.seen[k]
 
 
-HEAVY = PerMinute(int(os.environ.get("SWOT_HEAVY_PER_MINUTE", 30)))  # series, lines, Hovmöllers, NetCDF files
+# series, lines, Hovmöllers, NetCDF files: 300 a minute from one address (a whole room behind one, as at a meeting)
+HEAVY = PerMinute(int(os.environ.get("SWOT_HEAVY_PER_MINUTE", 300)))
 EVENTS_PER_MINUTE = PerMinute(120)
 
 
