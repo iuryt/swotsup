@@ -173,7 +173,7 @@ work)  # the Lambda function for the heavy requests: repository, role, and the f
   aws iam get-role --role-name $WORK >/dev/null 2>&1 || role $WORK lambda.amazonaws.com "
     {\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameter\",\"Resource\":\"arn:aws:ssm:us-east-1:*:parameter/swot-explorer/*\"},
     {\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogGroup\",\"logs:CreateLogStream\",\"logs:PutLogEvents\"],\"Resource\":\"*\"}" >/dev/null
-  fn=$WORK$([ "$STAGE" = dev ] && echo -dev)
+  fn=$WORK$([ "$STAGE" = dev ] && echo -dev || true)  # (a failed test as the last status would end the script)
   uri=$(aws ecr describe-repositories --repository-names $WORK --query 'repositories[0].repositoryUri' --output text):$STAGE
   if ! aws ecr describe-images --repository-name $WORK --image-ids imageTag=$STAGE >/dev/null 2>&1; then
     echo "no image $uri yet: update the $STAGE instance (it pushes it at boot), then run this again"; exit 0
