@@ -126,7 +126,8 @@ def ssha_l2():
     out = {}
     for dtu, cal, water in itertools.product((True, False), (True, False), (False, True)):
         key = lambda d, c, w: "ssha_" + ("dtu25" if d else "karin_2_xover") + ("_cal" if c else "") + ("_water" if w else "")  # noqa: E731
-        label = ("SSHA (KaRIn 2) + crossover correction" + ("" if dtu else ", L2 MSS") + (", calibrated" if cal else "")
+        # the defaults (crossover correction, DTU25, calibrated, open ocean) are just "SSHA"; a label says what differs
+        label = ("SSHA" + ("" if dtu else ", L2 MSS") + ("" if cal else ", uncalibrated")
                  + (", rivers and lakes too" if water else ""))
         out[key(dtu, cal, water)] = Variable(label, ["ssha_karin_2_xover"] + ([DTU] if dtu else []),
                                              surface=None if water else (0,), twin=key(dtu, cal, not water),

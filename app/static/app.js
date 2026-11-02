@@ -929,7 +929,7 @@ async function openPoint(lngLat) {  // a small card: where, and the value there;
   };
   if (!sheet) dragByHeader(card, link);
   card.querySelector(".expand").onclick = () => {
-    const [w, h] = [440, 250];
+    const [w, h] = [440, 360];  // tall enough for the series to read at a glance
     place(w, h);
     card.classList.remove("compact");
     if (!sheet) Object.assign(card.style, { width: `${w}px`, height: `${h}px` });
@@ -1013,7 +1013,7 @@ function seriesLegend(card, curves, radius, fineNote = "reading…") {
                 `250 m pixels, within ${FINE_RADIUS} km · ${curves[1] ? passages(curves[1].time.length) : fineNote}`];
   hint.innerHTML = (info.looks[state.variable].fine ? text : text.slice(0, 1)).map((t, k) =>
     `<span class="key${u && u.series[k + 1] && !u.series[k + 1].show ? " off" : ""}" data-k="${k}" title="Show or hide this series">` +
-    `<i style="background:${SERIES[k].color}"></i>${t}</span>`).join("") + `<span class="key-note"> · click a point to see that date on the map</span>`;
+    `<i style="background:${SERIES[k].color}"></i>${t}</span>`).join("");
   hint.querySelectorAll(".key").forEach((el) => el.onclick = (e) => {
     e.stopPropagation();
     const i = Number(el.dataset.k) + 1;
