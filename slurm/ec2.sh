@@ -29,6 +29,9 @@ NAME=swot-explorer WAKE=swot-explorer-wake TYPE=${TYPE:-c7i.2xlarge} BUCKET=iury
 STORE=icechunk/ocean/swot_l3_lr_ssh_basic_v3_r2 CODE=deploy/swot_explorer/app.tar.gz
 TELEMETRY=telemetry/swot-explorer  # where the instance writes the anonymous usage (write only)
 ROLE=$NAME  # the production's role (and security group), the dev instance's too
+# the heavy requests (series) as a Lambda function with the server's image (app/lambda_work.py): its image repository
+# and role; the function swot-explorer-work (and -dev), its image pushed and updated by each instance at boot
+WORK=swot-explorer-work
 if [ "$STAGE" = dev ]; then
   NAME=swot-explorer-dev CODE=deploy/swot_explorer/dev/app.tar.gz TELEMETRY=telemetry/swot-explorer-dev
 fi
@@ -47,7 +50,9 @@ send_code() {  # build context (Dockerfile at the root), the boot script, the li
   elif [ "$(distribution Id)" != None ]; then echo "https://$DOMAIN/" > logs/public_url
   else aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text > logs/public_url 2>/dev/null || : > logs/public_url; fi
   echo "$STAGE" > logs/stage
-  tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh -C ../logs public_url stage
+  # settings of the server to try (dev), e.g. SERVER_ENV="SWOT_LOADS=4 WEB_CONCURRENCY=2": one per line, for docker
+  printf '%s\n' ${SERVER_ENV:-} > logs/server.env
+  tar -czf logs/app.tar.gz --exclude __pycache__ Dockerfile pyproject.toml pixi.lock app -C deploy boot.sh -C ../logs public_url stage server.env
   aws s3 cp logs/app.tar.gz s3://$BUCKET/$CODE
 }
 # what the instances may read: the S3 store, the app packages (both stages'), and the secrets under
@@ -60,7 +65,13 @@ INSTANCE_POLICY="
     {\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameter\",\"Resource\":\"arn:aws:ssm:us-east-1:*:parameter/swot-explorer/*\"},
     {\"Effect\":\"Allow\",\"Action\":\"s3:PutObject\",\"Resource\":\"arn:aws:s3:::$BUCKET/telemetry/swot-explorer*\"},
     {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::$BUCKET\",
-     \"Condition\":{\"StringLike\":{\"s3:prefix\":\"telemetry/swot-explorer*\"}}}"
+     \"Condition\":{\"StringLike\":{\"s3:prefix\":\"telemetry/swot-explorer*\"}}},
+    {\"Effect\":\"Allow\",\"Action\":\"ecr:GetAuthorizationToken\",\"Resource\":\"*\"},
+    {\"Effect\":\"Allow\",\"Action\":[\"ecr:BatchCheckLayerAvailability\",\"ecr:InitiateLayerUpload\",\"ecr:UploadLayerPart\",
+     \"ecr:CompleteLayerUpload\",\"ecr:PutImage\",\"ecr:BatchGetImage\",\"ecr:GetDownloadUrlForLayer\"],
+     \"Resource\":\"arn:aws:ecr:us-east-1:*:repository/$WORK\"},
+    {\"Effect\":\"Allow\",\"Action\":[\"lambda:InvokeFunction\",\"lambda:UpdateFunctionCode\",\"lambda:GetFunction\"],
+     \"Resource\":\"arn:aws:lambda:us-east-1:*:function:$WORK*\"}"
 role() {  # name, service that assumes it, inline policy
   aws iam create-role --role-name "$1" --assume-role-policy-document \
     "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"$2\"},\"Action\":\"sts:AssumeRole\"}]}"
@@ -152,6 +163,37 @@ update)
   else
     echo "$(instance) is not running: it gets the new package at its next start"
   fi
+  ;;
+work)  # the Lambda function for the heavy requests: repository, role, and the function once its image is there
+  aws ecr describe-repositories --repository-names $WORK >/dev/null 2>&1 || {
+    aws ecr create-repository --repository-name $WORK --query repository.repositoryUri --output text
+    aws ecr put-lifecycle-policy --repository-name $WORK --lifecycle-policy-text \
+      '{"rules":[{"rulePriority":1,"selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":4},"action":{"type":"expire"}}]}' >/dev/null
+  }
+  aws iam get-role --role-name $WORK >/dev/null 2>&1 || role $WORK lambda.amazonaws.com "
+    {\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameter\",\"Resource\":\"arn:aws:ssm:us-east-1:*:parameter/swot-explorer/*\"},
+    {\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogGroup\",\"logs:CreateLogStream\",\"logs:PutLogEvents\"],\"Resource\":\"*\"}" >/dev/null
+  fn=$WORK$([ "$STAGE" = dev ] && echo -dev)
+  uri=$(aws ecr describe-repositories --repository-names $WORK --query 'repositories[0].repositoryUri' --output text):$STAGE
+  if ! aws ecr describe-images --repository-name $WORK --image-ids imageTag=$STAGE >/dev/null 2>&1; then
+    echo "no image $uri yet: update the $STAGE instance (it pushes it at boot), then run this again"; exit 0
+  fi
+  if aws lambda get-function --function-name $fn >/dev/null 2>&1; then
+    aws lambda update-function-code --function-name $fn --image-uri $uri --query LastUpdateStatus --output text
+  else  # 3 GB (the account's most, ~1.8 vCPU): a 250 m series of the whole mission; the server's entry point, then the Lambda client
+    aws lambda create-function --function-name $fn --package-type Image --code ImageUri=$uri \
+      --role "$(aws iam get-role --role-name $WORK --query Role.Arn --output text)" --memory-size 3008 --timeout 120 \
+      --image-config '{"EntryPoint":["/bin/bash","-c","source /shell-hook.sh && exec \"$@\"","--"],"Command":["python","-m","awslambdaric","lambda_work.handler"],"WorkingDirectory":"/srv/app"}' \
+      --environment "Variables={SWOT_TOKEN_PARAMETER=/swot-explorer/arraylake-token,OMP_NUM_THREADS=1}" \
+      --query State --output text
+  fi
+  ;;
+resize)  # another instance type (TYPE=...), e.g. a larger one for a meeting: stop it, change it, start it again
+  id=$(instance)
+  aws ec2 stop-instances --instance-ids "$id" >/dev/null && aws ec2 wait instance-stopped --instance-ids "$id"
+  aws ec2 modify-instance-attribute --instance-id "$id" --instance-type "{\"Value\": \"$TYPE\"}"
+  aws ec2 start-instances --instance-ids "$id" --query 'StartingInstances[0].CurrentState.Name' --output text
+  echo "$id is now $TYPE: back in a few minutes at the same address"
   ;;
 start)  # wake it (the dev instance has no link that does)
   aws ec2 start-instances --instance-ids "$(instance)" --query 'StartingInstances[0].CurrentState.Name' --output text

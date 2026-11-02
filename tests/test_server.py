@@ -2,6 +2,7 @@ import io
 import itertools
 import json
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -793,7 +794,7 @@ def test_dtu25_correction_in_the_250_m_hovmoller(dtu_store_path, shifted_fine_st
         diff = np.array(a["value"], float) - np.array(b["value"], float)
         ok = np.isfinite(diff)
         assert ok.sum() > 100
-        np.testing.assert_allclose(diff[ok], 0.07 + 0.001 * along[k][ok], atol=0.0005)
+        np.testing.assert_allclose(diff[ok], 0.07 + 0.001 * along[k][ok], atol=0.0011)  # two values to the mm
 
 
 def test_dtu25_correction_interpolated_between_the_base_pixels(dtu_store_path, shifted_fine_store_path, monkeypatch):
@@ -803,6 +804,24 @@ def test_dtu25_correction_interpolated_between_the_base_pixels(dtu_store_path, s
     cross = np.linspace(-40, 40, 7)
     np.testing.assert_allclose(server.from_base(server.DTU, 20, along, cross), 0.2 + 0.001 * along[:, None] + 0 * cross,
                                rtol=1e-6)
+
+
+def test_grid_interpolation_as_xarray_s(dtu_store_path, shifted_fine_store_path, monkeypatch):
+    """The base's arrays at a finer grid (from_base: two weight products) as xarray's linear interp (NaN beyond the
+    ends); a NaN of the base only where it is a neighbour (xarray's makes them all NaN)."""
+    server, _ = dtu_server(dtu_store_path, shifted_fine_store_path, monkeypatch)
+    rng = np.random.default_rng(1)
+    a = xr.DataArray(rng.normal(size=(12, 9)), dims=("along", "cross"),
+                     coords=dict(along=np.sort(rng.uniform(0, 30, 12)), cross=np.linspace(-60, 60, 9)))
+    along, cross = np.linspace(-3, 33, 40), np.linspace(-66, 66, 50)
+    w = server.linear(a.along.values, along), server.linear(a.cross.values, cross)
+    want = a.interp(along=along, cross=cross, kwargs={"fill_value": None}).values
+    np.testing.assert_allclose(server.weighted(a.values, *w), want, rtol=1e-9, atol=1e-12)
+    a[4, 3] = np.nan
+    got = server.weighted(a.values, *w)
+    near = (np.abs(along - a.along.values[4]) < 4)[:, None] & (np.abs(cross - a.cross.values[3]) < 15)[None]
+    inside = ((along >= a.along.values[0]) & (along <= a.along.values[-1]))[:, None] & (np.abs(cross) <= 60)[None]
+    assert np.isnan(got[near & inside]).any() and not np.isnan(got[~near & inside]).any() and np.isnan(got[~inside]).all()
 
 
 def test_dtu25_line_code_gives_the_app_values(dtu_store_path, shifted_fine_store_path, monkeypatch):
@@ -828,7 +847,7 @@ def test_dtu25_line_code_gives_the_app_values(dtu_store_path, shifted_fine_store
             want[a["first"]:a["first"] + len(a["value"])] = np.array(a["value"], float) - np.array(b["value"], float)
             ok = np.isfinite(want)
             assert ok.sum() > 50
-            np.testing.assert_allclose(row[ok], want[ok], atol=2e-4)
+            np.testing.assert_allclose(row[ok], want[ok], atol=6e-4)  # the app's Hovmöller to the mm
 
 
 def test_calibration_at_2_km_and_from_the_expert_passage_at_250_m(dtu_store_path, shifted_fine_store_path, monkeypatch):
@@ -1100,3 +1119,76 @@ def test_screen_colors_before_the_window_is_summed(maps_paths, monkeypatch):
     data.levels = server.RASTERS.pyramid(view["start"], view["days"])
     late = data.screen_limits(*box)
     assert early and late and np.allclose(early["robust"]["none"], late["robust"]["none"], atol=1e-3)
+
+
+def test_series_from_the_lambda_function_and_here_when_it_fails(fine_store_path, monkeypatch):
+    """With SWOT_LAMBDA the series comes from the function; if that fails, it is worked out here, the same."""
+    server, client = detail_server(fine_store_path, monkeypatch)
+    q = dict(lon=30.1, lat=2.0, variable="ssha_unfiltered", radius=5)
+    here = client.get("/api/series", params=q).json()
+    assert len(here["time"]) > 0
+    monkeypatch.setattr(server, "LAMBDA", "swot-explorer-work")
+    monkeypatch.setattr(server, "remote_series", lambda args: dict(time=[1], value=[0.5]))
+    assert client.get("/api/series", params=q).json() == dict(time=[1], value=[0.5])
+
+    def fails(args):
+        raise RuntimeError("throttled")
+
+    monkeypatch.setattr(server, "remote_series", fails)
+    assert client.get("/api/series", params=q).json() == here
+
+    def slow(args):  # a machine of the function starting: here too, the first answer wins
+        time.sleep(5)
+        return dict(time=[1], value=[0.5])
+
+    monkeypatch.setattr(server, "remote_series", slow)
+    monkeypatch.setattr(server, "HEDGE", 0.5)
+    assert client.get("/api/series", params=q).json() == here
+
+
+def test_warming_pings_the_function_at_once(fine_store_path, monkeypatch):
+    """Keeping the function warm: WARM pings sent together (one after another would reach the same machine)."""
+    import asyncio
+    import threading
+
+    server, _ = detail_server(fine_store_path, monkeypatch)
+    monkeypatch.setattr(server, "WARM", 3)
+    inside, most, lock = [0], [0], threading.Lock()
+
+    def ping():
+        with lock:
+            inside[0] += 1
+            most[0] = max(most[0], inside[0])
+        time.sleep(0.3)
+        with lock:
+            inside[0] -= 1
+        return True
+
+    monkeypatch.setattr(server, "remote_ping", ping)
+
+    async def once():
+        task = asyncio.create_task(server.warm())
+        await asyncio.sleep(1)
+        task.cancel()
+
+    asyncio.run(once())
+    assert most[0] == 3 and server.REMOTE["warm"] == 3
+
+
+def test_hovmoller_from_the_lambda_function_and_here_when_it_fails(fine_store_path, monkeypatch):
+    """The Hovmöller too: from the function with SWOT_LAMBDA (asked with its arguments), here if that fails."""
+    server, client = detail_server(fine_store_path, monkeypatch)
+    q = dict(points="29.5,2;30.5,2", variable="ssha_unfiltered", step=2)
+    here = client.get("/api/hovmoller", params=q).json()
+    assert len(here["passages"]) > 0
+    asked = []
+    monkeypatch.setattr(server, "LAMBDA", "swot-explorer-work")
+    monkeypatch.setattr(server, "remote_series", lambda args: asked.append(args) or dict(passages=[], distance=[0]))
+    assert client.get("/api/hovmoller", params=q).json() == dict(passages=[], distance=[0])
+    assert asked == [dict(kind="hovmoller", points=q["points"], variable=q["variable"], step=2.0)]
+
+    def fails(args):
+        raise RuntimeError("payload too large")
+
+    monkeypatch.setattr(server, "remote_series", fails)
+    assert client.get("/api/hovmoller", params=q).json() == here

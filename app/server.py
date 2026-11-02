@@ -2,6 +2,7 @@
 The swaths are drawn here, as map tiles: each passage is a curvilinear mesh rasterized with datashader,
 so only images of the screen's size go to the browser.
 Run: uvicorn server:app --app-dir app --port 5006   (SWOT_STORE, credentials from AWS_* in the environment)"""
+import asyncio
 import hashlib
 import io
 import itertools
@@ -14,13 +15,12 @@ import tomllib
 import traceback
 import warnings
 from collections import OrderedDict, defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from types import SimpleNamespace
 from pathlib import Path
 
 import anyio
-import datashader as dsh
 import cmocean  # noqa: F401 (registers its colormaps as cmo.*)
 import matplotlib
 import numpy as np
@@ -35,6 +35,22 @@ from scipy.spatial import cKDTree
 
 import rasters
 import swot_view
+
+
+def lazy(name):
+    """A module imported when first used (datashader: ~2.5 s to import, only to draw, which the Lambda function never
+    does)."""
+    import importlib.util
+    import sys
+    spec = importlib.util.find_spec(name)
+    spec.loader = importlib.util.LazyLoader(spec.loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+dsh = lazy("datashader")
 
 matplotlib.use("agg")
 # zarr fetches 10 chunks at once by default; S3 answers each in tens of ms, so more at once is faster
@@ -208,16 +224,22 @@ MODES = ("box", "passage", "none")  # spatial mean subtracted: of the box, of ea
 R = 6378137.0  # web mercator
 WORLD = 2 * np.pi * R
 
-def open_product(target, partial=False, geometry=None):
+def opening(target):
+    """A store's latest commit, its session and dataset (the coordinates read: what takes time)."""
+    repo = swot_view.open_repo(target)
+    commit = next(iter(repo.ancestry(branch="main")))
+    session = repo.readonly_session(snapshot_id=commit.id)
+    return commit, session, swot_view.dataset(session.store)
+
+
+def open_product(target, partial=False, geometry=None, opened=None):
     """A store at its latest commit (kept: a store being written changes while people look): the dataset, when each
     passage was (`index`) and the passes' envelopes (`geometry`, which passes cross a box without reading data; kept
     in memory, a view would read them all again). A store being filled (`partial`) shows only the passages with data,
     and envelopes not written yet come from each pass's nadir and the swath's half width. A product over the same
-    passes can take another's `geometry` (the Unsmoothed one, a line every 250 m, is 400 MB)."""
-    repo = swot_view.open_repo(target)
-    commit = next(iter(repo.ancestry(branch="main")))
-    session = repo.readonly_session(snapshot_id=commit.id)
-    ds = swot_view.dataset(session.store)
+    passes can take another's `geometry` (the Unsmoothed one, a line every 250 m, is 400 MB). `opened`: its
+    `opening`, being read meanwhile (a future)."""
+    commit, session, ds = opened.result() if opened else opening(target)
     if partial:
         ds = ds.isel(time=swot_view.written(ds, session.store))
     if partial and geometry is None:
@@ -229,8 +251,8 @@ def open_product(target, partial=False, geometry=None):
             ds = ds.assign_coords(lon_min=(ds.lon_min.dims, np.where(have, ds.lon_min.values, lon_min)),
                                   lon_max=(ds.lon_max.dims, np.where(have, ds.lon_max.values, lon_max)))
     index = ds[["cycle", "pass_id"]].reset_coords().load()
-    if geometry is None:
-        geometry = ds[["lon_min", "lon_max"]].load()
+    if geometry is None:  # the Lambda function (one series) reads only the rows near its point: not kept
+        geometry = ds[["lon_min", "lon_max"]] if os.environ.get("SWOT_ROLE") == "lambda" else ds[["lon_min", "lon_max"]].load()
         ds = ds.assign_coords(lon_min=geometry.lon_min, lon_max=geometry.lon_max)
     ds = ds.assign_coords(cycle=index.cycle, pass_id=index.pass_id)
     return SimpleNamespace(ds=ds, index=index, geometry=geometry, commit=commit)
@@ -243,15 +265,17 @@ def latest_days(times):
 
 
 STORE = os.environ.get("SWOT_STORE", L2 + "expert-d")
+DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE", None if CONFIGURED else L2 + "unsmoothed-d")
+# both stores opened at once (each reads its coordinates: seconds, mostly waiting for the network)
+detail_opening = ThreadPoolExecutor(1).submit(opening, DETAIL_STORE) if DETAIL_STORE else None
 base = open_product(STORE, PRODUCT.get("partial"))
 ds, index, geometry, COMMIT = base.ds, base.index, base.geometry, base.commit
 BASE_ROWS = {(c, p): i for i, (c, p) in enumerate(zip(index.cycle.values.tolist(), index.pass_id.values.tolist()))}
 # a finer product over the same passages, drawn over the map from a zoom on (SWOT_DETAIL_STORE: e.g. L2 Unsmoothed
 # at 250 m over L2 Expert at 2 km); read tile by tile, a chunk at a time, never as a whole view
-DETAIL_STORE = os.environ.get("SWOT_DETAIL_STORE", None if CONFIGURED else L2 + "unsmoothed-d")
 DETAIL_PRODUCT = PRODUCTS[os.environ.get("SWOT_DETAIL_PRODUCT", "unsmoothed")]
 DETAIL_ZOOM = int(os.environ.get("SWOT_DETAIL_ZOOM", 8))  # its tiles from this zoom; seen from the map's zoom before
-detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial"), geometry) if DETAIL_STORE else None
+detail = open_product(DETAIL_STORE, DETAIL_PRODUCT.get("partial"), geometry, detail_opening) if DETAIL_STORE else None
 # the passages it has, (cycle, pass): under it, from its zoom on, the base is drawn inside its swath (see `inner`)
 DETAIL_PASSAGES = frozenset(zip(detail.index.cycle.values.tolist(), detail.index.pass_id.values.tolist())) if detail else frozenset()
 DEFAULT = PRODUCT["default"]
@@ -779,6 +803,8 @@ def build(view, overviews):
 loaded = OrderedDict()  # views in memory, least recently used first; the opening view stays
 cache_lock = threading.Lock()  # guards `loaded` and `loading` (requests run in threads)
 loading = {}  # one lock per view being read: a second request for it waits instead of reading it again
+# views read from the stores at once (SWOT_LOADS; 0: no limit): more in parallel share the machine's network and CPU
+LOADS = threading.BoundedSemaphore(int(os.environ.get("SWOT_LOADS", 0))) if int(os.environ.get("SWOT_LOADS", 0)) else None
 
 
 def read(sub, names):
@@ -831,7 +857,11 @@ def load(west, east, south, north, start, days, variable):
             return overview_of(key), 0.0
         if sub.sizes["time"] * sub.sizes["along"] * sub.sizes["cross"] > MAX_PIXELS:
             raise HTTPException(413, f"{sub.sizes['time']} passages is too much at once: use fewer days or a smaller box")
-        values, line_time = read(sub, var.arrays)
+        if LOADS:
+            with LOADS:
+                values, line_time = read(sub, var.arrays)
+        else:
+            values, line_time = read(sub, var.arrays)
         data = Loaded(values, var, west, east, line_time)
         with cache_lock:
             loaded[key] = data
@@ -1099,7 +1129,8 @@ class PerMinute:
                     del self.seen[k]
 
 
-HEAVY = PerMinute(int(os.environ.get("SWOT_HEAVY_PER_MINUTE", 30)))  # series, lines, Hovmöllers, NetCDF files
+# series, lines, Hovmöllers, NetCDF files: 300 a minute from one address (a whole room behind one, as at a meeting)
+HEAVY = PerMinute(int(os.environ.get("SWOT_HEAVY_PER_MINUTE", 300)))
 EVENTS_PER_MINUTE = PerMinute(120)
 
 
@@ -1163,6 +1194,7 @@ class Timing:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         t0, status = time.perf_counter(), {}
+        IN_FLIGHT[0] += 1
 
         async def timed(message):
             if message["type"] == "http.response.start":
@@ -1171,7 +1203,10 @@ class Timing:
                     (b"server-timing", f"app;dur={(time.perf_counter() - t0) * 1000:.1f}".encode())])
             await send(message)
 
-        await self.app(scope, receive, timed)
+        try:
+            await self.app(scope, receive, timed)
+        finally:
+            IN_FLIGHT[0] -= 1
         path = scope["path"]
         if TELEMETRY and path.startswith("/api/") and path != "/api/event":
             route = getattr(scope.get("route"), "path", path)
@@ -1183,6 +1218,55 @@ class Timing:
 
 
 app.add_middleware(Timing)
+IN_FLIGHT = [0]  # requests being answered (the event loop's thread only)
+
+
+def machine():
+    """This process's and the machine's numbers now: CPU seconds, memory, bytes received (Linux /proc)."""
+    rss = int(next(line for line in open("/proc/self/status") if line.startswith("VmRSS")).split()[1]) * 1e3
+    avail = int(next(line for line in open("/proc/meminfo") if line.startswith("MemAvailable")).split()[1]) * 1e3
+    rx = sum(int(line.split(":")[1].split()[0]) for line in open("/proc/net/dev").readlines()[2:]
+             if not line.strip().startswith("lo:"))
+    t = os.times()
+    return dict(cpu=t.user + t.system, rss=rss, avail=avail, rx=rx, at=time.monotonic())
+
+
+async def health():
+    """Every SWOT_HEALTH_SECONDS (60), a row of the machine's health in health-YYYY-MM-DD.jsonl: this process's CPU
+    (cores busy), memory, the network's MB/s in, requests in flight, busy threads of each queue, views being read and
+    kept. Numbers only: nothing about visitors."""
+    every, start = float(os.environ.get("SWOT_HEALTH_SECONDS", 60)), time.monotonic()
+    before = machine()
+    while True:
+        await anyio.sleep(every)
+        try:
+            now = machine()
+        except OSError:  # not Linux
+            return
+        dt = now["at"] - before["at"]
+        record("health", dict(time=pd.Timestamp.now("UTC").isoformat(), pid=os.getpid(), up=round(now["at"] - start),
+                              cores=round((now["cpu"] - before["cpu"]) / dt, 2), load1=os.getloadavg()[0],
+                              rss_gb=round(now["rss"] / 1e9, 2), avail_gb=round(now["avail"] / 1e9, 2),
+                              rx_mbps=round((now["rx"] - before["rx"]) / dt / 1e6, 1), in_flight=IN_FLIGHT[0],
+                              threads=threading.active_count(),
+                              pool=anyio.to_thread.current_default_thread_limiter().borrowed_tokens,
+                              quick=QUICK.borrowed_tokens, reading=READING.borrowed_tokens, loading=len(loading),
+                              views=len(loaded), views_gb=round(sum(d.nbytes for d in loaded.values()) / 1e9, 2),
+                              lambda_ok=REMOTE["ok"], lambda_failed=REMOTE["failed"], lambda_hedged=REMOTE["hedged"],
+                              lambda_warm=REMOTE["warm"],
+                              lambda_error=REMOTE["error"]))
+        before = now
+
+
+@app.on_event("startup")
+async def started():
+    # threads for the requests that work in one (the default 40): SWOT_THREADS
+    if os.environ.get("SWOT_THREADS"):
+        anyio.to_thread.current_default_thread_limiter().total_tokens = int(os.environ["SWOT_THREADS"])
+    if TELEMETRY:
+        started.health = asyncio.get_running_loop().create_task(health())  # kept: a task only weakly referenced may go
+    if LAMBDA and WARM and warmer():
+        started.warm = asyncio.get_running_loop().create_task(warm())
 
 
 @app.get("/")
@@ -1386,7 +1470,35 @@ def from_base(name, p, along, cross, cycle=None):
     a = a.sel(along=slice(float(np.min(along)) - 4, float(np.max(along)) + 4))
     if name == EDIT:  # bits: the nearest pixel's, not a mean of them
         return a.sel({"along": along} | ({"cross": cross} if "cross" in a.dims else {}), method="nearest").values
+    if isinstance(along, np.ndarray) and np.ndim(along) == 1 and np.ndim(cross) == 1:  # a grid: two small products
+        a = a.transpose("along", ...)
+        return weighted(a.values, linear(a.along.values, along), *([linear(a.cross.values, cross)] if "cross" in a.dims else []))
     return a.interp({"along": along} | ({"cross": cross} if "cross" in a.dims else {}), kwargs={"fill_value": None}).values
+
+
+def weighted(values, along, cross=None):
+    """Values (along x anything) at other lines and pixels (`linear` of each; cross: their second axis): from the two
+    neighbours on each axis, NaN where a neighbour is or beyond the ends. Plain indexing (no matrix product: those
+    take every core each and fight under many requests at once)."""
+    k, w, out_ = along
+    w = w.reshape((-1,) + (1,) * (values.ndim - 1))
+    v = values[k] * (1 - w) + values[np.minimum(k + 1, len(values) - 1)] * w
+    v[out_] = np.nan
+    if cross is not None:
+        k, w, out_ = cross
+        v = v[:, k] * (1 - w) + v[:, np.minimum(k + 1, v.shape[1] - 1)] * w
+        v[:, out_] = np.nan
+    return v
+
+
+def linear(x, at):
+    """Linear interpolation from the points `x` (increasing) to `at`: each one's left neighbour, its weight on the
+    right one, and whether it is beyond the ends (NaN there, as xarray's interp, also with fill_value None)."""
+    if len(x) == 1:
+        return np.zeros(len(at), int), np.zeros(len(at)), at != x[0]
+    k = np.clip(np.searchsorted(x, at) - 1, 0, len(x) - 2)
+    w = (at - x[k]) / (x[k + 1] - x[k])
+    return k, w, (at < x[0]) | (at > x[-1])
 
 
 SHIFT = "cross_shift"  # Unsmoothed: whole 250 m columns each line was moved across track, onto its pass's reference
@@ -1624,6 +1736,14 @@ def transect(points: str, mode: str = "box", step: float = 2.0, start: str = Non
 
 @app.get("/api/hovmoller", dependencies=[Depends(HEAVY)])
 def hovmoller(points: str, variable: str, step: float = 2.0):
+    """The Hovmöller of a polyline (`hovmoller_here`), by the Lambda function if there is one."""
+    line_points(points, step)  # refused here at once if too long or with too many vertices
+    if variable not in VARIABLES:
+        raise HTTPException(404, "no such variable")
+    return offloaded(hovmoller_here, dict(points=points, variable=variable, step=step))
+
+
+def hovmoller_here(points, variable, step=2.0):
     """A polyline's values over the whole mission: for each passage that crosses it, the values of its nearest
     pixels within 1.5 km (as /api/transect), on the points every `step` km, and the time of its line at the middle.
     The grid of a pass is the same in every cycle (a repeat orbit), and so is when each line is measured relative
@@ -1708,7 +1828,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
             middle = index.time.values[i] + offset[good][good.sum() // 2]
             out.append(dict(pass_id=int(p), cycle=int(index.cycle.values[i]), first=int(hit[0]),
                             time=int(middle.astype("datetime64[ms]").astype("int64")),
-                            value=[None if np.isnan(x) else round(float(x), 4) for x in line]))
+                            value=[None if np.isnan(x) else round(float(x), 3) for x in line]))  # mm: within 6 MB
     return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
                 step=round(float(step), 3), passages=sorted(out, key=lambda q: q["time"]))
 
@@ -1742,7 +1862,97 @@ def detail_series(lon, lat, variable, radius):
 
 @app.get("/api/series", dependencies=[Depends(HEAVY)])
 def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool = False):
-    """The mean around a point, per passage: within `radius` km, or (`fine`) of the detail store's 250 m pixels."""
+    """The mean around a point, per passage: within `radius` km, or (`fine`) of the detail store's 250 m pixels.
+    With SWOT_LAMBDA, worked out by that AWS Lambda function (each series on its own machine, however many
+    visitors ask at once), and here if it fails or is too slow."""
+    if variable not in VARIABLES:
+        raise HTTPException(404, "no such variable")
+    return offloaded(series_here, dict(lon=lon, lat=lat, variable=variable, radius=radius, fine=fine))
+
+
+def offloaded(here, args):
+    """`here(**args)`, by the Lambda function (SWOT_LAMBDA) if there is one, and here if it fails, or too (the first
+    answer wins) once it takes over HEDGE seconds: a machine of the function just starting takes ~15 s."""
+    if not LAMBDA:
+        return here(**args)
+    remote = REMOTE_POOL.submit(remote_series, dict(kind=here.__name__.removesuffix("_here"), **args))
+    try:
+        out = remote.result(timeout=HEDGE)
+        REMOTE["ok"] += 1
+        return out
+    except TimeoutError:
+        REMOTE["hedged"] += 1
+        local = REMOTE_POOL.submit(here, **args)
+        done = next(as_completed([remote, local]))
+        if done is local or done.exception() is None:
+            return done.result()
+        return local.result()
+    except Exception as e:  # noqa: BLE001 (any failure there: here instead)
+        REMOTE["failed"] += 1
+        REMOTE["error"] = f"{type(e).__name__}: {e}"[:300]
+        print(f"lambda failed ({type(e).__name__}: {e}); here instead", flush=True)
+    return here(**args)
+
+
+# an AWS Lambda function with this server's code (app/lambda_work.py) for the heavy requests (series): its name
+LAMBDA = os.environ.get("SWOT_LAMBDA")
+REMOTE = {"ok": 0, "failed": 0, "hedged": 0, "warm": 0, "error": None}
+HEDGE = float(os.environ.get("SWOT_LAMBDA_HEDGE", 12))
+REMOTE_POOL = ThreadPoolExecutor(int(os.environ.get("SWOT_LAMBDA_CALLS", 64)))  # its answers and failures, since the start (health rows)
+
+
+@lru_cache(maxsize=1)
+def lambda_client():
+    import boto3
+    from botocore.config import Config
+    return boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"), config=Config(read_timeout=90, connect_timeout=5, retries={"max_attempts": 0},
+                                                max_pool_connections=100))
+
+
+WARM = int(os.environ.get("SWOT_LAMBDA_WARM", 3))  # machines of the function kept warm (their stores open)
+
+
+def warmer():
+    """Whether this process keeps the function warm: one of the server's processes (WEB_CONCURRENCY), the one holding
+    a lock on a file for as long as it runs (pings from several, each at its own time, would all reach one machine)."""
+    import fcntl
+    warmer.file = open(os.path.join(os.environ.get("TMPDIR", "/tmp"), "swot-warm.lock"), "w")
+    try:
+        fcntl.flock(warmer.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+async def warm():
+    """Every 4 minutes, WARM pings to the function at once (at once: one after another would reach the same machine):
+    a machine starting opens its stores for a ping instead of a visitor's series; one already warm answers at once
+    and stays (Lambda lets a machine go after some idle minutes). Only while this server runs: it sleeps when nobody
+    uses it, and so do they."""
+    while True:
+        try:
+            out = await asyncio.gather(*(anyio.to_thread.run_sync(remote_ping) for _ in range(WARM)),
+                                       return_exceptions=True)
+            REMOTE["warm"] = sum(o is True for o in out)
+        except Exception:  # noqa: BLE001 (warming is best effort)
+            pass
+        await anyio.sleep(240)
+
+
+def remote_ping():
+    r = lambda_client().invoke(FunctionName=LAMBDA, Payload=b'{"kind": "ping"}')
+    return json.loads(r["Payload"].read()).get("warm") is True
+
+
+def remote_series(args):
+    r = lambda_client().invoke(FunctionName=LAMBDA, Payload=json.dumps(args).encode())
+    out = json.loads(r["Payload"].read())
+    if r.get("FunctionError") or "error" in out:
+        raise RuntimeError(str(out)[:300])
+    return out
+
+
+def series_here(lon, lat, variable, radius=5, fine=False):
     if fine:
         if not has_detail(variable):
             raise HTTPException(404, "no 250 m product for this variable")
@@ -1936,7 +2146,10 @@ def world_png():
 # the opening view, ready before the first visitor: in memory, or for a product too big to keep (`overview`), its
 # overview, built in the background (or read back from SWOT_CACHE_DIR); other variables on it are built when asked
 OVERVIEWS, OPENING = {}, set()  # views too big to keep: their overviews (OrderedDict order: oldest first)
-if PRODUCT.get("overview") and RASTERS and from_rasters(*DEFAULT.values()):
+ROLE = os.environ.get("SWOT_ROLE", "server")  # lambda: only the heavy requests (app/lambda_work.py), no opening view
+if ROLE != "server":
+    pass
+elif PRODUCT.get("overview") and RASTERS and from_rasters(*DEFAULT.values()):
     OPENING.add(key := tuple(DEFAULT.values()))
     load(**DEFAULT)
 elif PRODUCT.get("overview"):

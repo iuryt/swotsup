@@ -14,10 +14,20 @@ ip=$(curl -s -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/met
 # container runs (a full disk failed an update, and the instance kept the old image)
 docker builder prune -af >/dev/null 2>&1
 docker build -t swot .
+# the heavy requests' Lambda function (slurm/ec2.sh work) runs this same image: pushed as this stage's, and the
+# function moved to it, so it always has the server's code; the server asks it for series (and works them out
+# itself if it cannot)
+account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+registry=$account.dkr.ecr.us-east-1.amazonaws.com work=swot-explorer-work$([ "$stage" = dev ] && echo -dev)
+if aws ecr get-login-password --region us-east-1 2>/dev/null | docker login -u AWS --password-stdin $registry >/dev/null 2>&1 \
+  && docker tag swot $registry/swot-explorer-work:$stage && docker push -q $registry/swot-explorer-work:$stage; then
+  aws lambda update-function-code --region us-east-1 --function-name $work --image-uri $registry/swot-explorer-work:$stage \
+    --query LastUpdateStatus --output text 2>&1 | tail -1
+fi
 docker rm -f swot caddy
 # the stores: the server's default, L2 Expert with L2 Unsmoothed from a zoom on, on Arraylake (Earthmover), if its
 # token is in SSM (/swot-explorer/arraylake-token); else the L3 copy on S3. No command echo (bash -x) while the token
-# is around: the boot log is readable from the EC2 console. Memory (16 GB): views up to 6 GB, 512 blocks of 250 m
+# is around: the boot log is readable from the EC2 console. Memory (per process, below): views, 512 blocks of 250 m
 # (~1.7 GB) read ahead or for tiles, 2048 of Expert (~0.8 GB) for the opening cycle up close. The opening cycle's
 # overview is kept on the instance's disk (/opt/cache): a restart reads it back instead of the whole cycle
 set +x
@@ -50,17 +60,25 @@ basemap=/opt/cache/gebco2026.mbtiles
 chown 1000:1000 $basemap 2>/dev/null
 # downloads: of L2 (NASA/JPL, CNES), not of the L3 fallback (its license does not allow redistributing it unchanged)
 netcdf=$([ -n "$token" ] && echo 1 || echo 0)
-docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=$netcdf -e SWOT_CACHE_GB=6 \
+# a server process per 4 cores (each holds Python's lock: one alone uses ~2 cores), each with views of memory/processes
+# - 4.5 GB (the rest: its blocks and the code; c7i.2xlarge: 2 processes, 3 GB; c7i.4xlarge: 4, 3 GB)
+workers=$(( $(nproc) / 4 > 1 ? $(nproc) / 4 : 1 ))
+mem=$(awk '/MemTotal/ {print int($2 / 1e6)}' /proc/meminfo)
+cache=$(( mem / workers - 4 > 2 ? mem / workers - 4 : 2 ))
+echo "server: $workers processes, views up to $cache GB each"
+docker run -d --name swot --restart always -p 127.0.0.1:7860:7860 -e SWOT_NETCDF=$netcdf -e SWOT_CACHE_GB=$cache -e WEB_CONCURRENCY=$workers \
   -e SWOT_DETAIL_BLOCKS=512 -e SWOT_BASE_BLOCKS=2048 -v /opt/cache:/cache -e SWOT_CACHE_DIR=/cache \
   -e SWOT_PUBLIC_URL="$(cat public_url 2>/dev/null)" -v /opt/telemetry:/telemetry -e SWOT_TELEMETRY_DIR=/telemetry \
-  -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb -e SWOT_BASEMAP=/cache/gebco2026.mbtiles "${rasters[@]}" "${debug[@]}" "${store[@]}" swot
+  -e SWOT_GEOIP=/cache/dbip-country-lite.mmdb -e SWOT_BASEMAP=/cache/gebco2026.mbtiles "${rasters[@]}" "${debug[@]}" "${store[@]}" \
+  -e SWOT_LAMBDA=$work -e SWOT_THREADS=100 --env-file <(grep -s = server.env) swot  # server.env: settings being tried (slurm/ec2.sh SERVER_ENV)
 set -x
 docker run -d --name caddy --restart always --network host -v caddy:/data caddy:2 \
   caddy reverse-proxy --from "${ip//./-}.sslip.io" --to localhost:7860
 docker image prune -af >/dev/null 2>&1
 df -h / | tail -1
 # the anonymous usage, copied to S3 every 10 minutes and before the machine stops (it may only write there)
-sync="aws s3 sync --only-show-errors /opt/telemetry $telemetry"
+# with the server's last messages (its errors, restarts): the access lines left out, so no visitor's address is kept
+sync="docker logs --tail 3000 swot 2>&1 | grep -v -E 'HTTP/1\.[01]\" [0-9]{3}' | tail -500 > /opt/telemetry/server-log.txt; aws s3 sync --only-show-errors /opt/telemetry $telemetry"
 systemctl stop swot-telemetry.timer 2>/dev/null
 systemd-run --unit swot-telemetry --on-calendar="$([ "$stage" = dev ] && echo '*:*:00' || echo '*:0/10')" bash -c "$sync"
 # every request shows up in the server's access log; none in the last IDLE minutes (and up for as long): stop
