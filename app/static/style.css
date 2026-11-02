@@ -12,6 +12,9 @@
 }
 
 * { box-sizing: border-box; }
+/* no zoom of the page on a double tap (an iPhone zooms on two quick taps of a button); pinching still zooms, and the
+   map handles its own gestures */
+html, body, button, select, .panel { touch-action: manipulation; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   font: 13px/1.4 Inter, system-ui, sans-serif; overflow: hidden; }
 #map { position: absolute; inset: 0; }
@@ -188,6 +191,9 @@ dialog table { border-collapse: collapse; width: 100%; margin: 8px 0; }
 dialog th, dialog td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 dialog td + td, dialog th + th { text-align: right; }
 
+#notice { left: var(--gap); right: var(--gap); top: calc(var(--gap) + 52px); padding: 6px 6px 6px 14px; z-index: 10;
+  display: flex; align-items: center; gap: 8px; font-size: 13px; border-color: var(--orange); }
+#notice span { flex: 1; }
 #toast { left: 50%; transform: translateX(-50%); top: var(--gap); padding: 10px 14px; border-color: var(--orange);
   z-index: 10; max-width: 480px; }
 
@@ -266,9 +272,17 @@ button.icon svg { width: 17px; height: 17px; }
   .card.sheet.compact .grab { display: none; }
   .card.sheet:not(.compact) .hint, .card.transect .hint { display: none; }
   .card.sheet h3, .card.transect h3 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* the line's controls wrap rather than squeeze Profile / Hovmöller out of sight; the selects as wide as their text */
+  .card.transect header .tools { flex-wrap: wrap; row-gap: 4px; }
+  .card.transect header .tools .segmented.kind { flex: none; }
+  .card.transect header .tools select { flex: none; width: auto; }
   .card.sheet header > div, .card.transect header > div { min-width: 0; }
 
-  #drawing { top: calc(var(--gap) + 52px); max-width: calc(100% - 2 * var(--gap)); }
+  /* the bar as wide as the screen at most: its text wraps, the buttons stay (Undo as its icon) */
+  #drawing { top: calc(var(--gap) + 52px); left: var(--gap); right: var(--gap); transform: none; white-space: normal; }
+  #drawing-text { flex: 1; min-width: 0; line-height: 1.3; }
+  #drawing button { flex: none; }
+  #undo span { display: none; }
 }
 @media (max-height: 500px) {  /* a phone held sideways: the icons in a row, the panels lower and thinner */
   :root { --time-h: 90px; --legend-h: 48px; }

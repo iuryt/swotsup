@@ -615,6 +615,7 @@ function showDrawing() {  // the bar while drawing, and the buttons that started
   const n = state.vertices?.length ?? 0;
   $("#drawing-text").textContent = mode === "box" ? "Drag on the map to draw a box"
     : state.refused ?? (n < 2 ? `${narrow() ? "Tap" : "Click"} points on the map${n ? " (one more at least)" : ""}`
+      : narrow() ? `${n}/${info.limits.vertices} points · ${Math.round(lineKm(state.vertices)).toLocaleString("en")} km`
       : `${n} of ${info.limits.vertices} points · ${Math.round(lineKm(state.vertices)).toLocaleString("en")} of ` +
         `${info.limits.line_km.toLocaleString("en")} km · add more, or Done`);
   state.refused = null;
@@ -1734,7 +1735,18 @@ async function copyLink() {  // the public address (on the EC2: the link that wa
 }
 
 // --- start
+function phoneNotice() {  // once per browser, on a small screen: a computer is better (it fades after 8 s)
+  let seen = false;
+  try { seen = localStorage.getItem("phone-notice") === "1"; localStorage.setItem("phone-notice", "1"); } catch {}
+  if (seen || !narrow()) return;
+  const hide = () => $("#notice").classList.add("hidden");
+  $("#notice").classList.remove("hidden");
+  $("#notice button").onclick = hide;
+  setTimeout(hide, 8000);
+}
+
 async function main() {
+  phoneNotice();
   info = await api("/api/info");
   const link = readLink();
   const d = link.view ? { ...link.view.box, variable: link.view.variable } : info.default;
