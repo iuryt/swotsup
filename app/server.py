@@ -1735,6 +1735,14 @@ def transect(points: str, mode: str = "box", step: float = 2.0, start: str = Non
 
 @app.get("/api/hovmoller", dependencies=[Depends(HEAVY)])
 def hovmoller(points: str, variable: str, step: float = 2.0):
+    """The Hovmöller of a polyline (`hovmoller_here`), by the Lambda function if there is one."""
+    line_points(points, step)  # refused here at once if too long or with too many vertices
+    if variable not in VARIABLES:
+        raise HTTPException(404, "no such variable")
+    return offloaded(hovmoller_here, dict(points=points, variable=variable, step=step))
+
+
+def hovmoller_here(points, variable, step=2.0):
     """A polyline's values over the whole mission: for each passage that crosses it, the values of its nearest
     pixels within 1.5 km (as /api/transect), on the points every `step` km, and the time of its line at the middle.
     The grid of a pass is the same in every cycle (a repeat orbit), and so is when each line is measured relative
@@ -1819,7 +1827,7 @@ def hovmoller(points: str, variable: str, step: float = 2.0):
             middle = index.time.values[i] + offset[good][good.sum() // 2]
             out.append(dict(pass_id=int(p), cycle=int(index.cycle.values[i]), first=int(hit[0]),
                             time=int(middle.astype("datetime64[ms]").astype("int64")),
-                            value=[None if np.isnan(x) else round(float(x), 4) for x in line]))
+                            value=[None if np.isnan(x) else round(float(x), 3) for x in line]))  # mm: within 6 MB
     return dict(distance=dist.round(3).tolist(), lon=lon.round(4).tolist(), lat=lat.round(4).tolist(),
                 step=round(float(step), 3), passages=sorted(out, key=lambda q: q["time"]))
 
@@ -1858,25 +1866,31 @@ def series(lon: float, lat: float, variable: str, radius: float = 5, fine: bool 
     visitors ask at once), and here if it fails or is too slow."""
     if variable not in VARIABLES:
         raise HTTPException(404, "no such variable")
-    if LAMBDA:
-        remote = REMOTE_POOL.submit(remote_series, dict(kind="series", lon=lon, lat=lat, variable=variable,
-                                                        radius=radius, fine=fine))
-        try:  # a machine of the function just starting takes ~20 s: past HEDGE seconds, here too (the first wins)
-            out = remote.result(timeout=HEDGE)
-            REMOTE["ok"] += 1
-            return out
-        except TimeoutError:
-            REMOTE["hedged"] += 1
-            here = REMOTE_POOL.submit(series_here, lon, lat, variable, radius, fine)
-            done = next(as_completed([remote, here]))
-            if done is here or done.exception() is None:
-                return done.result()
-            return here.result()
-        except Exception as e:  # noqa: BLE001 (any failure there: here instead)
-            REMOTE["failed"] += 1
-            REMOTE["error"] = f"{type(e).__name__}: {e}"[:300]
-            print(f"series lambda failed ({type(e).__name__}: {e}); here instead", flush=True)
-    return series_here(lon, lat, variable, radius, fine)
+    return offloaded(series_here, dict(lon=lon, lat=lat, variable=variable, radius=radius, fine=fine))
+
+
+def offloaded(here, args):
+    """`here(**args)`, by the Lambda function (SWOT_LAMBDA) if there is one, and here if it fails, or too (the first
+    answer wins) once it takes over HEDGE seconds: a machine of the function just starting takes ~15 s."""
+    if not LAMBDA:
+        return here(**args)
+    remote = REMOTE_POOL.submit(remote_series, dict(kind=here.__name__.removesuffix("_here"), **args))
+    try:
+        out = remote.result(timeout=HEDGE)
+        REMOTE["ok"] += 1
+        return out
+    except TimeoutError:
+        REMOTE["hedged"] += 1
+        local = REMOTE_POOL.submit(here, **args)
+        done = next(as_completed([remote, local]))
+        if done is local or done.exception() is None:
+            return done.result()
+        return local.result()
+    except Exception as e:  # noqa: BLE001 (any failure there: here instead)
+        REMOTE["failed"] += 1
+        REMOTE["error"] = f"{type(e).__name__}: {e}"[:300]
+        print(f"lambda failed ({type(e).__name__}: {e}); here instead", flush=True)
+    return here(**args)
 
 
 # an AWS Lambda function with this server's code (app/lambda_work.py) for the heavy requests (series): its name
@@ -1932,7 +1946,7 @@ def remote_ping():
 def remote_series(args):
     r = lambda_client().invoke(FunctionName=LAMBDA, Payload=json.dumps(args).encode())
     out = json.loads(r["Payload"].read())
-    if r.get("FunctionError") or "time" not in out:
+    if r.get("FunctionError") or "error" in out:
         raise RuntimeError(str(out)[:300])
     return out
 

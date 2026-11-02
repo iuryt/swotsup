@@ -794,7 +794,7 @@ def test_dtu25_correction_in_the_250_m_hovmoller(dtu_store_path, shifted_fine_st
         diff = np.array(a["value"], float) - np.array(b["value"], float)
         ok = np.isfinite(diff)
         assert ok.sum() > 100
-        np.testing.assert_allclose(diff[ok], 0.07 + 0.001 * along[k][ok], atol=0.0005)
+        np.testing.assert_allclose(diff[ok], 0.07 + 0.001 * along[k][ok], atol=0.0011)  # two values to the mm
 
 
 def test_dtu25_correction_interpolated_between_the_base_pixels(dtu_store_path, shifted_fine_store_path, monkeypatch):
@@ -847,7 +847,7 @@ def test_dtu25_line_code_gives_the_app_values(dtu_store_path, shifted_fine_store
             want[a["first"]:a["first"] + len(a["value"])] = np.array(a["value"], float) - np.array(b["value"], float)
             ok = np.isfinite(want)
             assert ok.sum() > 50
-            np.testing.assert_allclose(row[ok], want[ok], atol=2e-4)
+            np.testing.assert_allclose(row[ok], want[ok], atol=6e-4)  # the app's Hovmöller to the mm
 
 
 def test_calibration_at_2_km_and_from_the_expert_passage_at_250_m(dtu_store_path, shifted_fine_store_path, monkeypatch):
@@ -1173,3 +1173,22 @@ def test_warming_pings_the_function_at_once(fine_store_path, monkeypatch):
 
     asyncio.run(once())
     assert most[0] == 3 and server.REMOTE["warm"] == 3
+
+
+def test_hovmoller_from_the_lambda_function_and_here_when_it_fails(fine_store_path, monkeypatch):
+    """The Hovmöller too: from the function with SWOT_LAMBDA (asked with its arguments), here if that fails."""
+    server, client = detail_server(fine_store_path, monkeypatch)
+    q = dict(points="29.5,2;30.5,2", variable="ssha_unfiltered", step=2)
+    here = client.get("/api/hovmoller", params=q).json()
+    assert len(here["passages"]) > 0
+    asked = []
+    monkeypatch.setattr(server, "LAMBDA", "swot-explorer-work")
+    monkeypatch.setattr(server, "remote_series", lambda args: asked.append(args) or dict(passages=[], distance=[0]))
+    assert client.get("/api/hovmoller", params=q).json() == dict(passages=[], distance=[0])
+    assert asked == [dict(kind="hovmoller", points=q["points"], variable=q["variable"], step=2.0)]
+
+    def fails(args):
+        raise RuntimeError("payload too large")
+
+    monkeypatch.setattr(server, "remote_series", fails)
+    assert client.get("/api/hovmoller", params=q).json() == here
