@@ -2,9 +2,9 @@
 authors = [{name = "iury Simoes-Sousa", email = "iuryt@pm.me"}]
 name = "swot-explorer"
 requires-python = ">= 3.11"
-version = "0.27.1"
+version = "0.28.0"
 license = "MIT"
-description = "SWOT Sea Surface Height Explorer: a web map over the SWOT L3 LR SSH IceChunk store."
+description = "SWOT's Up: a web map over the SWOT L2 KaRIn LR SSH in Icechunk."
 
 [build-system]
 build-backend = "hatchling.build"

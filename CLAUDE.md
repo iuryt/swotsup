@@ -131,6 +131,18 @@ be resumed here (`claude --resume`).
   calendar, two fingers zoom. The cards are 230 px sheets in the color bar's place, made tall by their grab bar.
   Touch draws the box, taps place a line's points and Done ends it (no double click on a touch screen), a finger
   moves the charts' cursor. While drawing, a bar shows what to do, with Undo / Done / Cancel (on the desktop too).
+- Many visitors at once (#116, measured with `scripts/load_test.py` + `slurm/load_trial.sh`: recorded browser visits
+  replayed by 5-100 visitors on dev, with the server's own health): `deploy/boot.sh` runs a server process per 4
+  cores (one process holds Python's lock and uses ~2 cores), each with views up to memory/processes - 4 GB; one BLAS
+  thread per call; the 250 m base arrays interpolated by indexing (`weighted`/`linear`, not xarray's interp: a third
+  of the CPU). Series and Hovmöllers go to an AWS Lambda function with the server's own image (`app/lambda_work.py`,
+  `offloaded`: SWOT_LAMBDA, swot-explorer-work and -dev; each instance pushes its image to ECR at boot and moves the
+  function to it; `slurm/ec2.sh work` creates repository, role and function): past SWOT_LAMBDA_HEDGE (12 s, a
+  machine starting takes ~15 s) worked out here too, the first answer wins; any failure, here. One server process
+  keeps SWOT_LAMBDA_WARM machines warm (parallel pings every 4 minutes). The account allows 10 concurrent executions
+  (a raise to 1000 was asked on 2026-11-01). Health rows every minute (`health-*.jsonl`: cores, memory, network,
+  requests in flight, the function's answers, failures, hedges) and the server's last messages without access lines
+  (`server-log.txt`) go to S3 with the usage. Heavy requests: 300 a minute from one address (a meeting room is one).
 - `Dockerfile`: the server with the pixi environment `serve` (the server's dependencies, solved together
   with the default environment, so the image runs the versions we test).
 - `deploy/boot.sh` (runs on the EC2 instance at every boot: build, serve behind Caddy, stop after 30 idle
@@ -180,6 +192,9 @@ sbatch slurm/pixi_install.sbatch   # after changing dependencies (also installs 
 sbatch -c 8 -o logs/bench-%j.out slurm/run.sbatch scripts/bench_server.py   # timings (AWS_PROFILE=swot-read)
 sbatch -o logs/ec2-%j.out slurm/ec2.sh up|status|update|down   # test server on EC2 (c7i.2xlarge, us-east-1),
                                    # profile swot-deploy. Ask the user before update/up/down: people may be using it
+TYPE=c7i.4xlarge sbatch -o logs/ec2-%j.out slurm/ec2.sh resize   # another instance type (stop, change, start)
+sbatch -o logs/ec2-%j.out slurm/ec2.sh work     # the Lambda function for series and Hovmöllers (after an update)
+SERVER_ENV="..." sbatch slurm/load_trial.sh 20,50 4   # dev: restart with settings, replay visitors, its health
 sbatch -o logs/ec2-%j.out slurm/ec2.sh domain   # https://swotsup.org: CloudFront (EC2, failing over to the Lambda's
                                    # waiting page at the same address), ACM certificate, Route 53 records; then `update`
 ```
