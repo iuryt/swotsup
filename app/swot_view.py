@@ -158,7 +158,7 @@ def point_series(ds, lon, lat, var="ssha_filtered", radius=5.0, min_pixels=None,
 def repository(target):
     """The library, how to get access, and the code that opens a store's repository."""
     if target.startswith("arraylake:"):
-        return ("arraylake", "a free Earthmover account (earthmover.io): run `arraylake auth login` once",
+        return ("arraylake", "a free Earthmover account (https://docs.earthmover.io/quickstart): run `arraylake auth login` once",
                 f'arraylake.Client().get_repo("{target.removeprefix("arraylake:")}")')
     bucket, prefix = target.removeprefix("s3://").split("/", 1)
     return ("icechunk", "AWS credentials from the environment (AWS_PROFILE or AWS_ACCESS_KEY_ID...), region us-east-1",
