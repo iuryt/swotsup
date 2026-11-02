@@ -1488,10 +1488,12 @@ function showCode(code, title, hint) {
   $("#copy").lastChild.textContent = "Copy";
   $("#code-dialog").showModal();
 }
-// what to install for some code: arraylake too when it opens the repository with it (the stores on Earthmover)
-const installs = (code, more = "") => `<code>pip install ${code.includes("import arraylake") ? "arraylake " : ""}icechunk xarray${more}</code>`;
+// the Python packages some code needs (installed as one likes: pixi, conda, pip): with the stores on Earthmover,
+// arraylake, and pcodec (their numbers are compressed with it: without it nothing opens, 2 Nov)
+const installs = (code, more = []) => "Needs " + [...(code.includes("import arraylake") ? ["arraylake"] : []), "icechunk", "xarray",
+  ...(code.includes("import arraylake") ? ["pcodec"] : []), ...more].map((p) => `<code>${p}</code>`).join(", ");
 const showRegionCode = () => track("code", { what: "region" }) || showCode(state.code ?? "", "The same data in your own Python",
-  `Only ${installs(state.code ?? "")}. This is the region and dates on the map.`);
+  `${installs(state.code ?? "")}. This is the region and dates on the map.`);
 
 // --- a chart's buttons: the figure as PNG, its numbers as NetCDF, the code that reproduces it
 const chartButtons = () => `<button class="ghost icon" data-get="png" title="Download the figure (PNG)"><i data-lucide="image-down"></i></button>` +
@@ -1562,7 +1564,7 @@ async function chartAction(card, what) {
     const code = kind === "series" ? (await api("/api/code/series", params)).code
       : (await api("/api/code/line", kind === "profile" ? { ...params, start: isoDay(state.start), days: state.days }
                                                           : { ...params, mean: transect.hovMode })).code;
-    showCode(code, "This chart in your own Python", `${installs(code, ` matplotlib${kind === "series" ? "" : " scipy"}`)}.
+    showCode(code, "This chart in your own Python", `${installs(code, ["matplotlib", ...(kind === "series" ? [] : ["scipy"])])}.
       The same data and figure${kind === "hovmoller" ? " (the whole mission along the line: it reads a lot, give it a moment)" : ""}.`);
   }
 }
