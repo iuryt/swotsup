@@ -615,6 +615,7 @@ function showDrawing() {  // the bar while drawing, and the buttons that started
   const n = state.vertices?.length ?? 0;
   $("#drawing-text").textContent = mode === "box" ? "Drag on the map to draw a box"
     : state.refused ?? (n < 2 ? `${narrow() ? "Tap" : "Click"} points on the map${n ? " (one more at least)" : ""}`
+      : narrow() ? `${n}/${info.limits.vertices} points · ${Math.round(lineKm(state.vertices)).toLocaleString("en")} km`
       : `${n} of ${info.limits.vertices} points · ${Math.round(lineKm(state.vertices)).toLocaleString("en")} of ` +
         `${info.limits.line_km.toLocaleString("en")} km · add more, or Done`);
   state.refused = null;
