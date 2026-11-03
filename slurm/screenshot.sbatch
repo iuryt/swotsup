@@ -11,7 +11,7 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 export AWS_PROFILE=${AWS_PROFILE:-swot-read} AWS_REGION=${AWS_REGION:-us-east-1}
 export SWOT_HEAVY_PER_MINUTE=${SWOT_HEAVY_PER_MINUTE:-100000}  # the scenarios ask for many series and lines at once
-PIXI="/home/iury/.pixi/bin/pixi run"
+PIXI="pixi run"
 PORT=$((5100 + RANDOM % 800))
 $PIXI uvicorn server:app --app-dir app --port $PORT > logs/shot-server-$SLURM_JOB_ID.log 2>&1 &
 for i in $(seq 120); do curl -sf -o /dev/null "http://localhost:$PORT/api/info" && break; sleep 5; done

@@ -15,5 +15,5 @@ PORT=${PORT:-5006}
 export WATCHFILES_FORCE_POLLING=true
 echo "host=$(hostname) start=$(date -Is)"
 echo "on your machine: ssh -N -L $PORT:$(hostname):$PORT biomix   then open http://localhost:$PORT"
-/home/iury/.pixi/bin/pixi run uvicorn server:app --app-dir app --host 0.0.0.0 --port $PORT \
+pixi run uvicorn server:app --app-dir app --host 0.0.0.0 --port $PORT \
     --reload --reload-dir app 2>&1 | grep --line-buffered -v "WARN cache"

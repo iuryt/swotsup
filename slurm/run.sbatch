@@ -10,5 +10,5 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 export PIXI_CACHE_DIR="${TMPDIR:-/tmp}/pixi-cache-$USER"
 echo "host=$(hostname) start=$(date -Is) $*"
-/home/iury/.pixi/bin/pixi run python "$@" 2>&1 | grep --line-buffered -v WARN
+pixi run python "$@" 2>&1 | grep --line-buffered -v WARN
 echo "done=$(date -Is)"
