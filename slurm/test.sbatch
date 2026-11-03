@@ -7,4 +7,4 @@
 #SBATCH --output=logs/test-%j.out
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
-/home/iury/.pixi/bin/pixi run test "$@"
+pixi run test "$@"

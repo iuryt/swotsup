@@ -17,16 +17,16 @@ sleep 30  # the opening overview read back from disk
 # one series first: the Lambda function (if any) started with the new image, as after a deploy
 curl -s -m 200 -o /dev/null -w "first series: %{time_total} s\n" "${URL}api/series?lon=-30&lat=40&variable=ssha_dtu25_cal"
 t0=$(date -u +%Y-%m-%dT%H:%M:%S)
-/home/iury/.pixi/bin/pixi run python scripts/load_test.py replay $URL $STORIES $LEVELS $MINUTES
+pixi run python scripts/load_test.py replay $URL $STORIES $LEVELS $MINUTES
 t1=$(date -u +%Y-%m-%dT%H:%M:%S)
 sleep 90  # dev copies its telemetry to S3 every minute
 day=${t0:0:10} dir=logs/trial-$SLURM_JOB_ID
 mkdir -p $dir
 for f in health requests; do
-  /home/iury/.pixi/bin/pixi exec --spec awscli aws --profile swot-read s3 cp --only-show-errors \
+  pixi exec --spec awscli aws --profile swot-read s3 cp --only-show-errors \
     s3://iuryt-shared-east/telemetry/swot-explorer-dev/$f-$day.jsonl $dir/$f.jsonl
 done
-/home/iury/.pixi/bin/pixi run python - "$dir" "$t0" "$t1" <<'EOF'
+pixi run python - "$dir" "$t0" "$t1" <<'EOF'
 import sys
 import pandas as pd
 d, t0, t1 = sys.argv[1], pd.Timestamp(sys.argv[2], tz="UTC"), pd.Timestamp(sys.argv[3], tz="UTC")

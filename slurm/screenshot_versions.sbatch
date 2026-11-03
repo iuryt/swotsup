@@ -7,7 +7,7 @@
 set -uo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 export AWS_PROFILE=${AWS_PROFILE:-swot-read} AWS_REGION=${AWS_REGION:-us-east-1}
-PIXI="/home/iury/.pixi/bin/pixi run --manifest-path $PWD/pyproject.toml"
+PIXI="pixi run --manifest-path $PWD/pyproject.toml"
 TREES=$(mktemp -d -p "$PWD/logs" versions-XXXX)
 for hash in "$@"; do
   tree=$TREES/$hash
