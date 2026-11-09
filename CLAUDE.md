@@ -147,7 +147,7 @@ be resumed here (`claude --resume`).
   (`server-log.txt`) go to S3 with the usage. Heavy requests: 300 a minute from one address (a meeting room is one).
 - `Dockerfile`: the server with the pixi environment `serve` (the server's dependencies, solved together
   with the default environment, so the image runs the versions we test).
-- `deploy/boot.sh` (runs on the EC2 instance at every boot: build, serve behind Caddy, stop after 30 idle
+- `deploy/boot.sh` (runs on the EC2 instance at every boot: build, serve behind Caddy, stop after 10 idle
   minutes) and `deploy/wake.py` (the Lambda link: starts the instance and shows a waiting page).
 - `scripts/screenshot.py` (scenarios: open, click, series, line (and line-250m), hovmoller, flat, dateline, phone, wide,
   zoom, compass, timeline, band), `scripts/bench_server.py`, `scripts/release_check.py` (before production: the main

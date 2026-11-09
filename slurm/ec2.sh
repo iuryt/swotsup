@@ -1,6 +1,6 @@
 #!/bin/bash
 # The explorer on one EC2 instance in us-east-1 (next to the store), behind Caddy with HTTPS at
-# https://<elastic ip>.sslip.io. It stops itself after 30 idle minutes (deploy/boot.sh); the link to share is a
+# https://<elastic ip>.sslip.io. It stops itself after 10 idle minutes (deploy/boot.sh); the link to share is a
 # Lambda function URL (deploy/wake.py) that starts it again and shows a waiting page meanwhile (~1 min).
 # The instance reads the store and the app (packed into the bucket) through its own read-only role, so no key
 # goes to the machine; the image installs the pixi environment `serve` (pixi.lock); there is no SSH.
@@ -143,7 +143,7 @@ status)
   [ "$STAGE" = dev ] || echo "link to share: $(aws lambda get-function-url-config --function-name $WAKE --query FunctionUrl --output text)"
   id=$(instance)
   echo "instance $id: $(aws ec2 describe-instances --instance-ids "$id" --query 'Reservations[0].Instances[0].State.Name' \
-    --output text), https://$(address PublicIp | tr . -).sslip.io (stops after 30 idle minutes)"
+    --output text), https://$(address PublicIp | tr . -).sslip.io (stops after 10 idle minutes)"
   aws ec2 get-console-output --instance-id "$id" --latest --output text | tail -${LINES_SHOWN:-40} || true
   ;;
 update)
