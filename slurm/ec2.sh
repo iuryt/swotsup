@@ -10,8 +10,13 @@
 #   sbatch -o logs/ec2-%j.out slurm/ec2.sh down     delete everything `up` created
 #   sbatch -o logs/ec2-%j.out slurm/ec2.sh domain   https://$DOMAIN in front of it all (after `up`; then `update`)
 # The domain: CloudFront with an ACM certificate and Route 53 records in the domain's zone (registered in Route 53).
-# Its origin is the instance, failing over to the Lambda function (502/503, or no connection: it sleeps), whose
-# waiting page then stays at the same address; `down` leaves the domain's pieces in place.
+# Its origin is the instance, failing over to the Lambda function on 502, 503 and 504, whose waiting page then stays
+# at the same address; `down` leaves the domain's pieces in place. 504 matters (#136): a stopped instance drops the
+# packets instead of refusing the connection, and CloudFront counts that timeout as a 504 (a refusal, or Caddy
+# without the app, as 502/503), so without it the domain answered 504 while the server slept instead of waking it.
+# `domain` only creates the distribution when there is none; to change one that exists (as done on 2026-11-09):
+#   aws cloudfront get-distribution-config --id ID > logs/cf.json; edit .DistributionConfig; then
+#   aws cloudfront update-distribution --id ID --if-match "$(jq -r .ETag logs/cf.json)" --distribution-config file://...
 # DEPLOY_PROFILE: EC2, the roles swot-explorer and swot-explorer-wake, the Lambda function swot-explorer-wake and
 # deploy/swot_explorer/ in the bucket.
 # STAGE=dev: a second instance for testing branches (swot-explorer-dev: any branch, sent as it is; the production one
@@ -256,7 +261,7 @@ domain)
    $(origin ec2 "$(address PublicIp | tr . -).sslip.io" ${ORIGIN_TIMEOUT:-60}),
    $(origin wake "$lambda" 30 '"CustomHeaders":{"Quantity":1,"Items":[{"HeaderName":"X-Swot-Front","HeaderValue":"1"}]},')]},
  "OriginGroups": {"Quantity": 1, "Items": [{"Id": "ec2-or-wake",
-   "FailoverCriteria": {"StatusCodes": {"Quantity": 2, "Items": [502, 503]}},
+   "FailoverCriteria": {"StatusCodes": {"Quantity": 3, "Items": [502, 503, 504]}},
    "Members": {"Quantity": 2, "Items": [{"OriginId": "ec2"}, {"OriginId": "wake"}]}}]},
  "DefaultCacheBehavior": $(behavior "" ec2-or-wake $nocache "$get"),
  "CacheBehaviors": {"Quantity": 5, "Items": [

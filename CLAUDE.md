@@ -201,6 +201,12 @@ sbatch -o logs/ec2-%j.out slurm/ec2.sh domain   # https://swotsup.org: CloudFron
                                    # waiting page at the same address), ACM certificate, Route 53 records; then `update`
 ```
 
+`slurm/ec2.sh` is plain bash: on a machine with the `swot-deploy` AWS profile (a laptop got one on 2026-11-09, when biomix
+was unreachable) it runs as `bash slurm/ec2.sh status` without Slurm; `status` needs nothing else. That profile reads
+the metrics (CloudWatch) but not the Lambda's logs nor CloudTrail. The domain's failover to the waiting page needs 504
+among the origin group's codes (#136: a stopped instance is a timeout to CloudFront, not a refusal); `domain` does
+not update an existing distribution, see the script's header for the `update-distribution` way.
+
 Screenshots: after every visible change, take them with `slurm/screenshot.sbatch` and give the user their
 paths. `img/history` keeps a dated copy of every version (`<date>_<commit>_app-<scenario>.png`); never
 delete or overwrite anything there. It is not in git (since 2026-11-01, when it was taken out of the whole history:
