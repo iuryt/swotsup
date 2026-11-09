@@ -2,7 +2,7 @@
 # Runs on the EC2 instance at every boot, from the package slurm/ec2.sh sends (unpacked in /opt/app): build the
 # image, serve it behind Caddy (HTTPS at <ip>.sslip.io), and stop the machine when nobody used it for IDLE minutes.
 # A stopped instance costs only its disk and address; deploy/wake.py starts it again on the next visit.
-IDLE=30
+IDLE=10
 # the disk may have grown (slurm/ec2.sh update): its partition and file system to its size (nothing to do otherwise)
 growpart /dev/nvme0n1 1 >/dev/null 2>&1; xfs_growfs / >/dev/null 2>&1
 cd /opt/app
